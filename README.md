@@ -8,6 +8,14 @@ develop : 배포본 이전본, 총 통합 브랜치 역할    |   기능이 완�
 feature/기능명 : 기능 | 개인이 맡은 것을 기능(feature)에서 작업.
 ex) feature/login, feature/main
 
+#브랜치 사용법
+
+feature에 올려진 기능을 develop에 올리고 싶을 경우 github 홈페이지에 들어와서 팀의 레지스터리(여기)
+들어와 노란 창의 메시지를 보면 각자가 push한 파일에 대해 campare&pull request라는 것이 떠있을 것이다.
+초록 버튼을 눌러서 Comparing changes 창이 열리면 거기서 올린 브렌치(develop, main) 선택 후 제목 및 내용 작성과 
+리뷰해줄 사람들을 설정하고 create pull request 초록 버튼을 누르면 된다.
+
+
 #주의
 
 ✅ GitHub에 올리면 좋은 것들
