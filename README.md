@@ -34,3 +34,6 @@ Kubernetes 매니페스트: deployment.yaml, service.yaml 등
 SSH 개인키, 인증서(.pem, .key)
 클라우드 access key/secret key (AWS, GCP 등)
 Terraform state 파일 (.tfstate) — 여기엔 리소스 정보가 통째로 들어있어서 민감함
+
+작성하면서 참고한 사이트 및 AI : 클로드,
+https://sanghee01.tistory.com/157
