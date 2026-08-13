@@ -1,0 +1,14 @@
+{
+  "name": "queue-service",
+  "version": "1.0.0",
+  "description": "QUEUING - 예매 대기열 서비스 (Part A)",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "ioredis": "^5.4.0"
+  }
+}
