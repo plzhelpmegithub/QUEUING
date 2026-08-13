@@ -2,18 +2,14 @@
 CLoudDX 7기 팀 프로젝트 협업 공간. QUEUING이라는 사전 예약/예매 플ㄹ새폼이며 대기열을 통해 순차적으로 서버에 들어가고 오토 스케일링과 부하 테스트를 통해 서버가 트래픽을 감당 못 할 시 자동으로 서버를 늘려서 무중지 서비스가 가능하도록 하는 인프라 프로젝트이다.
 
 #git branch의 구조
-main: 배포본
-develop : 배포본 이전본, 총 통합 브랜치 역할
-feature/기능명 : 기능
-ex) feature/login, feature/main
-간단히 개발 흐름을 말하자면 다음과 같다.
 
-개인이 맡은 기능(feature) 브랜치에서 작업하고,
-해당 기능이 완성 됐으면 develop 브랜치에 올린다.
-develop에 모든 기능들이 모이고 문제 없이 정상적으로 작동하면
-main 브랜치(배포본)에 올린다.
+main: 배포본    |   모든 기능들이 모이고 문제 없이 정상적으로 작동하면 main(배포본)에 올린다.
+develop : 배포본 이전본, 총 통합 브랜치 역할    |   기능이 완성 됐으면 develop에 올린다.
+feature/기능명 : 기능 | 개인이 맡은 것을 기능(feature)에서 작업.
+ex) feature/login, feature/main
 
 #주의
+
 ✅ GitHub에 올리면 좋은 것들
 
 IaC(Infrastructure as Code) 파일: Terraform(.tf), Ansible playbook, CloudFormation, Pulumi 코드 등 — 인프라를 "코드로" 정의한 파일들
