@@ -67,6 +67,67 @@ async function queueRoutes(fastify) {
     const result = await queueService.getStats();
     return reply.send(result);
   });
+
+  // ===== 관리자 — 티켓팅 제어 =====
+
+  // 티켓팅 오픈 — 관리자가 버튼 누르면 예매 시작
+  fastify.post('/admin/ticketing/open', async (request, reply) => {
+    const result = await queueService.openTicketing();
+    return reply.send(result);
+  });
+
+  // 티켓팅 마감 — 관리자가 수동 마감
+  fastify.post('/admin/ticketing/close', async (request, reply) => {
+    const result = await queueService.closeTicketing();
+    return reply.send(result);
+  });
+
+  // 티켓팅 상태 조회
+  fastify.get('/admin/ticketing/status', async (request, reply) => {
+    const result = await queueService.getTicketingStatus();
+    return reply.send(result);
+  });
+
+  // 결제 제한 시간 설정 — 관리자가 공연별로 설정
+  fastify.post('/admin/hold-duration', async (request, reply) => {
+    const { seconds } = request.body || {};
+    if (!seconds || seconds < 10) {
+      return reply.status(400).send({ error: '결제 제한 시간은 10초 이상이어야 합니다.' });
+    }
+    const result = await queueService.setHoldDuration(seconds);
+    return reply.send(result);
+  });
+
+  // 결제 제한 시간 조회
+  fastify.get('/admin/hold-duration', async (request, reply) => {
+    const result = await queueService.getHoldDuration();
+    return reply.send(result);
+  });
+
+  // ===== 관리자 — 자동 오픈 스케줄 =====
+
+  // 티켓팅 예약 오픈 설정 — "몇 시에 자동 오픈, 몇 분 후 자동 마감"
+  fastify.post('/admin/ticketing/schedule', async (request, reply) => {
+    const { openAt, durationMinutes } = request.body || {};
+    if (!openAt) {
+      return reply.status(400).send({ error: 'openAt(오픈 시간)은 필수입니다. 예: "2026-12-25T20:00:00"' });
+    }
+    const result = await queueService.scheduleTicketing(openAt, durationMinutes);
+    const statusCode = result.success ? 200 : 400;
+    return reply.status(statusCode).send(result);
+  });
+
+  // 예약 스케줄 취소
+  fastify.post('/admin/ticketing/cancel-schedule', async (request, reply) => {
+    const result = await queueService.cancelSchedule();
+    return reply.send(result);
+  });
+
+  // 예약 스케줄 조회
+  fastify.get('/admin/ticketing/schedule', async (request, reply) => {
+    const result = await queueService.getSchedule();
+    return reply.send(result);
+  });
 }
 
 module.exports = queueRoutes;

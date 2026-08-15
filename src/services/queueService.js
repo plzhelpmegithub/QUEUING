@@ -6,6 +6,8 @@ const COUNTER_KEY = 'queue:counter';         // 순번 발급용 원자 카운�
 const ADMITTED_KEY = 'queue:admitted';       // Set — 입장 허용된 사용자 목록
 const STANDBY_KEY = 'queue:standby';        // Sorted Set — 취소표 대기자 (1001번~)
 const TOTAL_SEATS_KEY = 'event:total-seats'; // 총 좌석 수 (eligible/standby 분류 기준)
+const TICKETING_STATUS_KEY = 'event:ticketing-status'; // 티켓팅 상태 (open/closed)
+const HOLD_DURATION_KEY = 'event:hold-duration';       // 결제 제한 시간 (초)
 
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 100; // 한 번에 입장시킬 인원 (100명씩)
 
@@ -27,6 +29,12 @@ async function setTotalSeats(count) {
  * - 중복 진입 방지 (이미 있으면 기존 순번 반환)
  */
 async function enter(userId) {
+  // 0) 티켓팅이 오픈 상태인지 확인 — closed면 진입 차단
+  const ticketingStatus = await redis.get(TICKETING_STATUS_KEY);
+  if (ticketingStatus !== 'open') {
+    return { status: 'closed', message: '현재 티켓팅이 오픈되지 않았습니다.' };
+  }
+
   // 1) 이미 입장 허용된 사용자 → 다시 대기열에 넣지 않음
   const isAdmitted = await redis.sismember(ADMITTED_KEY, userId);
   if (isAdmitted) {
@@ -215,4 +223,154 @@ async function getStats() {
   };
 }
 
-module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats };
+/**
+ * 티켓팅 오픈
+ * - 관리자가 버튼을 누르면 호출
+ * - 이 시점부터 사용자가 대기열에 진입 가능
+ */
+async function openTicketing() {
+  await redis.set(TICKETING_STATUS_KEY, 'open');
+  const openedAt = new Date().toISOString();
+  console.log(`[Ticketing] 오픈 — ${openedAt}`);
+  return { status: 'open', openedAt, message: '티켓팅이 오픈되었습니다.' };
+}
+
+/**
+ * 티켓팅 마감
+ * - 관리자가 수동으로 마감하거나 전석 매진 시 호출
+ * - 이후 대기열 진입 차단
+ */
+async function closeTicketing() {
+  await redis.set(TICKETING_STATUS_KEY, 'closed');
+  const closedAt = new Date().toISOString();
+  console.log(`[Ticketing] 마감 — ${closedAt}`);
+  return { status: 'closed', closedAt, message: '티켓팅이 마감되었습니다.' };
+}
+
+/**
+ * 티켓팅 상태 조회
+ */
+async function getTicketingStatus() {
+  const status = await redis.get(TICKETING_STATUS_KEY) || 'closed';
+  return { status };
+}
+
+/**
+ * 결제 제한 시간 설정 (관리자)
+ * - 공연별로 결제 시간을 다르게 설정 가능
+ * - 예: 인기 공연은 5분, 일반 공연은 10분
+ *
+ * @param {number} seconds - 결제 제한 시간 (초)
+ */
+async function setHoldDuration(seconds) {
+  await redis.set(HOLD_DURATION_KEY, seconds);
+  console.log(`[Ticketing] 결제 제한 시간: ${seconds}초 (${Math.floor(seconds / 60)}분)`);
+  return {
+    holdDuration: seconds,
+    display: `${Math.floor(seconds / 60)}분 ${seconds % 60}초`,
+    message: `결제 제한 시간이 ${seconds}초로 설정되었습니다.`,
+  };
+}
+
+/**
+ * 결제 제한 시간 조회
+ */
+async function getHoldDuration() {
+  const duration = parseInt(await redis.get(HOLD_DURATION_KEY), 10) || parseInt(process.env.HOLD_DURATION, 10) || 600;
+  return {
+    holdDuration: duration,
+    display: `${Math.floor(duration / 60)}분 ${duration % 60}초`,
+  };
+}
+
+// ===== 자동 오픈/마감 타이머 =====
+let openTimer = null;   // 자동 오픈 타이머 핸들
+let closeTimer = null;  // 자동 마감 타이머 핸들
+
+/**
+ * 티켓팅 예약 오픈 설정 (자동 오픈 타이머)
+ * - 관리자가 "12월 25일 오후 8시에 오픈" 설정
+ * - 해당 시간이 되면 자동으로 open 상태로 전환
+ * - 오픈 후 duration(분)이 지나면 자동 마감 (선택)
+ *
+ * @param {string} openAt - 오픈 시간 (ISO 8601, 예: "2026-12-25T20:00:00")
+ * @param {number} durationMinutes - 오픈 유지 시간 (분, 선택. 예: 30 → 30분 후 자동 마감)
+ */
+async function scheduleTicketing(openAt, durationMinutes) {
+  const openTime = new Date(openAt).getTime();
+  const now = Date.now();
+  const delayMs = openTime - now;  // 오픈까지 남은 시간 (밀리초)
+
+  if (delayMs <= 0) {
+    return { success: false, message: '오픈 시간이 현재 시간보다 이전입니다.' };
+  }
+
+  // 기존 타이머가 있으면 취소
+  if (openTimer) clearTimeout(openTimer);
+  if (closeTimer) clearTimeout(closeTimer);
+
+  // Redis에 스케줄 정보 저장 (서버 재시작 시 참고용)
+  await redis.hset('event:schedule', {
+    openAt,
+    durationMinutes: (durationMinutes || 0).toString(),
+    scheduledAt: new Date().toISOString(),
+  });
+
+  // 자동 오픈 타이머 설정
+  openTimer = setTimeout(async () => {
+    await openTicketing();
+    console.log(`[Schedule] 예약 시간 도달 — 티켓팅 자동 오픈`);
+
+    // 자동 마감 설정 (durationMinutes가 있으면)
+    if (durationMinutes && durationMinutes > 0) {
+      const closeDelayMs = durationMinutes * 60 * 1000;
+      closeTimer = setTimeout(async () => {
+        await closeTicketing();
+        console.log(`[Schedule] ${durationMinutes}분 경과 — 티켓팅 자동 마감`);
+      }, closeDelayMs);
+    }
+  }, delayMs);
+
+  const delaySeconds = Math.floor(delayMs / 1000);
+  const delayMinutes = Math.floor(delaySeconds / 60);
+  const delaySec = delaySeconds % 60;
+
+  return {
+    success: true,
+    openAt,
+    opensIn: `${delayMinutes}분 ${delaySec}초 후`,
+    autoClose: durationMinutes ? `오픈 후 ${durationMinutes}분 뒤 자동 마감` : '수동 마감',
+    message: `티켓팅이 ${openAt}에 자동 오픈됩니다.`,
+  };
+}
+
+/**
+ * 예약 스케줄 취소
+ */
+async function cancelSchedule() {
+  if (openTimer) { clearTimeout(openTimer); openTimer = null; }
+  if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+  await redis.del('event:schedule');
+  return { success: true, message: '예약된 스케줄이 취소되었습니다.' };
+}
+
+/**
+ * 예약 스케줄 조회
+ */
+async function getSchedule() {
+  const schedule = await redis.hgetall('event:schedule');
+  if (!schedule || !schedule.openAt) {
+    return { scheduled: false, message: '예약된 스케줄이 없습니다.' };
+  }
+  const openTime = new Date(schedule.openAt).getTime();
+  const remaining = openTime - Date.now();
+  return {
+    scheduled: true,
+    openAt: schedule.openAt,
+    durationMinutes: parseInt(schedule.durationMinutes, 10) || null,
+    remainingSeconds: remaining > 0 ? Math.floor(remaining / 1000) : 0,
+    scheduledAt: schedule.scheduledAt,
+  };
+}
+
+module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule };
