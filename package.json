@@ -1,7 +1,7 @@
 {
-  "name": "queue-service",
+  "name": "queue-api",
   "version": "1.0.0",
-  "description": "QUEUING - 예매 대기열 서비스 (Part A)",
+  "description": "QUEUING - 예매 대기열 API (Part A)",
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
@@ -9,6 +9,11 @@
   },
   "dependencies": {
     "fastify": "^5.2.0",
-    "ioredis": "^5.4.0"
+    "ioredis": "^5.4.0",
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@aws-sdk/client-ses": "^3.700.0",
+    "@aws-sdk/client-sns": "^3.700.0",
+    "prom-client": "^15.1.0"
   }
 }
