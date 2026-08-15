@@ -1,29 +1,41 @@
 const Redis = require('ioredis');
 const redis = require('../config/redis');
 const { publishSeatEvent, EVENT_TYPE } = require('./eventService');
+const { timerExpirations } = require('./metricsService'); // Prometheus 메트릭
 
 // ===== 타이머 설정 =====
 const TIMER_PREFIX = 'timer:seat:';  // 타이머 키 접두사 (예: timer:seat:A-001)
 const SEAT_PREFIX = 'seat:';         // 좌석 상태 키 접두사
-const HOLD_DURATION = parseInt(process.env.HOLD_DURATION, 10) || 600; // 기본 10분 (600초), 테스트 시 15초
+const HOLD_DURATION_KEY = 'event:hold-duration'; // 관리자 설정 결제 제한 시간
+const DEFAULT_HOLD_DURATION = parseInt(process.env.HOLD_DURATION, 10) || 600; // 환경변수 또는 기본 10분
 
 // keyspace notification 구독 전용 연결
 // subscribe 모드에 들어가면 다른 명령을 실행할 수 없어서 별도 연결 필요
 let subscriber = null;
 
 /**
+ * 현재 설정된 결제 제한 시간 조회
+ * - Redis에 관리자가 설정한 값이 있으면 그 값 사용
+ * - 없으면 환경변수 또는 기본값(600초) 사용
+ */
+async function getCurrentHoldDuration() {
+  const stored = await redis.get(HOLD_DURATION_KEY);
+  return stored ? parseInt(stored, 10) : DEFAULT_HOLD_DURATION;
+}
+
+/**
  * 타이머 시작
  * - 좌석 선점 시 호출
- * - timer:seat:{seatId} 키를 TTL로 생성
- * - TTL 만료 시 Redis가 자동으로 keyspace notification 발생
+ * - 관리자가 설정한 결제 제한 시간만큼 TTL 부여
  *
  * @param {string} seatId - 좌석 ID (예: "A-001")
  * @param {string} userId - 선점한 사용자 ID
  */
 async function startTimer(seatId, userId) {
+  const holdDuration = await getCurrentHoldDuration(); // 관리자 설정값 또는 기본값
   const timerKey = `${TIMER_PREFIX}${seatId}`;
-  await redis.set(timerKey, userId, 'EX', HOLD_DURATION); // EX = 만료 시간 설정
-  console.log(`[Timer] ${seatId} 타이머 시작 (${HOLD_DURATION}초) — ${userId}`);
+  await redis.set(timerKey, userId, 'EX', holdDuration);
+  console.log(`[Timer] ${seatId} 타이머 시작 (${holdDuration}초) — ${userId}`);
 }
 
 /**
@@ -81,22 +93,56 @@ async function initExpiryListener() {
     if (!expiredKey.startsWith(TIMER_PREFIX)) return;
 
     const seatId = expiredKey.replace(TIMER_PREFIX, ''); // 좌석 ID 추출
-    console.log(`[Timer] ${seatId} 만료 — 좌석 자동 해제`);
+    console.log(`[Timer] ${seatId} 만료 — 결제 시간 초과`);
 
     const seatKey = `${SEAT_PREFIX}${seatId}`;
     const status = await redis.hget(seatKey, 'status'); // 현재 좌석 상태 확인
 
-    // held 상태일 때만 해제 (이미 sold면 건드리지 않음)
+    // held 상태일 때만 처리 (이미 sold면 건드리지 않음)
     if (status === 'held') {
       const heldBy = await redis.hget(seatKey, 'heldBy'); // 누가 잡고 있었는지
-      await redis.hset(seatKey, {
-        status: 'available',  // 다시 예매 가능 상태로 복구
-        heldBy: '',
-        heldAt: '',
-      });
-      // 해제 이벤트 발행 → C파트가 구독해서 실시간 브로드캐스트
-      await publishSeatEvent(EVENT_TYPE.RELEASED, { seatId, userId: heldBy });
-      console.log(`[Timer] ${seatId} → available 복구 완료`);
+      timerExpirations.inc(); // Prometheus 만료 카운터 증가
+
+      // ===== standby 확인 =====
+      const STANDBY_KEY = 'queue:standby';
+      const ADMITTED_KEY = 'queue:admitted';
+      const nextUsers = await redis.zrange(STANDBY_KEY, 0, 0); // standby 1순위 조회
+
+      if (nextUsers.length > 0) {
+        // ===== standby 있음 → available 거치지 않고 바로 다음 사용자에게 held 전환 =====
+        const nextUser = nextUsers[0];
+        await redis.zrem(STANDBY_KEY, nextUser);     // standby에서 제거
+        await redis.sadd(ADMITTED_KEY, nextUser);     // admitted에 추가
+
+        // 좌석을 바로 다음 사용자의 held로 전환
+        await redis.hset(seatKey, {
+          status: 'held',
+          heldBy: nextUser,
+          heldAt: Date.now().toString(),
+        });
+
+        // 새 타이머 시작 (다음 사용자에게도 결제 시간 부여)
+        await startTimer(seatId, nextUser);
+
+        // 이벤트 발행 → B파트가 이메일/문자로 "좌석이 배정되었습니다. 10분 내 결제해주세요" 발송
+        await publishSeatEvent(EVENT_TYPE.HELD, {
+          seatId,
+          userId: nextUser,
+          reason: 'standby_auto_assign',
+          message: `${heldBy} 시간 초과 → ${nextUser}에게 자동 배정`,
+        });
+        console.log(`[Timer] ${heldBy} 시간 초과 → ${nextUser}에게 바로 배정 (${seatId} held)`);
+
+      } else {
+        // ===== standby 없음 → 기존처럼 available로 복구 =====
+        await redis.hset(seatKey, {
+          status: 'available',
+          heldBy: '',
+          heldAt: '',
+        });
+        await publishSeatEvent(EVENT_TYPE.RELEASED, { seatId, userId: heldBy });
+        console.log(`[Timer] standby 없음 — ${seatId} → available 복구`);
+      }
     }
   });
 
