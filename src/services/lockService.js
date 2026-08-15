@@ -1,5 +1,6 @@
 const redis = require('../config/redis');
 const crypto = require('crypto');
+const { lockAttempts } = require('./metricsService'); // Prometheus 메트릭
 
 // ===== 락 설정 =====
 const LOCK_TTL = 5;          // 락 자동 만료 시간 (초) — 데드락 방지용
@@ -24,6 +25,7 @@ async function acquireLock(resource) {
     const result = await redis.set(lockKey, token, 'EX', LOCK_TTL, 'NX');
 
     if (result === 'OK') {
+      lockAttempts.inc({ result: 'success' }); // 성공 카운터 증가
       return { acquired: true, token }; // 락 획득 성공
     }
 
@@ -35,6 +37,7 @@ async function acquireLock(resource) {
     }
   }
 
+  lockAttempts.inc({ result: 'fail' }); // 실패 카운터 증가
   return { acquired: false, token: null }; // 3번 다 실패
 }
 
