@@ -20,21 +20,25 @@ const STATUS = {
 /**
  * 좌석 초기화 (이벤트 세팅용)
  * - 콘서트 등록 시 좌석들을 available 상태로 생성
- * - 파이프라인으로 한 번에 처리 (네트워크 효율)
+ * - 구역(section)과 가격(price) 정보도 함께 저장
  *
- * @param {string[]} seatIds - 예: ["A-001", "A-002", ..., "A-1000"]
+ * @param {string[]} seatIds - 예: ["VIP-001", "A-001"]
+ * @param {string} section - 구역명 (예: "VIP")
+ * @param {number} price - 가격 (예: 150000)
  */
-async function initSeats(seatIds) {
+async function initSeats(seatIds, section = '', price = 0) {
   const pipeline = redis.pipeline();
   for (const id of seatIds) {
     pipeline.hset(`${SEAT_PREFIX}${id}`, {
       status: STATUS.AVAILABLE,  // 초기 상태: 예매 가능
       heldBy: '',                // 선점한 사용자 없음
       heldAt: '',                // 선점 시간 없음
+      section: section,          // 구역 (VIP, R, S 등)
+      price: price.toString(),   // 가격 (Redis는 문자열 저장)
     });
   }
   await pipeline.exec();
-  return { initialized: seatIds.length, seats: seatIds };
+  return { initialized: seatIds.length, section, price, seats: seatIds };
 }
 
 /**
@@ -159,10 +163,15 @@ async function confirmSeat(userId, seatId) {
   const remaining = allSeats.filter(s => s.status === STATUS.AVAILABLE || s.status === STATUS.HELD);
   if (remaining.length === 0) {
     await redis.set(SOLD_OUT_KEY, '1'); // 매진 플래그 설정
+
+    // 티켓팅 자동 마감 — 신규 진입 차단 (이미 standby인 사용자는 영향 없음)
+    await redis.set('event:ticketing-status', 'closed');
+    console.log('[Ticketing] 전석 매진 → 자동 마감 (standby 대기자는 유지)');
+
     // 매진 이벤트 발행 → C파트가 대기 중인 사용자에게 "전석 매진" 알림
     await publishSeatEvent(EVENT_TYPE.SOLD_OUT, {
       seatId: 'ALL',
-      message: '전석 매진',
+      message: '전석 매진 — 신규 진입 마감, 취소표 대기자는 순서대로 안내됩니다.',
       totalSold: allSeats.filter(s => s.status === STATUS.SOLD).length,
     });
   }
