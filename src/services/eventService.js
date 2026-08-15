@@ -1,4 +1,5 @@
 const redis = require('../config/redis');
+const { seatEvents } = require('./metricsService'); // Prometheus 메트릭
 
 // 이벤트 채널명 — C파트와 합의한 Pub/Sub 채널
 // C파트가 이 채널을 구독해서 사용자에게 실시간 브로드캐스트
@@ -33,6 +34,7 @@ async function publishSeatEvent(type, payload) {
 
   const message = JSON.stringify(event);           // JSON 문자열로 변환
   await redis.publish(SEAT_EVENT_CHANNEL, message); // 채널에 발행
+  seatEvents.inc({ type });                          // Prometheus 카운터 증가
   console.log(`[Event] ${type} — ${payload.seatId}`);
 }
 
