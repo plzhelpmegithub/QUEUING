@@ -4,3 +4,6 @@ minikube-linux-amd64
 cni-plugins-linux-amd64-v1.6.0.tgz
 kubectl
 minikube-linux-amd64
+.env
+__pycache__/
+venv/
