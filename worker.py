@@ -1,12 +1,25 @@
-import boto3
-import time
+import os
 import json
-import jwt
+import uuid
 from datetime import datetime, timedelta
+import boto3
+from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+import jwt
+
+# .env 파일 로드 (1단계 보안 조치)
+load_dotenv()
 
 ENDPOINT = "http://127.0.0.1:4566"
 REGION = "ap-northeast-2"
-JWT_SECRET = "super-secret-resale-key"
+
+# 하드코딩 제거하고 환경 변수에서 안전하게 로드
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise ValueError("CRITICAL: JWT_SECRET environment variable is missing!")
+
+QUEUE_URL = "http://127.0.0.1:4566/000000000000/resale-email"
+TABLE_NAME = "allocation-state"
 
 sqs = boto3.client(
     "sqs",
@@ -24,7 +37,6 @@ dynamodb = boto3.client(
     aws_secret_access_key="test"
 )
 
-# AWS SES 클라이언트 추가 (로컬스택/실제 AWS 호환)
 ses = boto3.client(
     "ses",
     endpoint_url=ENDPOINT,
@@ -33,11 +45,8 @@ ses = boto3.client(
     aws_secret_access_key="test"
 )
 
-QUEUE_URL = "http://127.0.0.1:4566/000000000000/resale-email"
-TABLE_NAME = "allocation-state"
-
 print("==================================================")
-print("🚀 QUEUING 취소표 순차 배정 Worker (SES 이메일 + FastAPI 링크 연동)")
+print("🚀 QUEUING 취소표 순차 배정 Worker (보안 + 조건부 업데이트 + JTI 통합)")
 print("==================================================")
 
 while True:
@@ -57,39 +66,49 @@ while True:
 
         allocation_id = body.get("allocation_id")
         user_id = body.get("user_id")
-        # 실제 수신할 이메일 주소 (메시지에 없으면 기본 테스트 주소 사용)
         recipient_email = body.get("email", "geonah.kim@example.com")
 
         print(f"\n📩 [배정 진행] 작업 ID: {allocation_id} | 사용자: {user_id} ({recipient_email})")
 
-        # 1. 상태 저장: PROCESSING
-        dynamodb.update_item(
-            TableName=TABLE_NAME,
-            Key={"allocation_id": {"S": allocation_id}},
-            UpdateExpression="SET current_status = :status, current_user = :user",
-            ExpressionAttributeValues={
-                ":status": {"S": "PROCESSING"},
-                ":user": {"S": user_id}
-            }
-        )
+        # 1. 조건부 업데이트 (Idempotency 확보: 이미 처리 중이거나 완료된 경우 중복 차단)
+        try:
+            dynamodb.update_item(
+                TableName=TABLE_NAME,
+                Key={"allocation_id": {"S": allocation_id}},
+                UpdateExpression="SET current_status = :status, current_user = :user, updated_at = :now",
+                ConditionExpression="attribute_not_exists(current_status) OR current_status = :wait",
+                ExpressionAttributeValues={
+                    ":status": {"S": "PROCESSING"},
+                    ":wait": {"S": "WAITING"},
+                    ":user": {"S": user_id},
+                    ":now": {"S": datetime.utcnow().isoformat()}
+                }
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                print(f"⚠️ [중복 차단] 이미 처리 중이거나 완료된 작업입니다. (Allocation ID: {allocation_id})")
+                sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle)
+                continue
+            else:
+                raise e
 
-        # 2. 10분 TTL 포함 JWT 1회용 링크 생성
-        expire_time = datetime.now() + timedelta(minutes=10)
+        # 2. 고유 JTI 및 10분 TTL 포함 JWT 1회용 링크 생성
+        jti = str(uuid.uuid4())
+        expire_time = datetime.utcnow() + timedelta(minutes=10)
+        
         payload = {
             "allocation_id": allocation_id,
             "user_id": user_id,
+            "jti": jti,
             "exp": expire_time
         }
         secure_token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-        
-        # 로컬 웹서버(FastAPI)로 연결되는 예매 링크
         secure_link = f"http://127.0.0.1:8000/pay?token={secure_token}"
 
-        print(f"🔒 생성된 보안 예매 링크: {secure_link}")
+        print(f"🔒 생성된 보안 예매 링크 (JTI: {jti}): {secure_link}")
 
         # 3. AWS SES를 통한 실제 이메일 발송 API 호출
         print(f"📧 AWS SES를 통해 {recipient_email}로 이메일 전송 중...")
-        
         try:
             ses.send_email(
                 Source="resale-admin@queuing.com",
@@ -107,15 +126,17 @@ while True:
         except Exception as ses_err:
             print(f"⚠️ SES 전송 시뮬레이션/처리 중 로그: {ses_err}")
 
-        # 4. 상태 저장: LINK_SENT
+        # 4. 상태 저장: LINK_SENT (JTI 및 만료 시간 기록)
         dynamodb.update_item(
             TableName=TABLE_NAME,
             Key={"allocation_id": {"S": allocation_id}},
-            UpdateExpression="SET current_status = :status, current_user = :user, expires_at = :expire",
+            UpdateExpression="SET current_status = :status, current_user = :user, jti = :jti, expires_at = :expire, updated_at = :now",
             ExpressionAttributeValues={
                 ":status": {"S": "LINK_SENT"},
                 ":user": {"S": user_id},
-                ":expire": {"S": expire_time.isoformat()}
+                ":jti": {"S": jti},
+                ":expire": {"S": expire_time.isoformat()},
+                ":now": {"S": datetime.utcnow().isoformat()}
             }
         )
 
