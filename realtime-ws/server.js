@@ -17,11 +17,17 @@ const REDIS_PORT = process.env.REDIS_PORT || 6379;
 const app = express();
 app.use(express.json());
 
+// ---- Redis Pub/Sub 연결 및 에러 핸들링 ----
+const redisPub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
+const redisSub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
+
+redisPub.on('error', (err) => console.error('Redis Pub 에러:', err));
+redisSub.on('error', (err) => console.error('Redis Sub 에러:', err));
+
 // 헬스체크 (K8s readiness/liveness probe용)
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
 
-// A 파트에서 좌석 상태 변경 시 이 API를 호출해 이벤트를 발행한다고 가정
-// (실제로는 A가 Redis에 직접 publish 하거나, 이 엔드포인트를 통해 발행할 수 있음)
+// 좌석 상태 변경 이벤트 발행 엔드포인트
 app.post('/publish/seat/:eventId', (req, res) => {
   const { eventId } = req.params;
   const payload = JSON.stringify(req.body);
@@ -29,11 +35,46 @@ app.post('/publish/seat/:eventId', (req, res) => {
   res.status(200).json({ published: true });
 });
 
+// 방 생성
+app.post('/rooms', async (req, res) => {
+  const { eventId, name } = req.body;
+  if (!eventId || !name) return res.status(400).json({ error: 'eventId, name은 필수입니다' });
+
+  await redisPub.hset(`room:${eventId}`, { name, createdAt: Date.now() });
+  await redisPub.sadd('rooms:index', eventId);
+  res.status(201).json({ eventId, name });
+});
+
+// 전체 방 목록
+app.get('/rooms', async (req, res) => {
+  const ids = await redisPub.smembers('rooms:index');
+  const rooms = await Promise.all(
+    ids.map(async (eventId) => {
+      const meta = await redisPub.hgetall(`room:${eventId}`);
+      return {
+        eventId,
+        name: meta.name,
+        createdAt: Number(meta.createdAt),
+        chatConnections: channelClients.get(`chat:${eventId}`)?.size || 0,
+        seatConnections: channelClients.get(`seats:${eventId}`)?.size || 0,
+      };
+    })
+  );
+  res.json(rooms);
+});
+
+// 방 상세
+app.get('/rooms/:eventId', async (req, res) => {
+  const meta = await redisPub.hgetall(`room:${req.params.eventId}`);
+  if (!meta.name) return res.status(404).json({ error: '존재하지 않는 방입니다' });
+  res.json({ eventId: req.params.eventId, ...meta });
+});
+
 const server = http.createServer(app);
 
 // ---- Prometheus 메트릭 정의 ----
 const register = new client.Registry();
-client.collectDefaultMetrics({ register }); // CPU, 메모리 등 기본 지표도 같이 수집
+client.collectDefaultMetrics({ register });
 
 const wsConnectionsGauge = new client.Gauge({
   name: 'ws_active_connections',
@@ -54,9 +95,7 @@ app.get('/metrics', async (req, res) => {
   res.end(await register.metrics());
 });
 
-// 클라이언트가 접속할 WebSocket 서버 (경로로 채팅/좌석 구분)
-// 예: ws://호스트/ws/chat/{eventId}
-//     ws://호스트/ws/seats/{eventId}
+// ---- WebSocket 서버 설정 ----
 const wss = new WebSocket.Server({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
@@ -65,8 +104,8 @@ server.on('upgrade', (request, socket, head) => {
   });
 });
 
-// 채널별로 연결된 클라이언트를 관리 (chat:eventId / seat:eventId)
-const channelClients = new Map(); // channelKey -> Set<ws>
+// 채널별 클라이언트 관리 (chat:eventId / seats:eventId)
+const channelClients = new Map();
 
 function addClient(channelKey, ws) {
   if (!channelClients.has(channelKey)) {
@@ -88,17 +127,16 @@ function removeClient(channelKey, ws) {
 function broadcastToChannel(channelKey, message) {
   const set = channelClients.get(channelKey);
   if (!set) return;
-  for (const client of set) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
+  for (const clientWs of set) {
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(message);
     }
   }
 }
 
 wss.on('connection', (ws, request) => {
-  // URL 형태: /ws/chat/{eventId} 또는 /ws/seats/{eventId}
-  const url = new URL(request.url, `http://${request.headers.host}`);
-  const parts = url.pathname.split('/').filter(Boolean); // ['ws','chat','eventId']
+  const parsedUrl = new URL(request.url, `http://${request.headers.host}`);
+  const parts = parsedUrl.pathname.split('/').filter(Boolean); // ['ws', 'chat', 'eventId']
 
   if (parts.length < 3) {
     ws.close(1008, 'invalid path');
@@ -115,7 +153,6 @@ wss.on('connection', (ws, request) => {
 
   console.log(`[connect] ${channelKey} (현재 접속자: ${channelClients.get(channelKey).size})`);
 
-  // 채팅 채널만 클라이언트로부터 메시지를 받아서 같은 방에 브로드캐스트
   if (kind === 'chat') {
     ws.on('message', (data) => {
       const payload = JSON.stringify({
@@ -124,11 +161,9 @@ wss.on('connection', (ws, request) => {
         message: data.toString(),
         ts: Date.now(),
       });
-      // 이 pod에 붙은 클라이언트뿐 아니라 다른 pod에도 전파되도록 Redis에 발행
       redisPub.publish(channelKey, payload);
     });
   }
-  // seats 채널은 서버(A파트 이벤트)만 메시지를 보내고, 클라이언트는 받기만 함
 
   ws.on('close', () => {
     removeClient(channelKey, ws);
@@ -136,12 +171,8 @@ wss.on('connection', (ws, request) => {
   });
 });
 
-// ---- Redis Pub/Sub 연결 ----
-const redisPub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
-const redisSub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
-
-// 패턴 구독: chat:* 과 seat:* 채널을 모두 감시
-redisSub.psubscribe('chat:*', 'seat:*', (err, count) => {
+// ---- Redis Pub/Sub 패턴 구독 ----
+redisSub.psubscribe('chat:*', 'seat:*', 'seats:*', (err, count) => {
   if (err) {
     console.error('Redis psubscribe 실패:', err);
     return;
@@ -150,21 +181,20 @@ redisSub.psubscribe('chat:*', 'seat:*', (err, count) => {
 });
 
 redisSub.on('pmessage', (pattern, channel, message) => {
-  // channel 예: 'chat:123' 또는 'seat:456'
-  // WebSocket 접속 시 사용한 channelKey와 동일한 형식으로 맞춰서 브로드캐스트
   const [kind, id] = channel.split(':');
-  const wsKind = kind === 'seat' ? 'seats' : kind; // seat -> seats 로 맞춤
+  const wsKind = kind === 'seat' ? 'seats' : kind;
   const channelKey = `${wsKind}:${id}`;
+  
   broadcastToChannel(channelKey, message);
   messagesCounter.inc({ kind: wsKind });
 });
 
+// ---- 서버 실행 및 Graceful Shutdown ----
 server.listen(PORT, () => {
   console.log(`WebSocket 서버 시작: 포트 ${PORT}`);
   console.log(`Redis 연결 대상: ${REDIS_HOST}:${REDIS_PORT}`);
 });
 
-// 커넥션 드레이닝: SIGTERM 받으면 새 연결은 거부하고 기존 연결은 정상 종료 유도
 process.on('SIGTERM', () => {
   console.log('SIGTERM 수신: graceful shutdown 시작');
   server.close(() => {
