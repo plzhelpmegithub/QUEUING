@@ -1,0 +1,29 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: realtime-ws-hpa
+  namespace: realtime
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: realtime-ws
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Object
+      object:
+        metric:
+          name: ws_active_connections_total
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: realtime-ws
+        target:
+          type: Value
+          value: "50"   # 서비스 전체 연결 수가 50개를 넘으면 스케일 아웃
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60   # 스케일 다운은 60초간 지켜본 뒤 결정 (급격한 다운 방지)
+    scaleUp:
+      stabilizationWindowSeconds: 0    # 스케일 업은 즉시 반응

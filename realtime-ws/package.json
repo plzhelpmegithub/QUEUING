@@ -1,0 +1,15 @@
+{
+  "name": "realtime-connection-platform",
+  "version": "1.0.0",
+  "description": "C파트 - 실시간 채팅 + 좌석 상태 브로드캐스트 WebSocket 서버",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "prom-client": "^15.1.3",
+    "ws": "^8.18.0"
+  }
+}
