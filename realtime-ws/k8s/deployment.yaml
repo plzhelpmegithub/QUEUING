@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: realtime-ws
+  namespace: realtime
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: realtime-ws
+  template:
+    metadata:
+      labels:
+        app: realtime-ws
+    spec:
+      # 커넥션 드레이닝: SIGTERM 받은 후 pod가 실제로 삭제되기까지 여유 시간을 줌
+      # 이 시간 동안 server.js가 기존 연결을 정상 종료하고, 새 연결은 다른 pod로 감
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: realtime-ws
+          image: chlwldp/realtime-ws:latest   # 본인 레지스트리 주소로 교체
+          ports:
+            - containerPort: 8080
+          env:
+            - name: REDIS_HOST
+              value: "redis-master.realtime.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: realtime-ws
+  namespace: realtime
+  labels:
+    app: realtime-ws
+spec:
+  selector:
+    app: realtime-ws
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: realtime-ws-ingress
+  namespace: realtime
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: queuing.co.kr   # 실습 환경이면 /etc/hosts에 등록해서 사용
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: realtime-ws
+                port:
+                  number: 80
+          - path: /publish
+            pathType: Prefix
+            backend:
+              service:
+                name: realtime-ws
+                port:
+                  number: 80
+          - path: /metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: realtime-ws
+                port:
+                  number: 80

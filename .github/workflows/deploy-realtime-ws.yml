@@ -1,0 +1,31 @@
+name: Deploy realtime-ws
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "realtime-ws/**"
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker 이미지 빌드
+        run: docker build -t chlwldp/realtime-ws:${{ github.sha }} realtime-ws
+
+      - name: Docker Hub 로그인
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u chlwldp --password-stdin
+
+      - name: 이미지 푸시
+        run: |
+          docker push chlwldp/realtime-ws:${{ github.sha }}
+          docker tag chlwldp/realtime-ws:${{ github.sha }} chlwldp/realtime-ws:latest
+          docker push chlwldp/realtime-ws:latest
+
+      - name: 배포
+        run: |
+          export KUBECONFIG=/home/clouddx/.kube/config
+          kubectl set image deployment/realtime-ws realtime-ws=chlwldp/realtime-ws:${{ github.sha }} -n realtime
+          kubectl rollout status deployment/realtime-ws -n realtime
