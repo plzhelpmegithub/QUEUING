@@ -26,20 +26,20 @@ provider "aws" {
 
 # 3. Dead Letter Queue (DLQ)
 resource "aws_sqs_queue" "dlq" {
-  name = "resale-email-dlq"
+  name = "resale-queue-dlq"
 }
 
 # 4. Main Queue 및 Redrive Policy
 resource "aws_sqs_queue" "main_queue" {
-  name = "resale-email"
+  name = "resale-queue"
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.dlq.arn
-    maxReceiveCount     = 3
+    maxReceiveCount      = 3
   })
 }
 
-# 5. DynamoDB 상태 관리 테이블 (우리가 설계한 구조 그대로!)
+# 5. DynamoDB 상태 관리 테이블
 resource "aws_dynamodb_table" "state_table" {
   name         = "allocation-state"
   billing_mode = "PAY_PER_REQUEST"

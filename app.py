@@ -4,8 +4,17 @@ import jwt
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import pymysql
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="QUEUING Resale Service (B Part)")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://192.168.0.189:5173", "http://localhost:5173", "*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # JWT 설정
 SECRET_KEY = "your-secure-jwt-secret-key"

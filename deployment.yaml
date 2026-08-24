@@ -5,7 +5,7 @@ metadata:
   labels:
     app: email-worker
 spec:
-  replicas: 1 # 기본적으로 1개를 띄우지만, 곧 KEDA가 이 숫자를 조종하게 됩니다.
+  replicas: 1 # 기본 1개, KEDA가 동적으로 조절
   selector:
     matchLabels:
       app: email-worker
@@ -16,7 +16,8 @@ spec:
     spec:
       containers:
       - name: worker
-        image: my-python-worker:latest # (나중에 우리가 파이썬 코드를 도커로 구울 때 쓸 이름입니다)
+        image: my-python-worker:latest
+        imagePullPolicy: Never  # 로컬(Minikube) 환경에서 로컬 이미지 사용할 때 필수적
         env:
         - name: AWS_ACCESS_KEY_ID
           value: "test"
@@ -27,3 +28,10 @@ spec:
         # 로컬스택과 통신하기 위한 환경 변수 세팅
         - name: AWS_ENDPOINT_URL
           value: "http://localstack-service.default.svc.cluster.local:4566"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
