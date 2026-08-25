@@ -16,6 +16,10 @@ const PORT = process.env.PORT || 8080;
 const REDIS_HOST = process.env.REDIS_HOST || 'redis-master.realtime.svc.cluster.local';
 const REDIS_PORT = process.env.REDIS_PORT || 6379;
 
+// A파트(eventService.js)와 합의된 좌석 이벤트 채널 — eventId별로 나뉘지 않은
+// 고정 채널 하나. seat:{eventId} 패턴이 아니라서 psubscribe('seat:*')로는 안 잡힘.
+const SEAT_EVENT_CHANNEL = 'events:seat-status';
+
 const app = express();
 
 // 다른 팀의 프론트엔드(각자 다른 IP/포트의 dev 서버)에서 fetch로 REST API를 호출할 수 있게
@@ -34,12 +38,33 @@ app.use(express.json());
 // 헬스체크 (K8s readiness/liveness probe용)
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
 
-// A 파트에서 좌석 상태 변경 시 이 API를 호출해 이벤트를 발행한다고 가정
+// 테스트용 — A파트(eventService.js)는 실제로는 이 API를 안 쓰고 Redis에 직접
+// publish 한다. 이 엔드포인트는 A 없이도 events:seat-status 채널로 같은 형식의
+// 이벤트를 흉내내서 테스트하기 위한 것.
+//
+// body: { seatId, type, userId? }
+//   - seatId에 eventId 접두사(evt-...:)가 없으면 URL의 :eventId를 자동으로 붙여줌
+//   - type은 'seat.held' | 'seat.sold' | 'seat.released' | 'seat.cancelled' | 'seat.sold_out'
+//   - 예전 테스트 습관대로 { status: 'available'|'holding'|'sold' }를 보내도 type으로 변환해줌
 app.post('/publish/seat/:eventId', (req, res) => {
   const { eventId } = req.params;
-  const payload = JSON.stringify(req.body);
-  redisPub.publish(`seat:${eventId}`, payload);
-  res.status(200).json({ published: true });
+  const { seatId, type, userId, status } = req.body || {};
+  if (!seatId) {
+    return res.status(400).json({ error: 'seatId는 필수입니다.' });
+  }
+
+  const STATUS_TO_TYPE = { available: 'seat.released', holding: 'seat.held', held: 'seat.held', sold: 'seat.sold' };
+  const resolvedType = type || STATUS_TO_TYPE[status] || 'seat.held';
+  const fullSeatId = seatId.includes(':') ? seatId : `${eventId}:${seatId}`;
+
+  const event = {
+    type: resolvedType,
+    seatId: fullSeatId,
+    userId: userId || null,
+    timestamp: new Date().toISOString(),
+  };
+  redisPub.publish(SEAT_EVENT_CHANNEL, JSON.stringify(event));
+  res.status(200).json({ published: true, event });
 });
 
 // 방 생성
@@ -224,21 +249,57 @@ wss.on('connection', (ws, request) => {
 const redisPub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
 const redisSub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
 
-// 패턴 구독: chat:* 과 seat:* 채널을 모두 감시
-redisSub.psubscribe('chat:*', 'seat:*', (err, count) => {
+// 채팅은 chat:{eventId} 패턴 구독
+redisSub.psubscribe('chat:*', (err, count) => {
   if (err) {
     console.error('Redis psubscribe 실패:', err);
     return;
   }
-  console.log(`Redis 채널 ${count}개 패턴 구독 중`);
+  console.log(`Redis 패턴 채널 ${count}개 구독 중`);
+});
+
+// 좌석 이벤트는 A파트 실제 구현 기준 고정 채널 하나만 구독
+// (예전엔 psubscribe('seat:*')로 잡으려 했는데, A는 seat:{eventId} 패턴이 아니라
+//  events:seat-status라는 고정 채널 하나에 발행하는 구조라 안 잡혔음 — 이번에 맞춤)
+redisSub.subscribe(SEAT_EVENT_CHANNEL, (err) => {
+  if (err) {
+    console.error('Redis subscribe 실패 (좌석 이벤트):', err);
+    return;
+  }
+  console.log(`Redis 채널 구독 중: ${SEAT_EVENT_CHANNEL}`);
 });
 
 redisSub.on('pmessage', (pattern, channel, message) => {
-  const [kind, id] = channel.split(':');
-  const wsKind = kind === 'seat' ? 'seats' : kind; // seat -> seats 로 맞춤
-  const channelKey = `${wsKind}:${id}`;
-  broadcastToChannel(channelKey, message);
-  messagesCounter.inc({ kind: wsKind });
+  // 여기로는 chat:{eventId}만 들어옴
+  broadcastToChannel(channel, message);
+  messagesCounter.inc({ kind: 'chat' });
+});
+
+redisSub.on('message', (channel, message) => {
+  if (channel !== SEAT_EVENT_CHANNEL) return;
+
+  let event;
+  try {
+    event = JSON.parse(message);
+  } catch (e) {
+    console.error('[seat-event] JSON 파싱 실패:', e.message);
+    return;
+  }
+
+  // seatId 형식: "evt-171...:VIP-001" → 앞부분이 eventId, 이걸로 어느 콘서트
+  // 화면에 브로드캐스트할지 결정. seat.sold_out처럼 seatId가 'ALL'이면(A쪽 코드가
+  // eventId를 안 실어보냄) eventId를 못 뽑으므로, 현재 좌석 채널에 붙어있는
+  // 모든 방에 그냥 다 뿌린다 (A가 활성 이벤트 1개만 가정하고 만든 구조라 임시로는 안전함).
+  const eventId = event.seatId && event.seatId.includes(':') ? event.seatId.split(':')[0] : null;
+
+  if (eventId) {
+    broadcastToChannel(`seats:${eventId}`, message);
+  } else {
+    for (const key of channelClients.keys()) {
+      if (key.startsWith('seats:')) broadcastToChannel(key, message);
+    }
+  }
+  messagesCounter.inc({ kind: 'seats' });
 });
 
 server.listen(PORT, () => {
