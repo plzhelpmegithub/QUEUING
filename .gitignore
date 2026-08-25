@@ -1,0 +1,26 @@
+# 의존성 패키지 (npm install로 복원 가능)
+node_modules/
+
+# Vite 빌드 결과물
+dist/
+
+# Vite 캐시
+.vite/
+
+# 환경변수 파일 (시크릿 포함 가능)
+.env
+.env.local
+.env.*.local
+
+# OS 메타파일
+.DS_Store
+Thumbs.db
+
+# 에디터 설정
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

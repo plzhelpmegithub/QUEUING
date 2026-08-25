@@ -1,0 +1,326 @@
+/* ============================================================
+   QUEUING — Page-specific layout styles
+   ============================================================ */
+
+/* ============ Concert Detail ============ */
+.detail-hero {
+  position: relative;
+  height: 420px;
+  color: #fff;
+  display: flex;
+  align-items: flex-end;
+}
+.detail-hero__overlay { position:absolute; inset:0; background: linear-gradient(180deg, rgba(0,0,0,.1), rgba(0,0,0,.85)); }
+.detail-hero__content { position: relative; z-index:1; padding: 44px 0; width:100%; }
+.detail-hero__artist { font-size: 15px; font-weight: 700; color: #FFC7C9; margin-bottom: 8px; }
+.detail-hero__title { font-size: 40px; font-weight: 900; margin-bottom: 18px; }
+.detail-hero__meta { display: flex; gap: 28px; font-size: 14px; }
+.detail-hero__meta dt { color: rgba(255,255,255,0.65); margin-bottom: 3px; }
+.detail-hero__meta dd { font-weight: 700; font-size: 15px; }
+
+.detail-body { display: grid; grid-template-columns: 2fr 1fr; gap: 40px; padding: 44px 0 80px; align-items: start; }
+.detail-right-col { display: flex; flex-direction: column; gap: 20px; position: sticky; top: calc(var(--header-h) + 20px); }
+.detail-right-col .booking-panel { position: static; }
+.detail-info-card { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 28px; margin-bottom: 20px; }
+.detail-info-card h3 { font-size: 16px; font-weight: 800; margin-bottom: 14px; }
+.price-row { display:flex; justify-content:space-between; padding: 10px 0; font-size: 14px; border-bottom: 1px dashed var(--color-border); }
+.price-row:last-child { border-bottom: none; }
+
+.booking-panel {
+  position: sticky; top: calc(var(--header-h) + 20px);
+  border: 1px solid var(--color-border); border-radius: var(--radius-lg);
+  padding: 28px; text-align: center; box-shadow: var(--shadow-sm);
+}
+.booking-panel__seats-left { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 4px; }
+.booking-panel__seats-num { font-size: 22px; font-weight: 900; color: var(--color-primary); margin-bottom: 20px; }
+
+/* 오픈 전 [예매하기] 버튼 내부에 표시되는 카운트다운 — 버튼 밖 별도 문구 없이
+   버튼 자체가 "예매 시작까지 00:10:00"으로 바뀜. 기본 16px보다 살짝 줄여서
+   폭이 좁은 사이드바에서도 한 줄로 들어가도록 함. */
+.btn--countdown { font-size: 14.5px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+/* ============ Booking Date/Time ============ */
+.booking-dt-page { max-width: 720px; margin: 0 auto; padding: 56px 0 100px; }
+.booking-dt-block { margin-top: 36px; }
+.booking-dt-block h3 { font-size: 15px; font-weight: 800; margin-bottom: 14px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip-btn {
+  height: 52px; padding: 0 20px; border-radius: var(--radius-md); border: 1.5px solid var(--color-border);
+  background: var(--color-surface); font-size: 14px; font-weight: 700; color: var(--color-text);
+  display: flex; align-items: center; gap: 5px; transition: border-color .15s, background .15s, color .15s;
+}
+.chip-btn span { font-weight: 500; color: var(--color-text-secondary); font-size: 12.5px; }
+.chip-btn:hover { border-color: var(--color-primary); }
+.chip-btn.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.chip-btn.active span { color: rgba(255,255,255,0.85); }
+
+/* ============ Queue Page ============ */
+.queue-page { padding: 56px 0 80px; text-align: center; }
+.queue-stats { display: flex; justify-content: center; gap: 60px; margin-bottom: 10px; }
+.queue-stat-label { font-size: 13px; color: var(--color-text-secondary); font-weight: 600; margin-bottom: 6px; }
+.queue-stat-value { font-size: 18px; font-weight: 800; }
+
+.queue-mynum-label { font-size: 15px; color: var(--color-text-secondary); font-weight: 700; margin: 32px 0 6px; }
+.queue-mynum { font-size: 96px; font-weight: 900; color: var(--color-primary); line-height: 1; letter-spacing: -0.02em; }
+.queue-mynum.hot { text-shadow: 0 0 30px rgba(227,27,35,0.5); }
+
+.queue-status-pill { display:inline-flex; align-items:center; gap:8px; margin-top: 18px; font-size: 14px; font-weight:700; background: var(--color-primary-light); color: var(--color-primary-dark); padding: 8px 18px; border-radius: var(--radius-pill); }
+.queue-status-pill .dot { width: 8px; height:8px; border-radius:50%; background: var(--color-primary); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+
+.queue-progress-wrap { max-width: 900px; margin: 48px auto 0; }
+.queue-notice { max-width: 560px; margin: 40px auto 0; font-size: 12.8px; color: var(--color-text-secondary); line-height: 2; }
+.queue-notice p::before { content: "· "; }
+
+.queue-enter-box { margin-top: 40px; }
+
+/* ============ Zone Select (venue overview) ============ */
+.zone-page-header { padding: 28px 0 4px; border-bottom: 1px solid var(--color-border); }
+.zone-page-header__title { font-size: 24px; font-weight: 900; margin-top: 4px; }
+.zone-page-header__meta { color: var(--color-text-secondary); font-size: 13.5px; margin-top: 6px; }
+
+.zone-select-body { display: grid; grid-template-columns: 1fr 320px; gap: 32px; padding: 32px 0 90px; align-items: start; }
+.zone-select-body--full { grid-template-columns: 1fr; max-width: 900px; margin: 0 auto; }
+.venue-map { background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 32px 24px; }
+.venue-tier { display: flex; gap: 10px; justify-content: center; margin: 0 auto 12px; flex-wrap: wrap; }
+.venue-tier--0 { max-width: 340px; }
+.venue-tier--1 { max-width: 560px; }
+.venue-tier--2 { max-width: 720px; }
+.venue-tier--3 { max-width: 860px; }
+
+.zone-block {
+  flex: 1; min-width: 140px; border-radius: var(--radius-md); border: 2px solid transparent;
+  background: var(--color-surface); padding: 16px 14px; text-align: left; cursor: pointer;
+  box-shadow: inset 4px 0 0 var(--zone-color), var(--shadow-sm);
+  transition: border-color .12s ease, filter .12s ease;
+}
+/* Hover feedback is color-only (no transform) — a fan/quad block's own transform
+   drives its actual position, and any transform declared here would win the
+   cascade on hover and snap it away from its correct spot. */
+.zone-block:hover:not(.is-soldout) { filter: brightness(1.04); }
+.zone-block.is-selected { border-color: var(--color-primary); box-shadow: inset 4px 0 0 var(--zone-color), 0 0 0 3px rgba(227,27,35,0.15); }
+.zone-block.is-soldout { opacity: .5; cursor: not-allowed; }
+.zone-block__grade { font-size: 11px; font-weight: 800; color: var(--zone-color); letter-spacing: .04em; margin-bottom: 4px; }
+.zone-block__label { font-size: 14px; font-weight: 800; margin-bottom: 6px; }
+.zone-block__price { font-size: 12px; color: var(--color-text-secondary); font-weight: 600; margin-bottom: 8px; }
+.zone-block__remain { font-size: 15px; font-weight: 900; color: var(--color-primary); font-variant-numeric: tabular-nums; }
+
+.zone-legend { display: flex; gap: 16px; justify-content: center; margin-top: 20px; font-size: 12px; color: var(--color-text-secondary); }
+.zone-legend span { display: flex; align-items: center; gap: 6px; }
+.zone-legend__dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+/* ================= Arena fan-shaped venue map ================= */
+.zone-fan { position: relative; height: 480px; max-width: 780px; margin: 0 auto; }
+.zone-fan__spoke { position: absolute; top: 62px; left: 50%; width: 0; height: 0; transform: rotate(var(--angle)); }
+.zone-block--fan {
+  position: absolute; top: 0; left: 0;
+  width: var(--bw); height: var(--bh); min-width: 0; flex: none;
+  margin-left: calc(var(--bw) * -0.5);
+  margin-top: calc(var(--bh) * -0.5);
+  transform: translateY(var(--radius)) rotate(calc(-1 * var(--angle))) scale(1);
+  transition: transform .22s ease, box-shadow .22s ease, filter .22s ease;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  padding: 2px !important; border-radius: 8px; border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--zone-color) 16%, var(--color-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--zone-color) 40%, transparent);
+}
+.zone-block--fan:hover:not(.is-soldout) { filter: brightness(1.06); }
+.zone-block__short { font-size: 13px; font-weight: 900; color: var(--zone-color); }
+.zone-block__wheelchair { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 3px; border-radius: 2px; background: #E3B505; }
+.zone-fan .zone-block__remain { font-size: 10px; font-weight: 800; }
+
+/* ================= Standing (GA) venue map ================= */
+.zone-quad-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 720px; margin: 28px auto 0; }
+.zone-quad {
+  border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px;
+  cursor: pointer; text-align: left; background: var(--color-surface);
+  box-shadow: inset 4px 0 0 var(--zone-color);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.zone-quad:hover:not(.is-soldout) { border-color: var(--zone-color); }
+.zone-quad.is-soldout { opacity: 0.5; cursor: not-allowed; }
+.zone-quad__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.zone-quad__label { font-weight: 800; font-size: 14.5px; }
+.zone-quad__remain { font-weight: 900; font-size: 13px; color: var(--color-primary); font-variant-numeric: tabular-nums; }
+.zone-quad__cells { display: grid; grid-template-columns: repeat(14, 1fr); gap: 3px; }
+.zone-quad__cell { aspect-ratio: 1; border-radius: 2px; background: var(--color-border); }
+.zone-quad__cell.is-filled { background: var(--zone-color); opacity: 0.85; }
+
+/* ============ Seat Select ============ */
+.seat-page-header { padding: 28px 0 18px; border-bottom: 1px solid var(--color-border); }
+.seat-page-header__top { display:flex; justify-content: space-between; align-items:flex-start; }
+.seat-page-header__title { font-size: 26px; font-weight: 900; }
+.seat-page-header__date { color: var(--color-text-secondary); font-size: 14px; margin-top: 6px; }
+.date-edit-link {
+  border: 1px solid var(--color-border); background: var(--color-surface); border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 700; color: var(--color-text-secondary); padding: 3px 11px; margin-left: 8px; cursor: pointer;
+}
+.date-edit-link:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.seat-page-header__right { text-align: right; }
+.seat-page-header__timer { font-size: 13px; color: var(--color-text-secondary); }
+.seat-page-header__timer b { color: var(--color-primary); font-size: 16px; }
+
+.seats-left-banner {
+  display:flex; align-items:center; justify-content:space-between;
+  background: var(--color-bg-secondary); border: 1px solid #FBDCDD; border-radius: var(--radius-md);
+  padding: 16px 22px; margin: 20px 0; transition: background .3s, border-color .3s;
+}
+.seats-left-banner.tension { background: var(--color-primary-light); border-color: var(--color-primary); animation: bannerPulse 1s infinite; }
+@keyframes bannerPulse { 0%,100%{ box-shadow: 0 0 0 rgba(227,27,35,0);} 50%{ box-shadow: 0 0 0 6px rgba(227,27,35,0.08);} }
+.seats-left-banner__num { font-size: 30px; font-weight: 900; color: var(--color-primary); }
+.seats-left-banner__msg { font-size: 13px; color: var(--color-primary-dark); font-weight: 700; }
+
+.seat-select-body { display: grid; grid-template-columns: 1fr 340px; gap: 32px; padding: 28px 0 80px; }
+.seatmap-scroll { max-height: 640px; overflow-y: auto; padding: 4px 4px 20px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-secondary); }
+.seatmap-inner { padding: 24px; }
+
+.soldout-panel { text-align: center; padding: 90px 20px; }
+.soldout-title { font-size: 42px; font-weight: 900; color: var(--color-primary-dark); margin-bottom: 14px; letter-spacing: .02em; }
+.soldout-desc { color: var(--color-text-secondary); font-size: 15px; line-height: 1.8; margin-bottom: 34px; }
+.soldout-actions { display:flex; gap: 14px; justify-content: center; }
+
+/* ============ Payment ============ */
+.payment-body { display:grid; grid-template-columns: 1.4fr 1fr; gap: 40px; padding: 40px 0 90px; align-items:start; }
+.payment-deadline-box {
+  background: var(--color-primary-light); border: 1px solid #FBC7C9; border-radius: var(--radius-lg);
+  padding: 22px 26px; margin-bottom: 26px; display:flex; align-items:center; justify-content:space-between;
+}
+.payment-deadline-box__label { font-size: 13px; color: var(--color-primary-dark); font-weight: 700; margin-bottom: 6px; }
+.payment-deadline-box__time { font-size: 28px; font-weight: 900; color: var(--color-primary); font-variant-numeric: tabular-nums; }
+
+.summary-card { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 26px; position: sticky; top: calc(var(--header-h) + 20px); }
+.summary-card__title { font-size: 16px; font-weight: 800; margin-bottom: 16px; }
+.summary-total { display:flex; justify-content:space-between; align-items:center; font-size: 16px; font-weight: 800; padding-top: 14px; margin-top: 6px; border-top: 1px solid var(--color-border); }
+.summary-total b { font-size: 24px; color: var(--color-primary); }
+
+.pay-agree-row {
+  display: flex; align-items: flex-start; gap: 9px; font-size: 12.5px; color: var(--color-text-secondary);
+  cursor: pointer; line-height: 1.5;
+}
+.pay-agree-row input { width: 17px; height: 17px; margin-top: 1px; accent-color: var(--color-primary); flex-shrink: 0; }
+
+.vbank-box {
+  margin-top: 16px; padding: 16px 18px; border-radius: var(--radius-md);
+  background: var(--color-bg-secondary); border: 1px solid var(--color-border);
+}
+.vbank-box__label { font-size: 12px; color: var(--color-text-secondary); font-weight: 700; margin-bottom: 6px; }
+.vbank-box__bank { font-size: 14px; font-weight: 800; }
+.vbank-box__number { font-size: 17px; font-weight: 900; color: var(--color-primary); margin: 4px 0; letter-spacing: .02em; }
+.vbank-box__amount { font-size: 12.5px; color: var(--color-text-secondary); }
+.vbank-box__amount b { color: var(--color-text); }
+
+/* ============ Booking Complete ============ */
+.complete-page { max-width: 640px; margin: 0 auto; padding: 70px 0 100px; text-align: center; }
+.complete-check {
+  width: 84px; height: 84px; border-radius: 50%; background: var(--color-success-bg);
+  color: var(--color-success); font-size: 42px; display:flex; align-items:center; justify-content:center;
+  margin: 0 auto 24px;
+}
+.vbank-notice {
+  background: var(--color-warning-bg); color: var(--color-warning); border: 1px solid #F5D9B0;
+  border-radius: var(--radius-md); padding: 14px 18px; font-size: 13.5px; font-weight: 700;
+  margin-bottom: 24px; text-align: center;
+}
+.complete-ticket__vbank { padding: 20px 26px 26px; border-top: 1px dashed var(--color-border); }
+.complete-ticket { border: 1px solid var(--color-border); border-radius: var(--radius-lg); text-align:left; margin-top: 34px; overflow: hidden; }
+.complete-ticket__head { background: var(--color-primary-dark); color:#fff; padding: 18px 26px; display:flex; justify-content:space-between; align-items:center; }
+.complete-ticket__body { padding: 24px 26px; }
+.complete-ticket__punch { position: relative; height: 1px; border-top: 2px dashed var(--color-border); margin: 4px 0; }
+.complete-ticket__punch::before, .complete-ticket__punch::after {
+  content:""; position:absolute; top:-11px; width:22px; height:22px; border-radius:50%; background: var(--color-bg-secondary);
+}
+.complete-ticket__punch::before { left: -37px; }
+.complete-ticket__punch::after { right: -37px; }
+
+/* ============ Cancel Queue / Pool ============ */
+.cancel-hero { background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border); padding: 40px 0; }
+.cancel-body { display:grid; grid-template-columns: 1fr 1fr; gap: 28px; padding: 40px 0 90px; align-items: start; }
+
+.pool-grid { display:grid; grid-template-columns: repeat(3,1fr); gap: 14px; margin: 18px 0; }
+.pool-grade-card { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 18px; text-align:center; background: var(--color-surface); }
+.pool-grade-card__grade { font-size: 13px; font-weight: 700; color: var(--color-text-secondary); margin-bottom: 8px; }
+.pool-grade-card__count { font-size: 30px; font-weight: 900; color: var(--color-primary); }
+.pool-total { text-align:center; padding: 18px; background: var(--color-primary-dark); border-radius: var(--radius-md); color:#fff; margin-top: 6px; }
+.pool-total b { font-size: 26px; }
+
+.flow-diagram { display:flex; align-items:center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.flow-step { background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--radius-pill); padding: 7px 14px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.flow-step.active { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.flow-arrow { color: var(--color-disabled); font-size: 13px; }
+
+.lock-box {
+  border: 1.5px dashed var(--color-border); border-radius: var(--radius-lg); padding: 30px; text-align:center;
+  background: var(--color-bg-secondary);
+}
+.lock-box__icon { font-size: 30px; margin-bottom: 12px; }
+.lock-box__title { font-weight: 800; font-size: 15px; margin-bottom: 8px; }
+.lock-box__desc { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 20px; line-height: 1.7; }
+
+/* ============ Membership ============ */
+.membership-hero { text-align:center; padding: 60px 0 20px; }
+.membership-plans { display:grid; grid-template-columns: repeat(2,1fr); gap: 24px; max-width: 760px; margin: 40px auto 0; }
+.plan-card { border: 1.5px solid var(--color-border); border-radius: var(--radius-lg); padding: 32px; text-align:center; position:relative; }
+.plan-card.featured { border-color: var(--color-primary); box-shadow: var(--shadow-red); }
+.plan-card__ribbon { position:absolute; top:-13px; left:50%; transform:translateX(-50%); background: var(--color-primary); color:#fff; font-size:11px; font-weight:800; padding: 4px 14px; border-radius: var(--radius-pill); }
+.plan-card__name { font-size: 15px; font-weight: 700; color: var(--color-text-secondary); }
+.plan-card__price { font-size: 34px; font-weight: 900; margin: 14px 0 4px; }
+.plan-card__price span { font-size: 14px; font-weight: 600; color: var(--color-text-secondary); }
+.plan-benefits { margin: 24px 0; text-align:left; }
+.plan-benefits li { font-size: 13.5px; padding: 7px 0; display:flex; gap: 8px; }
+.plan-benefits li b { color: var(--color-primary); }
+.membership-benefits-strip { display:grid; grid-template-columns: repeat(4,1fr); gap: 16px; max-width: 980px; margin: 60px auto 0; text-align:center; }
+.membership-benefits-strip .b-icon { font-size: 26px; margin-bottom: 10px; }
+.membership-benefits-strip .b-title { font-size: 13.5px; font-weight: 700; }
+
+/* ============ Private Link ============ */
+.privatelink-page { max-width: 620px; margin: 0 auto; padding: 80px 0 100px; text-align:center; }
+.privatelink-badge { display:inline-flex; align-items:center; gap:8px; background: var(--color-primary-light); color: var(--color-primary-dark); padding: 8px 18px; border-radius: var(--radius-pill); font-weight:700; font-size:13px; margin-bottom: 22px; }
+.privatelink-policy { text-align:left; margin-top: 40px; }
+.privatelink-policy ul { margin-top: 14px; }
+.privatelink-policy li { font-size: 13px; color: var(--color-text-secondary); padding: 6px 0 6px 18px; position: relative; }
+.privatelink-policy li::before { content:"•"; position:absolute; left:0; color: var(--color-primary); }
+
+/* ============ My Page ============ */
+.mypage-body { display:grid; grid-template-columns: 240px 1fr; gap: 32px; padding: 40px 0 100px; }
+.mypage-nav { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 14px; height: fit-content; position:sticky; top: calc(var(--header-h) + 20px); }
+.mypage-nav a { display:block; padding: 12px 14px; border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 2px; }
+.mypage-nav a:hover { background: var(--color-bg-secondary); }
+.mypage-nav a.active { background: var(--color-primary); color: #fff; font-weight: 700; }
+
+@media (max-width: 900px) {
+  .mypage-body { grid-template-columns: 1fr; }
+  .mypage-nav { position: static; display: flex; overflow-x: auto; gap: 6px; padding: 10px; }
+  .mypage-nav .mypage-profile-card { display: none; }
+  .mypage-nav a { white-space: nowrap; margin-bottom: 0; }
+}
+.mypage-profile-card { display:flex; align-items:center; gap: 14px; padding: 8px 6px 18px; margin-bottom: 8px; border-bottom: 1px solid var(--color-border); }
+.mypage-avatar { width: 42px; height: 42px; border-radius: 50%; background: var(--color-primary); color:#fff; display:flex; align-items:center; justify-content:center; font-weight: 800; }
+
+.stat-cards { display:grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 32px; }
+.stat-card { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 20px; }
+.stat-card__label { font-size: 12.5px; color: var(--color-text-secondary); margin-bottom: 8px; font-weight: 600; }
+.stat-card__value { font-size: 22px; font-weight: 900; }
+.stat-card__value.red { color: var(--color-primary); }
+
+.mypage-section-title { font-size: 18px; font-weight: 800; margin: 34px 0 14px; }
+.mypage-section-title:first-child { margin-top: 0; }
+
+.ticket-row { display:flex; align-items:center; justify-content:space-between; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 18px 20px; margin-bottom: 12px; }
+.ticket-row__concert { font-weight: 800; font-size: 14.5px; margin-bottom: 4px; }
+.ticket-row__meta { font-size: 12.5px; color: var(--color-text-secondary); }
+.ticket-row__price { font-weight: 800; font-size: 15px; }
+.ticket-row__actions { display: flex; gap: 8px; justify-content: flex-end; }
+.ticket-row__actions .btn-sm { height: 32px; padding: 0 12px; font-size: 12px; }
+
+.mypage-cal-layout { display: grid; grid-template-columns: 380px 1fr; gap: 28px; }
+
+/* ============ Auth pages ============ */
+.auth-page { max-width: 420px; margin: 0 auto; padding: 70px 0 100px; }
+.auth-page--wide { max-width: 480px; }
+.auth-page h1 { font-size: 26px; font-weight: 900; text-align:center; margin-bottom: 8px; }
+.auth-page .sub { text-align:center; color: var(--color-text-secondary); font-size: 13.5px; margin-bottom: 34px; }
+.auth-switch { text-align:center; margin-top: 20px; font-size: 13.5px; color: var(--color-text-secondary); }
+.auth-switch a { color: var(--color-primary); font-weight: 700; }
+
+/* ============ Interests page ============ */
+.interest-grid { display:grid; grid-template-columns: repeat(4,1fr); gap: 18px; }
