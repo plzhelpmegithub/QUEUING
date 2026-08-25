@@ -1,3 +1,4 @@
+const redis = require('../config/redis');           // Redis 직접 조회용
 const queueService = require('../services/queueService');
 
 async function queueRoutes(fastify) {
@@ -128,6 +129,115 @@ async function queueRoutes(fastify) {
     const result = await queueService.getSchedule();
     return reply.send(result);
   });
+
+  // standby 마감 시간 설정 — "밤 12시까지만 취소표 대기 접수"
+  fastify.post('/admin/ticketing/schedule-standby-close', async (request, reply) => {
+    const { closeAt } = request.body || {};
+    if (!closeAt) {
+      return reply.status(400).send({ error: 'closeAt(마감 시간)은 필수입니다. 예: "2026-08-18T00:00:00"' });
+    }
+    const result = await queueService.scheduleStandbyClose(closeAt);
+    const statusCode = result.success ? 200 : 400;
+    return reply.status(statusCode).send(result);
+  });
+
+  // ===== 토큰 관리 =====
+
+  // Admission Token 정보 조회
+  fastify.get('/queue/token/:userId', async (request, reply) => {
+    const { getTokenInfo } = require('../services/tokenService');
+    const { userId } = request.params;
+    const result = await getTokenInfo(userId);
+    return reply.send(result);
+  });
+
+  // ===== 입장 가능 여부 확인 =====
+
+  // 사용자 종합 상태 조회 — "나 지금 입장할 수 있어?"
+  fastify.get('/queue/status/:userId', async (request, reply) => {
+    const { getTokenInfo } = require('../services/tokenService');
+    const { userId } = request.params;
+
+    // 1) admitted + 토큰 있는지 확인
+    const isAdmitted = await redis.sismember('queue:admitted', userId);
+    if (isAdmitted) {
+      const tokenInfo = await getTokenInfo(userId);
+      return reply.send({
+        canEnter: true,
+        status: 'admitted',
+        token: tokenInfo.exists ? tokenInfo : null,
+        message: '입장이 허용되었습니다. 좌석을 선택해주세요.',
+      });
+    }
+
+    // 2) eligible 대기열 확인
+    const rank = await redis.zrank('queue:waiting', userId);
+    if (rank !== null) {
+      return reply.send({
+        canEnter: false,
+        status: 'waiting',
+        type: 'eligible',
+        position: rank + 1,
+        message: `현재 ${rank + 1}번째 대기 중입니다.`,
+      });
+    }
+
+    // 3) standby 대기열 확인
+    const standbyRank = await redis.zrank('queue:standby', userId);
+    if (standbyRank !== null) {
+      return reply.send({
+        canEnter: false,
+        status: 'standby',
+        type: 'standby',
+        standbyPosition: standbyRank + 1,
+        message: `취소표 대기 ${standbyRank + 1}번째입니다.`,
+      });
+    }
+
+    // 4) 어디에도 없음
+    return reply.send({
+      canEnter: false,
+      status: 'not_found',
+      message: '대기열에 등록되어 있지 않습니다.',
+    });
+  });
+
+  // ===== 이탈/재접속 =====
+
+  // 대기열 이탈 (자발적 나가기)
+  fastify.post('/queue/leave', async (request, reply) => {
+    const { revokeToken } = require('../services/tokenService');
+    const { userId } = request.body || {};
+    if (!userId) {
+      return reply.status(400).send({ error: 'userId는 필수입니다.' });
+    }
+
+    let removed = false;
+    let from = '';
+
+    // eligible에서 제거
+    const eligibleRemoved = await redis.zrem('queue:waiting', userId);
+    if (eligibleRemoved > 0) { removed = true; from = 'eligible'; }
+
+    // standby에서 제거
+    const standbyRemoved = await redis.zrem('queue:standby', userId);
+    if (standbyRemoved > 0) { removed = true; from = 'standby'; }
+
+    // admitted에서 제거
+    const admittedRemoved = await redis.srem('queue:admitted', userId);
+    if (admittedRemoved > 0) { removed = true; from = 'admitted'; }
+
+    // 토큰 무효화
+    await revokeToken(userId);
+
+    if (removed) {
+      return reply.send({ success: true, from, message: `${userId}가 대기열에서 이탈했습니다.` });
+    }
+    return reply.send({ success: false, message: '대기열에 등록되어 있지 않습니다.' });
+  });
+
+  // 재접속 (이탈 후 다시 줄 서기 — 새 순번 부여)
+  // → 기존 POST /queue/enter를 그대로 사용하면 됨 (중복 방지 로직이 있어서 안전)
 }
 
 module.exports = queueRoutes;

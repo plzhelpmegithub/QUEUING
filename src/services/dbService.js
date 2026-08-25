@@ -1,90 +1,350 @@
-const { CreateTableCommand, DescribeTableCommand } = require('@aws-sdk/client-dynamodb');
-const { PutCommand, GetCommand, QueryCommand, ScanCommand } = require('@aws-sdk/lib-dynamodb');
-const { client, docClient } = require('../config/dynamodb');
+const pool = require('../config/mariadb');
 
-const TABLE_NAME = 'Reservations'; // 예약 기록 테이블
+// ===== 테이블 초기화 — 서버 시작 시 1회 호출 =====
 
-/**
- * 테이블 생성 (서버 시작 시 1회 호출)
- * - 이미 존재하면 스킵
- * - 파티션 키: seatId (어떤 좌석인지)
- * - 정렬 키: reservedAt (언제 예약했는지 — 취소 후 재예약 이력 추적 가능)
- */
-async function initTable() {
-  try {
-    await client.send(new DescribeTableCommand({ TableName: TABLE_NAME }));
-    console.log(`[DynamoDB] ${TABLE_NAME} 테이블 이미 존재`);
-  } catch (err) {
-    if (err.name === 'ResourceNotFoundException') {
-      // 테이블이 없으면 새로 생성
-      await client.send(new CreateTableCommand({
-        TableName: TABLE_NAME,
-        KeySchema: [
-          { AttributeName: 'seatId', KeyType: 'HASH' },       // 파티션 키 — 좌석별 분류
-          { AttributeName: 'reservedAt', KeyType: 'RANGE' },   // 정렬 키 — 시간순 정렬
-        ],
-        AttributeDefinitions: [
-          { AttributeName: 'seatId', AttributeType: 'S' },    // S = String
-          { AttributeName: 'reservedAt', AttributeType: 'S' },
-        ],
-        BillingMode: 'PAY_PER_REQUEST', // 온디맨드 — 요청량에 따라 자동 과금
-      }));
-      console.log(`[DynamoDB] ${TABLE_NAME} 테이블 생성 완료`);
-    } else {
-      throw err;
-    }
+async function addColumns(table, columns) {
+  for (const col of columns) {
+    try {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN ${col}`);
+    } catch (_) {}
   }
 }
 
-/**
- * 예약 기록 저장
- * - 결제 완료(sold) 시 호출
- * - Redis는 휘발성이라 서버 재시작 시 날아감 → DynamoDB에 영구 저장
- */
-async function saveReservation(data) {
-  const item = {
-    seatId: data.seatId,                      // 어떤 좌석
-    userId: data.userId,                      // 누가 예약
-    status: 'confirmed',                      // 예약 확정 상태
-    reservedAt: new Date().toISOString(),     // 예약 시간
+async function modifyColumns(table, columns) {
+  for (const col of columns) {
+    try {
+      await pool.query(`ALTER TABLE ${table} MODIFY COLUMN ${col}`);
+    } catch (_) {}
+  }
+}
+
+async function initTable() {
+  // 1. users (회원 정보)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      user_id VARCHAR(50) PRIMARY KEY,
+      password VARCHAR(255) NOT NULL DEFAULT '',
+      role VARCHAR(20) NOT NULL DEFAULT 'user',
+      email VARCHAR(255) DEFAULT '',
+      name VARCHAR(50) DEFAULT '',
+      phone VARCHAR(20) DEFAULT '',
+      birth_date DATE NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await modifyColumns('users', [
+    "user_id VARCHAR(50) NOT NULL",
+    "email VARCHAR(255) DEFAULT ''",
+  ]);
+  await addColumns('users', [
+    "password VARCHAR(255) NOT NULL DEFAULT ''",
+    "role VARCHAR(20) NOT NULL DEFAULT 'user'",
+    "email VARCHAR(255) DEFAULT ''",
+    "name VARCHAR(50) DEFAULT ''",
+    "phone VARCHAR(20) DEFAULT ''",
+    "birth_date DATE NULL",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+  ]);
+
+  // 2. memberships (멤버십 권한)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS memberships (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id VARCHAR(50) NOT NULL,
+      is_membership BOOLEAN NOT NULL DEFAULT TRUE,
+      plan VARCHAR(20) NOT NULL DEFAULT 'monthly',
+      expires_at DATETIME NOT NULL,
+      priority_level INT NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_user (user_id)
+    )
+  `);
+  await modifyColumns('memberships', [
+    "user_id VARCHAR(50) NOT NULL",
+    "expires_at DATETIME NULL",
+  ]);
+  await addColumns('memberships', [
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "is_membership BOOLEAN NOT NULL DEFAULT TRUE",
+    "plan VARCHAR(20) NOT NULL DEFAULT 'monthly'",
+    "expires_at DATETIME NULL",
+    "priority_level INT NOT NULL DEFAULT 1",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+  ]);
+
+  // 3. events (공연 및 회차 정보)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS events (
+      event_id VARCHAR(50) PRIMARY KEY,
+      event_name VARCHAR(200) NOT NULL,
+      event_date VARCHAR(50) DEFAULT '',
+      venue VARCHAR(200) DEFAULT '',
+      total_seats INT NOT NULL DEFAULT 0,
+      seating_type VARCHAR(20) DEFAULT 'arena',
+      sections JSON NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'open',
+      ticket_open_at DATETIME NULL,
+      emoji VARCHAR(10) DEFAULT '',
+      color VARCHAR(50) DEFAULT '',
+      cancel_reason TEXT NULL,
+      cancelled_at DATETIME NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NULL
+    )
+  `);
+  await modifyColumns('events', [
+    "event_id VARCHAR(50) NOT NULL",
+    "event_name VARCHAR(200) NOT NULL DEFAULT ''",
+    "event_date VARCHAR(50) DEFAULT ''",
+  ]);
+  await addColumns('events', [
+    "event_name VARCHAR(200) NOT NULL DEFAULT ''",
+    "event_date VARCHAR(50) DEFAULT ''",
+    "venue VARCHAR(200) DEFAULT ''",
+    "total_seats INT NOT NULL DEFAULT 0",
+    "seating_type VARCHAR(20) DEFAULT 'arena'",
+    "sections JSON NULL",
+    "status VARCHAR(20) NOT NULL DEFAULT 'open'",
+    "ticket_open_at DATETIME NULL",
+    "emoji VARCHAR(10) DEFAULT ''",
+    "color VARCHAR(50) DEFAULT ''",
+    "cancel_reason TEXT NULL",
+    "cancelled_at DATETIME NULL",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "updated_at DATETIME NULL",
+  ]);
+
+  // 4. seats (좌석 및 점유 상태)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS seats (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      seat_id VARCHAR(100) NOT NULL DEFAULT '',
+      event_id VARCHAR(50) NOT NULL DEFAULT '',
+      section VARCHAR(20) DEFAULT '',
+      price INT NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE',
+      held_by VARCHAR(50) DEFAULT '',
+      held_at DATETIME NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_seat (seat_id),
+      INDEX idx_event (event_id),
+      INDEX idx_status (status)
+    )
+  `);
+  await modifyColumns('seats', [
+    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "section VARCHAR(20) DEFAULT ''",
+    "status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'",
+  ]);
+  await addColumns('seats', [
+    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "section VARCHAR(20) DEFAULT ''",
+    "price INT NOT NULL DEFAULT 0",
+    "status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'",
+    "held_by VARCHAR(50) DEFAULT ''",
+    "held_at DATETIME NULL",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+  ]);
+
+  // 5. waiting_queue (일반 대기열 순번)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS waiting_queue (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id VARCHAR(50) NOT NULL,
+      event_id VARCHAR(50) NOT NULL DEFAULT '',
+      queue_type VARCHAR(20) NOT NULL DEFAULT 'eligible',
+      queue_index INT NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'WAITING',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NULL,
+      INDEX idx_user (user_id),
+      INDEX idx_event (event_id),
+      INDEX idx_status (status)
+    )
+  `);
+  await modifyColumns('waiting_queue', [
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "status VARCHAR(20) NOT NULL DEFAULT 'WAITING'",
+  ]);
+  await addColumns('waiting_queue', [
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "queue_type VARCHAR(20) NOT NULL DEFAULT 'eligible'",
+    "queue_index INT NOT NULL DEFAULT 0",
+    "status VARCHAR(20) NOT NULL DEFAULT 'WAITING'",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "updated_at DATETIME NULL",
+  ]);
+
+  // 6. cancel_allocations (취소표 재분배 및 할당)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cancel_allocations (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id VARCHAR(50) NOT NULL,
+      seat_id VARCHAR(100) NOT NULL DEFAULT '',
+      event_id VARCHAR(50) NOT NULL DEFAULT '',
+      status VARCHAR(20) NOT NULL DEFAULT 'LINK_SENT',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NULL,
+      responded_at DATETIME NULL,
+      INDEX idx_user (user_id),
+      INDEX idx_status (status),
+      INDEX idx_expires (expires_at)
+    )
+  `);
+  await modifyColumns('cancel_allocations', [
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "status VARCHAR(20) NOT NULL DEFAULT 'LINK_SENT'",
+  ]);
+  await addColumns('cancel_allocations', [
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "status VARCHAR(20) NOT NULL DEFAULT 'LINK_SENT'",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "expires_at DATETIME NULL",
+    "responded_at DATETIME NULL",
+  ]);
+
+  // 7. wishlists (위시리스트)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS wishlists (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id VARCHAR(50) NOT NULL,
+      event_id VARCHAR(50) NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_user_event (user_id, event_id),
+      INDEX idx_user (user_id),
+      INDEX idx_event (event_id)
+    )
+  `);
+  await modifyColumns('wishlists', [
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+  ]);
+  await addColumns('wishlists', [
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+  ]);
+
+  // 8. backups (백업 데이터 관리)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backups (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      backup_type VARCHAR(50) NOT NULL DEFAULT '',
+      event_id VARCHAR(50) DEFAULT '',
+      data JSON NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_type (backup_type),
+      INDEX idx_event (event_id)
+    )
+  `);
+  await addColumns('backups', [
+    "backup_type VARCHAR(50) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) DEFAULT ''",
+    "data JSON NULL",
+    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+  ]);
+
+  // 9. reservations (최종 예매 및 결제 내역)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reservations (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      seat_id VARCHAR(100) NOT NULL DEFAULT '',
+      user_id VARCHAR(50) NOT NULL DEFAULT '',
+      event_id VARCHAR(50) NOT NULL DEFAULT '',
+      status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED',
+      reserved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      cancelled_at DATETIME NULL,
+      INDEX idx_seat (seat_id),
+      INDEX idx_user (user_id),
+      INDEX idx_event (event_id)
+    )
+  `);
+  await modifyColumns('reservations', [
+    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED'",
+  ]);
+  await addColumns('reservations', [
+    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
+    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
+    "status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED'",
+    "reserved_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "cancelled_at DATETIME NULL",
+  ]);
+
+  console.log('[MariaDB] 전체 테이블 (9개) 준비 완료');
+}
+
+// ===== reservations CRUD =====
+
+function toItem(row) {
+  return {
+    seatId: row.seat_id,
+    userId: row.user_id,
+    eventId: row.event_id || '',
+    status: row.status,
+    reservedAt: row.reserved_at instanceof Date ? row.reserved_at.toISOString() : row.reserved_at,
+    cancelledAt: row.cancelled_at instanceof Date ? row.cancelled_at.toISOString() : row.cancelled_at || null,
   };
-
-  await docClient.send(new PutCommand({
-    TableName: TABLE_NAME,
-    Item: item,
-  }));
-
-  console.log(`[DynamoDB] 예약 저장: ${data.seatId} → ${data.userId}`);
-  return item;
 }
 
-/**
- * 특정 좌석 예약 이력 조회
- * - 좌석별 예약/취소/재예약 히스토리 확인
- * - Query — 파티션 키(seatId) 기준 조회 (Scan보다 빠름)
- */
+async function saveReservation(data) {
+  const reservedAt = new Date();
+  await pool.query(
+    `INSERT INTO reservations (seat_id, user_id, event_id, status, reserved_at) VALUES (?, ?, ?, ?, ?)`,
+    [data.seatId, data.userId, data.eventId || '', 'CONFIRMED', reservedAt],
+  );
+  console.log(`[MariaDB] 예약 저장: ${data.seatId} → ${data.userId}`);
+  return { seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
+}
+
 async function getReservationsBySeat(seatId) {
-  const result = await docClient.send(new QueryCommand({
-    TableName: TABLE_NAME,
-    KeyConditionExpression: 'seatId = :sid',    // 파티션 키로 필터링
-    ExpressionAttributeValues: {
-      ':sid': seatId,
-    },
-  }));
-
-  return result.Items || [];
+  const rows = await pool.query(
+    `SELECT seat_id, user_id, event_id, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
+    [seatId],
+  );
+  return rows.map(toItem);
 }
 
-/**
- * 전체 예약 목록 조회
- * - Scan — 테이블 전체 순회 (데이터 많으면 느림, 모니터링/관리용)
- */
 async function getAllReservations() {
-  const result = await docClient.send(new ScanCommand({
-    TableName: TABLE_NAME,
-  }));
-
-  return result.Items || [];
+  const rows = await pool.query(`SELECT seat_id, user_id, event_id, status, reserved_at, cancelled_at FROM reservations`);
+  return rows.map(toItem);
 }
 
-module.exports = { initTable, saveReservation, getReservationsBySeat, getAllReservations };
+async function getReservationsByUser(userId) {
+  const rows = await pool.query(
+    `SELECT seat_id, user_id, event_id, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
+    [userId],
+  );
+  return rows.map(toItem);
+}
+
+async function cancelReservation(seatId, userId) {
+  const result = await pool.query(
+    `UPDATE reservations SET status = 'CANCELLED', cancelled_at = NOW()
+     WHERE seat_id = ? AND user_id = ? AND status != 'CANCELLED'
+     ORDER BY reserved_at DESC LIMIT 1`,
+    [seatId, userId],
+  );
+  console.log(`[MariaDB] 예약 취소: ${seatId} (${userId})`);
+  return { affected: result.affectedRows || 0 };
+}
+
+module.exports = {
+  initTable,
+  saveReservation,
+  getReservationsBySeat,
+  getAllReservations,
+  getReservationsByUser,
+  cancelReservation,
+};

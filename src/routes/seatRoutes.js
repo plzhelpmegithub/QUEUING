@@ -1,5 +1,5 @@
 const seatService = require('../services/seatService');
-const { getReservationsBySeat, getAllReservations } = require('../services/dbService');
+const { getReservationsBySeat, getAllReservations, getReservationsByUser } = require('../services/dbService');
 
 async function seatRoutes(fastify) {
 
@@ -17,14 +17,17 @@ async function seatRoutes(fastify) {
 
   // ===== 예매 핵심 흐름 =====
 
-  // 좌석 선점 — 분산 락으로 동시 요청 중 1명만 성공
+  // 좌석 선점 — Admission Token 검증 + 분산 락으로 1명만 성공
   fastify.post('/seats/hold', async (request, reply) => {
-    const { userId, seatId } = request.body || {};
+    const { userId, seatId, token } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
     }
-    const result = await seatService.holdSeat(userId, seatId);
-    const statusCode = result.success ? 200 : 409; // 409 = Conflict (이미 선점됨)
+    if (!token) {
+      return reply.status(401).send({ error: 'Admission Token(token)은 필수입니다.' });
+    }
+    const result = await seatService.holdSeat(userId, seatId, token);
+    const statusCode = result.success ? 200 : result.reason === 'no_token' || result.reason === 'expired' ? 401 : 409;
     return reply.status(statusCode).send(result);
   });
 
@@ -46,6 +49,17 @@ async function seatRoutes(fastify) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
     }
     const result = await seatService.cancelSeat(userId, seatId);
+    const statusCode = result.success ? 200 : 409;
+    return reply.status(statusCode).send(result);
+  });
+
+  // 좌석 선점 해제 — held → available (결제 전 사용자가 다른 좌석으로 바꾸거나 이탈할 때)
+  fastify.post('/seats/release', async (request, reply) => {
+    const { userId, seatId } = request.body || {};
+    if (!userId || !seatId) {
+      return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
+    }
+    const result = await seatService.releaseSeat(userId, seatId);
     const statusCode = result.success ? 200 : 409;
     return reply.status(statusCode).send(result);
   });
@@ -90,6 +104,13 @@ async function seatRoutes(fastify) {
     const { seatId } = request.params;
     const reservations = await getReservationsBySeat(seatId);
     return reply.send({ seatId, reservations });
+  });
+
+  // 특정 사용자의 예약 목록 — 마이페이지 "예매내역"용 (DB 기반이라 새로고침해도 유지)
+  fastify.get('/reservations/user/:userId', async (request, reply) => {
+    const { userId } = request.params;
+    const reservations = await getReservationsByUser(userId);
+    return reply.send({ userId, reservations, count: reservations.length });
   });
 }
 

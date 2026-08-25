@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QUEUING — 좋아하는 순간, 가볍게 예약하세요</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Noto Sans KR',sans-serif;background:#f8f9fa;color:#1a1a1a}a{text-decoration:none;color:inherit;cursor:pointer}
+.header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#fff;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:60px}
+.header-logo{font-size:22px;font-weight:800;color:#4f46e5;letter-spacing:-1px;cursor:pointer}
+.header-nav{display:flex;gap:20px}.header-nav a{font-size:14px;font-weight:500;color:#6b7280;padding:8px 0;border-bottom:2px solid transparent;transition:.2s}.header-nav a:hover,.header-nav a.active{color:#4f46e5;border-bottom-color:#4f46e5}
+.header-right{display:flex;gap:12px;align-items:center}.header-right a{font-size:13px;color:#6b7280}
+.page{display:none;padding-top:60px;min-height:100vh}.page.active{display:block}
+.btn{padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;font-family:inherit;transition:.2s;display:inline-block}
+.btn-primary{background:#4f46e5;color:#fff}.btn-primary:hover{background:#4338ca}.btn-danger{background:#ef4444;color:#fff}.btn-success{background:#22c55e;color:#fff}.btn-warning{background:#f59e0b;color:#0f172a}
+.btn-lg{padding:16px 48px;font-size:16px;border-radius:12px}.btn-sm{padding:8px 16px;font-size:13px}
+.card{background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:16px}
+.card h3{font-size:16px;font-weight:600;margin-bottom:16px;color:#4f46e5}
+.input{width:100%;padding:10px 14px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit;margin-bottom:10px}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
+.badge-open{background:#dcfce7;color:#16a34a}.badge-soldout{background:#fef3c7;color:#d97706}.badge-closed{background:#fee2e2;color:#dc2626}
+.detail-row{display:flex;padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:14px}.detail-label{width:120px;color:#6b7280;font-weight:500;flex-shrink:0}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+.stat-card{text-align:center;padding:16px;background:#f8f9fa;border-radius:8px;border:1px solid #e5e7eb}
+.stat-value{font-size:24px;font-weight:700}.stat-label{font-size:12px;color:#6b7280;margin-top:4px}
+.section{padding:40px 24px;max-width:1200px;margin:0 auto}.section-title{font-size:22px;font-weight:700;margin-bottom:24px}
+.event-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:20px}
+.event-card{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06);cursor:pointer;transition:transform .2s}.event-card:hover{transform:translateY(-4px)}
+.event-thumb{height:260px;display:flex;align-items:center;justify-content:center;font-size:48px}
+.event-info{padding:14px}.event-info h4{font-size:14px;font-weight:600;margin-bottom:4px}.event-info p{font-size:12px;color:#6b7280}
+.banner{position:relative;height:400px;overflow:hidden}.banner-slides{display:flex;transition:transform .5s;height:100%}
+.banner-slide{min-width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:28px;font-weight:700;text-align:center}
+.banner-slide:nth-child(1){background:linear-gradient(135deg,#667eea,#764ba2)}.banner-slide:nth-child(2){background:linear-gradient(135deg,#f093fb,#f5576c)}.banner-slide:nth-child(3){background:linear-gradient(135deg,#4facfe,#00f2fe)}
+.banner-dots{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:8px}.banner-dot{width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.5);cursor:pointer}.banner-dot.active{background:#fff}
+.queue-page{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 60px);background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}
+.queue-number-display{font-size:100px;font-weight:800;background:rgba(255,255,255,.15);border-radius:24px;padding:32px 64px;margin-bottom:16px}
+.queue-status{font-size:18px;opacity:.9}.queue-token-area{margin-top:24px;background:rgba(255,255,255,.1);border-radius:12px;padding:16px 24px;max-width:500px;word-break:break-all;font-size:12px;font-family:monospace}
+.queue-progress{width:300px;height:4px;background:rgba(255,255,255,.2);border-radius:2px;margin-top:16px;overflow:hidden}.queue-progress-bar{height:100%;background:#fff;animation:progress 2s ease infinite}
+@keyframes progress{0%{width:0}50%{width:70%}100%{width:100%}}
+.seat-page{background:#0f172a;color:#fff;min-height:calc(100vh - 60px)}
+.seat-layout{display:grid;grid-template-columns:1fr 280px;max-width:1200px;margin:0 auto;min-height:calc(100vh - 60px)}
+.seat-main{padding:24px}.seat-stage{background:#334155;text-align:center;padding:14px;border-radius:8px;margin-bottom:20px;color:#94a3b8;font-weight:600;letter-spacing:6px;font-size:13px}
+.seat-timer-bar{display:flex;align-items:center;justify-content:space-between;background:#1e293b;padding:12px 20px;border-radius:8px;margin-bottom:16px}
+.timer{font-family:monospace;font-size:24px;font-weight:700}.timer-green{color:#22c55e}.timer-yellow{color:#f59e0b}.timer-red{color:#ef4444}
+.seat-grid-container{display:flex;flex-wrap:wrap;gap:5px;justify-content:center;padding:16px}
+.seat-item{width:34px;height:34px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:600;cursor:pointer;transition:.15s}.seat-item:hover{transform:scale(1.15)}
+.seat-available{background:#22c55e;color:#fff}.seat-held{background:#f59e0b;color:#0f172a;cursor:not-allowed}.seat-sold{background:#64748b;color:#94a3b8;cursor:not-allowed}.seat-selected{background:#4f46e5;color:#fff;box-shadow:0 0 0 2px #818cf8}
+.seat-legend{display:flex;gap:14px;justify-content:center;margin:12px 0}.seat-legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:#94a3b8}.seat-legend-color{width:12px;height:12px;border-radius:3px}
+.seat-sidebar{background:#1e293b;padding:20px;border-left:1px solid #334155;display:flex;flex-direction:column}
+.seat-sidebar h3{font-size:15px;font-weight:600;margin-bottom:12px}
+.selected-info{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;font-size:13px;margin-bottom:12px}
+.price-grade{display:flex;align-items:center;gap:8px;padding:8px;background:#0f172a;border:1px solid #334155;border-radius:6px;margin-bottom:6px;font-size:12px}
+.grade-dot{width:10px;height:10px;border-radius:3px}
+.payment-page{max-width:600px;margin:0 auto;padding:40px 24px}
+.complete-page{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 60px);text-align:center}
+.complete-check{width:80px;height:80px;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;font-size:40px;color:#fff;margin-bottom:24px;animation:pop .4s}
+@keyframes pop{0%{transform:scale(0)}60%{transform:scale(1.2)}100%{transform:scale(1)}}
+.log-area{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;max-height:400px;overflow-y:auto;font-family:monospace;font-size:12px;color:#e2e8f0}
+.log-entry{padding:3px 0;border-bottom:1px solid #1e293b}.log-time{color:#64748b}
+.log-held{color:#f59e0b}.log-sold{color:#22c55e}.log-released{color:#3b82f6}.log-cancelled{color:#ef4444}.log-soldout{color:#ef4444;font-weight:700}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;align-items:center;justify-content:center}.modal.active{display:flex}
+.modal-box{background:#fff;border-radius:16px;padding:32px;width:400px;text-align:center}
+.admin-page{max-width:960px;margin:0 auto;padding:24px}
+@media(max-width:768px){.seat-layout{grid-template-columns:1fr}.queue-number-display{font-size:64px;padding:24px 40px}.header-nav{gap:12px}}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="header-logo" onclick="goPage('home')">QUEUING</span>
+  <div class="header-nav">
+    <a class="active" onclick="goPage('home')">홈</a>
+    <a onclick="goPage('detail')">공연정보</a>
+    <a onclick="goPage('admin')">관리자</a>
+    <a onclick="goPage('events')">이벤트로그</a>
+  </div>
+  <div class="header-right">
+    <span id="userDisplay" style="font-size:13px;color:#6b7280"></span>
+    <a onclick="showLogin()">로그인</a>
+  </div>
+</div>
+
+<!-- 로그인 모달 -->
+<div class="modal" id="loginModal">
+  <div class="modal-box">
+    <h3 style="margin-bottom:20px"><span style="color:#4f46e5">QUEUING</span> 로그인</h3>
+    <button class="btn" style="width:100%;background:#fee500;color:#1a1a1a;margin-bottom:8px" onclick="doLogin()">🟡 카카오로 시작</button>
+    <button class="btn" style="width:100%;background:#03c75a;color:#fff;margin-bottom:8px" onclick="doLogin()">🟢 네이버로 시작</button>
+    <button class="btn" style="width:100%;background:#f3f4f6;margin-bottom:16px" onclick="doLogin()">G 구글로 시작</button>
+    <input class="input" id="loginId" placeholder="사용자 ID (예: user-001)">
+    <button class="btn btn-primary" style="width:100%" onclick="doLoginCustom()">로그인</button>
+    <div style="margin-top:12px"><a style="font-size:13px;color:#6b7280" onclick="hideLogin()">닫기</a></div>
+  </div>
+</div>
+
+<!-- 경고 모달 -->
+<div class="modal" id="warningModal">
+  <div class="modal-box">
+    <div style="font-size:48px;margin-bottom:16px">⚠️</div>
+    <h3>결제 시간이 얼마 남지 않았습니다!</h3>
+    <p style="color:#6b7280;font-size:14px;margin:12px 0 20px">시간 내에 결제하지 않으면 다음 순번에게 넘어갑니다.</p>
+    <button class="btn btn-primary" onclick="document.getElementById('warningModal').classList.remove('active')">확인</button>
+  </div>
+</div>
+
+<!-- ===== 홈 ===== -->
+<div id="page-home" class="page active">
+  <div class="banner"><div class="banner-slides" id="bannerSlides">
+    <div class="banner-slide"><div><div style="font-size:48px;margin-bottom:12px">🎵</div>2026 연말 콘서트<br><span style="font-size:15px;opacity:.8">12.25~12.31 | 올림픽공원</span></div></div>
+    <div class="banner-slide"><div><div style="font-size:48px;margin-bottom:12px">🎨</div>현대미술 특별전<br><span style="font-size:15px;opacity:.8">상시 | 국립현대미술관</span></div></div>
+    <div class="banner-slide"><div><div style="font-size:48px;margin-bottom:12px">🎭</div>뮤지컬 팬텀<br><span style="font-size:15px;opacity:.8">2027.01~03 | 블루스퀘어</span></div></div>
+  </div><div class="banner-dots"><div class="banner-dot active" onclick="slideTo(0)"></div><div class="banner-dot" onclick="slideTo(1)"></div><div class="banner-dot" onclick="slideTo(2)"></div></div></div>
+  <div class="section"><div class="section-title">🔥 지금 인기 있는 이벤트</div><div class="event-grid" id="eventGrid"></div></div>
+</div>
+
+<!-- ===== 상세 ===== -->
+<div id="page-detail" class="page">
+  <div style="display:grid;grid-template-columns:280px 1fr 260px;gap:24px;padding:24px;max-width:1200px;margin:0 auto">
+    <div><div style="width:100%;aspect-ratio:3/4;border-radius:12px;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:64px">🎵</div></div>
+    <div>
+      <h2 style="font-size:22px;font-weight:700;margin-bottom:16px" id="dtTitle">2026 연말 콘서트</h2>
+      <div class="detail-row"><span class="detail-label">장소</span><span id="dtVenue">올림픽공원 체조경기장</span></div>
+      <div class="detail-row"><span class="detail-label">공연기간</span><span id="dtDate">2026.12.25 ~ 12.31</span></div>
+      <div class="detail-row"><span class="detail-label">관람시간</span><span>약 120분 (인터미션 20분)</span></div>
+      <div class="detail-row"><span class="detail-label">가격</span><span id="dtPrices">로딩 중...</span></div>
+      <div class="detail-row"><span class="detail-label">티켓팅 상태</span><span id="dtTicketStatus">-</span></div>
+    </div>
+    <div class="card" style="height:fit-content;position:sticky;top:80px">
+      <div style="font-weight:600;margin-bottom:16px">예매하기</div>
+      <div id="dtBookingArea">
+        <button class="btn btn-primary btn-lg" style="width:100%" onclick="startBooking()">예매하기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 대기열 ===== -->
+<div id="page-queue" class="page">
+  <div class="queue-page">
+    <div style="font-size:14px;opacity:.7;margin-bottom:8px">현재 대기 순번</div>
+    <div class="queue-number-display" id="queueNumber">-</div>
+    <div class="queue-status" id="queueStatus">대기열에 진입 중...</div>
+    <div class="queue-progress"><div class="queue-progress-bar"></div></div>
+    <div class="queue-token-area" id="queueTokenArea" style="display:none">
+      <div style="font-size:14px;font-weight:600;margin-bottom:8px;font-family:'Noto Sans KR'">🎫 Admission Token 발급됨</div>
+      <div id="queueTokenValue" style="color:#a5b4fc"></div>
+      <div id="queueTokenExpiry" style="margin-top:8px;color:#94a3b8;font-family:'Noto Sans KR';font-size:13px"></div>
+    </div>
+    <div class="row" style="margin-top:24px">
+      <button class="btn" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.3)" onclick="checkMyStatus()">내 상태 확인</button>
+      <button class="btn" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.3)" onclick="leaveQueue()">대기열 나가기</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 좌석 선택 ===== -->
+<div id="page-seats" class="page"><div class="seat-page"><div class="seat-layout">
+  <div class="seat-main">
+    <div style="margin-bottom:12px"><h2 style="color:#fff;font-size:17px" id="stTitle">공연 정보</h2><p style="color:#94a3b8;font-size:12px" id="stSub"></p></div>
+    <div class="seat-timer-bar"><span style="color:#94a3b8;font-size:13px">결제 남은 시간</span><span class="timer timer-green" id="seatTimer">--:--</span></div>
+    <div class="seat-stage">S T A G E</div>
+    <div class="seat-legend"><div class="seat-legend-item"><div class="seat-legend-color" style="background:#22c55e"></div>가능</div><div class="seat-legend-item"><div class="seat-legend-color" style="background:#4f46e5"></div>선택</div><div class="seat-legend-item"><div class="seat-legend-color" style="background:#f59e0b"></div>선점중</div><div class="seat-legend-item"><div class="seat-legend-color" style="background:#64748b"></div>매진</div></div>
+    <div class="seat-grid-container" id="seatGridUI"></div>
+    <div style="text-align:center;margin-top:8px"><button class="btn btn-sm" style="background:#334155;color:#94a3b8" onclick="loadSeatUI()">🔄 새로고침</button></div>
+  </div>
+  <div class="seat-sidebar">
+    <h3>선택 좌석</h3>
+    <div id="selectedInfo" class="selected-info" style="color:#94a3b8">좌석을 선택해주세요</div>
+    <h3 style="margin-top:16px">등급별 가격</h3>
+    <div id="seatPriceGrades"></div>
+    <div style="flex:1"></div>
+    <button class="btn btn-primary" style="width:100%;margin-top:16px" id="seatConfirmBtn" disabled onclick="goToPayment()">선택 완료 → 결제</button>
+  </div>
+</div></div></div>
+
+<!-- ===== 결제 ===== -->
+<div id="page-payment" class="page"><div class="payment-page">
+  <h2 style="margin-bottom:24px">결제</h2>
+  <div class="card"><h3>예매 정보</h3>
+    <div class="detail-row"><span class="detail-label">공연</span><span id="payEvent">-</span></div>
+    <div class="detail-row"><span class="detail-label">좌석</span><span id="paySeat">-</span></div>
+    <div class="detail-row"><span class="detail-label">가격</span><span id="payPrice" style="font-weight:700;color:#4f46e5">-</span></div>
+  </div>
+  <div class="card"><h3>결제 수단</h3>
+    <label style="display:block;padding:8px;cursor:pointer"><input type="radio" name="pay" checked> 신용카드 / 체크카드</label>
+    <label style="display:block;padding:8px;cursor:pointer"><input type="radio" name="pay"> 카카오페이</label>
+    <label style="display:block;padding:8px;cursor:pointer"><input type="radio" name="pay"> 네이버페이</label>
+  </div>
+  <div class="seat-timer-bar" style="background:#f8f9fa;border:1px solid #e5e7eb;color:#1a1a1a;margin-bottom:16px">
+    <span style="font-size:13px;color:#6b7280">결제 남은 시간</span>
+    <span class="timer timer-green" id="payTimer">--:--</span>
+  </div>
+  <button class="btn btn-primary btn-lg" style="width:100%" onclick="completePayment()">결제하기</button>
+</div></div>
+
+<!-- ===== 결제 완료 ===== -->
+<div id="page-complete" class="page"><div class="complete-page">
+  <div class="complete-check">✓</div>
+  <h2 style="margin-bottom:8px">결제가 완료되었습니다!</h2>
+  <p style="color:#6b7280;margin-bottom:24px">예매 내역은 관리자 페이지에서 확인하세요.</p>
+  <div class="card" style="text-align:left;width:380px">
+    <div class="detail-row"><span class="detail-label">공연</span><span id="cmpEvent">-</span></div>
+    <div class="detail-row"><span class="detail-label">좌석</span><span id="cmpSeat">-</span></div>
+    <div class="detail-row"><span class="detail-label">결제금액</span><span id="cmpPrice" style="font-weight:700">-</span></div>
+  </div>
+  <button class="btn btn-primary" onclick="goPage('home')">홈으로</button>
+</div></div>
+
+<!-- ===== 이벤트 로그 ===== -->
+<div id="page-events" class="page">
+  <div style="max-width:900px;margin:0 auto;padding:24px">
+    <h2 style="margin-bottom:20px">📡 실시간 이벤트 로그</h2>
+
+    <div class="card">
+      <h3>A팀 연동 — WebSocket 좌석 실시간 현황</h3>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:12px">A팀이 <code>POST /publish/seat/{eventId}</code>를 호출하면 여기에 실시간으로 표시됩니다.</p>
+      <div class="row">
+        <input class="input" id="wsEventId" placeholder="공연 ID (예: evt-12345)" style="flex:1;margin-bottom:0">
+        <button class="btn btn-primary btn-sm" onclick="connectSeatSocketUI()">연결</button>
+        <button class="btn btn-sm btn-danger" onclick="disconnectSeatSocket()">끊기</button>
+      </div>
+      <div class="row" style="margin-top:4px"><span id="wsStatus" style="font-size:12px;color:#6b7280">연결 안 됨</span></div>
+      <div id="wsLog" class="log-area" style="margin-top:8px"><div class="log-entry"><span class="log-time">[대기]</span> 공연 ID를 입력하고 연결을 누르세요</div></div>
+      <button class="btn btn-sm" style="background:#f3f4f6;margin-top:8px" onclick="document.getElementById('wsLog').innerHTML=''">로그 지우기</button>
+    </div>
+
+    <div class="card">
+      <h3>SSE 이벤트 스트림</h3>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:12px">좌석 상태 변경 시 실시간으로 표시됩니다. (Redis Pub/Sub → SSE)</p>
+      <div id="eventLog" class="log-area"><div class="log-entry"><span class="log-time">[시작]</span> 이벤트 대기 중...</div></div>
+      <button class="btn btn-sm btn-danger" style="margin-top:8px" onclick="document.getElementById('eventLog').innerHTML=''">로그 지우기</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 관리자 ===== -->
+<div id="page-admin" class="page"><div class="admin-page">
+  <h2 style="margin-bottom:24px">🔧 관리자 대시보드</h2>
+
+  <div class="card"><h3>공연 생성</h3>
+    <div class="row"><input class="input" id="adName" placeholder="공연명" style="flex:1"><input class="input" id="adDate" type="date" style="width:180px"></div>
+    <input class="input" id="adVenue" placeholder="장소">
+    <div class="row"><input class="input" id="adSeats" type="number" placeholder="총 좌석 수" value="10" style="width:150px"><input class="input" id="adPrice" type="number" placeholder="가격" value="99000" style="flex:1"></div>
+    <button class="btn btn-primary" onclick="adCreate()">공연 생성</button>
+    <button class="btn btn-sm" style="background:#f3f4f6" onclick="adInfo()">정보 조회</button>
+    <div id="adResult" style="margin-top:8px;font-size:13px;color:#6b7280"></div>
+  </div>
+
+  <div class="card"><h3>티켓팅 제어 (3단계)</h3>
+    <div class="row"><span>현재 상태:</span><span id="adTkStatus" class="badge badge-closed">-</span><span id="adTkDesc" style="font-size:12px;color:#6b7280"></span></div>
+    <div class="row">
+      <button class="btn btn-success btn-sm" onclick="adTkOpen()">🟢 오픈</button>
+      <button class="btn btn-danger btn-sm" onclick="adTkClose()">🔴 완전 마감</button>
+      <button class="btn btn-sm" style="background:#f3f4f6" onclick="adTkCheck()">상태 확인</button>
+    </div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid #e5e7eb">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px">standby 마감 시간 (매진 후 취소표 대기 접수 마감)</div>
+      <div class="row">
+        <input class="input" id="adStandbyClose" type="datetime-local" style="flex:1">
+        <button class="btn btn-warning btn-sm" onclick="adScheduleStandbyClose()">설정</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card"><h3>결제 제한 시간</h3>
+    <div class="row"><input class="input" id="adHoldDur" type="number" value="600" style="width:120px"><span>초</span>
+      <button class="btn btn-primary btn-sm" onclick="adSetHold()">설정</button>
+      <button class="btn btn-sm" style="background:#f3f4f6" onclick="adGetHold()">조회</button>
+    </div>
+    <div id="adHoldResult" style="font-size:13px;color:#6b7280"></div>
+  </div>
+
+  <div class="card"><h3>실시간 현황</h3>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-value" style="color:#4f46e5" id="adEligible">0</div><div class="stat-label">Eligible</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:#f59e0b" id="adStandby">0</div><div class="stat-label">Standby</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:#22c55e" id="adAdmitted">0</div><div class="stat-label">Admitted</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:#ef4444" id="adSold">0</div><div class="stat-label">Sold</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:#3b82f6" id="adAvailable">0</div><div class="stat-label">Available</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:#6b7280" id="adTotal">0</div><div class="stat-label">Total</div></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn btn-sm" style="background:#f3f4f6" onclick="adRefresh()">🔄 새로고침</button>
+      <span id="adSoldOutBadge" style="font-size:13px"></span>
+    </div>
+  </div>
+
+  <div class="card"><h3>예약 기록 (MariaDB)</h3>
+    <button class="btn btn-sm" style="background:#f3f4f6" onclick="adReservations()">조회</button>
+    <div id="adResResult" style="margin-top:8px;font-size:13px;max-height:200px;overflow-y:auto"></div>
+  </div>
+
+  <div class="card"><h3 style="color:#ef4444">공연 취소</h3>
+    <input class="input" id="adCancelReason" placeholder="취소 사유">
+    <button class="btn btn-danger" onclick="adCancel()">⚠️ 공연 취소</button>
+  </div>
+
+  <div class="card"><h3>이벤트 목록 관리 (홈 카드)</h3>
+    <div class="row">
+      <button class="btn btn-primary btn-sm" onclick="adSeedEvents()">더미 이벤트 5개 생성</button>
+      <button class="btn btn-sm" style="background:#f3f4f6" onclick="adLoadEvents()">목록 새로고침</button>
+    </div>
+    <div id="adEventList" style="margin-top:12px"></div>
+  </div>
+</div></div>
+
+<script>
+const API='';let currentUser=null,currentToken=null,selectedSeat=null,selectedSeatData=null,timerInterval=null,timerSeconds=0;
+
+// 페이지
+function goPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');window.scrollTo(0,0);
+  if(n==='seats')loadSeatUI();if(n==='admin'){adTkCheck();adRefresh();adLoadEvents()}if(n==='detail')loadDetail();if(n==='home')loadEventCards()}
+
+// 배너
+let cs=0;function slideTo(n){cs=n;document.getElementById('bannerSlides').style.transform='translateX(-'+n*100+'%)';document.querySelectorAll('.banner-dot').forEach((d,i)=>d.classList.toggle('active',i===n))}setInterval(()=>slideTo((cs+1)%3),4000);
+
+// 이벤트 카드 로드 (API에서 불러오기)
+async function loadEventCards(){const eg=document.getElementById('eventGrid');eg.innerHTML='<p style="color:#6b7280">이벤트 로딩 중...</p>';
+  const r=await api('GET','/events');const events=r.events||[];
+  if(events.length===0){eg.innerHTML='<p style="color:#6b7280">등록된 이벤트가 없습니다. 관리자 페이지에서 공연을 생성하세요.</p>';return}
+  eg.innerHTML='';events.forEach(e=>{
+    const statusBadge=e.status==='cancelled'?'<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">취소됨</span>':e.status==='open'?'<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">예매 가능</span>':'';
+    eg.innerHTML+='<div class="event-card" onclick="goPage(\'detail\')"><div class="event-thumb" style="background:linear-gradient(135deg,'+(e.color||'#667eea,#764ba2')+')">'+(e.emoji||'🎵')+'</div><div class="event-info"><h4>'+e.eventName+'</h4><p>'+(e.eventDate||'')+' | '+(e.venue||'')+'</p><p style="font-size:12px;color:#4f46e5;font-weight:600;margin-top:4px">'+(e.price?Number(e.price).toLocaleString()+'원':'')+'</p>'+statusBadge+'</div></div>'})}
+loadEventCards();
+
+// 로그인
+function showLogin(){document.getElementById('loginModal').classList.add('active')}
+function hideLogin(){document.getElementById('loginModal').classList.remove('active')}
+function doLogin(){currentUser='user-'+String(Math.floor(Math.random()*900)+100);hideLogin();document.getElementById('userDisplay').textContent='👤 '+currentUser;alert(currentUser+'로 로그인')}
+function doLoginCustom(){const id=document.getElementById('loginId').value;if(!id)return;currentUser=id;hideLogin();document.getElementById('userDisplay').textContent='👤 '+currentUser}
+
+// 상세 로드
+async function loadDetail(){const r=await api('GET','/event/info');if(r.eventName){document.getElementById('dtTitle').textContent=r.eventName;document.getElementById('dtVenue').textContent=r.venue||'-';document.getElementById('dtDate').textContent=r.eventDate||'-';
+  const secs=r.sections||[];document.getElementById('dtPrices').innerHTML=secs.map(s=>'<div style="margin:2px 0"><span style="background:#4f46e5;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">'+s.name+'</span> '+Number(s.price).toLocaleString()+'원</div>').join('')}
+  const tk=await api('GET','/admin/ticketing/status');const st=tk.status||'closed';const cls={open:'badge-open',sold_out:'badge-soldout',closed:'badge-closed'};const txt={open:'🟢 예매 가능',sold_out:'🟡 매진 (취소표 대기 가능)',closed:'🔴 마감'};
+  document.getElementById('dtTicketStatus').innerHTML='<span class="badge '+cls[st]+'">'+txt[st]+'</span>'}
+
+// 예매 시작
+async function startBooking(){if(!currentUser){showLogin();return}goPage('queue');
+  const r=await api('POST','/queue/enter',{userId:currentUser});
+  if(r.status==='closed'){document.getElementById('queueNumber').textContent='❌';document.getElementById('queueStatus').textContent=r.message;return}
+  const pos=r.position||r.standbyPosition||'-';document.getElementById('queueNumber').textContent=pos;
+  if(r.type==='standby'){document.getElementById('queueStatus').textContent='취소표 대기 '+pos+'번째 — 순서가 되면 안내됩니다';return}
+  document.getElementById('queueStatus').textContent='앞에 '+(pos-1)+'명 대기 중...';
+  setTimeout(async()=>{const ar=await api('POST','/queue/admit');
+    if(ar.tokens&&ar.tokens[currentUser]){currentToken=ar.tokens[currentUser].token;
+      document.getElementById('queueTokenArea').style.display='block';document.getElementById('queueTokenValue').textContent=currentToken;
+      document.getElementById('queueTokenExpiry').textContent='만료: '+ar.tokens[currentUser].expiresAt;
+      document.getElementById('queueStatus').textContent='✅ 입장 허용! 좌석 선택 페이지로 이동합니다...';}
+    setTimeout(()=>goPage('seats'),2000)},3000)}
+
+// 내 상태 확인
+async function checkMyStatus(){if(!currentUser)return;const r=await api('GET','/queue/status/'+currentUser);alert(JSON.stringify(r,null,2))}
+
+// 대기열 이탈
+async function leaveQueue(){if(!currentUser)return;if(!confirm('대기열에서 나가시겠습니까? 순번을 잃게 됩니다.'))return;
+  await api('POST','/queue/leave',{userId:currentUser});currentToken=null;alert('대기열에서 이탈했습니다.');goPage('home')}
+
+// 좌석 로드
+async function loadSeatUI(){const r=await api('GET','/seats');const g=document.getElementById('seatGridUI');g.innerHTML='';
+  if(!r.seats||!r.seats.length){g.innerHTML='<p style="color:#94a3b8">좌석 없음</p>';return}
+  r.seats.sort((a,b)=>a.seatId.localeCompare(b.seatId));
+  r.seats.forEach(s=>{const d=document.createElement('div');const c=s.seatId===(selectedSeat)?'seat-selected':'seat-'+s.status;
+    d.className='seat-item '+c;d.textContent=s.seatId;d.title=(s.section||'')+' '+(s.price?Number(s.price).toLocaleString()+'원':'');
+    if(s.status==='available')d.onclick=()=>selectSeat(s);g.appendChild(d)});
+  const grades={};r.seats.forEach(s=>{if(s.section&&s.price)grades[s.section]=s.price});const gd=document.getElementById('seatPriceGrades');gd.innerHTML='';
+  const gc={VIP:'#ef4444',R:'#3b82f6',S:'#22c55e',A:'#4f46e5',B:'#8b5cf6',C:'#06b6d4',D:'#f59e0b',E:'#ec4899',F:'#14b8a6'};
+  Object.entries(grades).forEach(([n,p])=>{gd.innerHTML+='<div class="price-grade"><div class="grade-dot" style="background:'+(gc[n]||'#6b7280')+'"></div>'+n+'석<span style="margin-left:auto;font-weight:600">'+Number(p).toLocaleString()+'원</span></div>'})}
+
+function selectSeat(s){selectedSeat=s.seatId;selectedSeatData=s;
+  document.getElementById('selectedInfo').innerHTML='<div style="color:#fff;font-weight:600;margin-bottom:6px">'+s.seatId+'</div><div style="color:#94a3b8">구역: '+(s.section||'A')+'석</div><div style="color:#94a3b8">가격: '+(s.price?Number(s.price).toLocaleString()+'원':'-')+'</div>';
+  document.getElementById('seatConfirmBtn').disabled=false;loadSeatUI()}
+
+// 타이머
+function startPayTimer(){if(timerInterval)clearInterval(timerInterval);
+  api('GET','/admin/hold-duration').then(r=>{timerSeconds=r.holdDuration||600;
+    timerInterval=setInterval(()=>{timerSeconds--;const m=Math.floor(timerSeconds/60),s=timerSeconds%60;
+      const txt=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+      document.getElementById('seatTimer').textContent=txt;const pt=document.getElementById('payTimer');if(pt)pt.textContent=txt;
+      const cls=timerSeconds>300?'timer timer-green':timerSeconds>60?'timer timer-yellow':'timer timer-red';
+      document.getElementById('seatTimer').className=cls;if(pt)pt.className=cls;
+      if(timerSeconds===180)document.getElementById('warningModal').classList.add('active');
+      if(timerSeconds<=0){clearInterval(timerInterval);alert('시간 만료! 다음 순번에게 넘어갑니다.');goPage('home')}},1000)})}
+
+// 결제 페이지 이동 (선점)
+async function goToPayment(){if(!selectedSeat||!currentUser)return;
+  const r=await api('POST','/seats/hold',{userId:currentUser,seatId:selectedSeat,token:currentToken});
+  if(!r.success){alert(r.message);return}
+  document.getElementById('payEvent').textContent=document.getElementById('stTitle').textContent||'-';
+  document.getElementById('paySeat').textContent=selectedSeat+' ('+(selectedSeatData?.section||'A')+'석)';
+  document.getElementById('payPrice').textContent=selectedSeatData?.price?Number(selectedSeatData.price).toLocaleString()+'원':'-';
+  startPayTimer();goPage('payment')}
+
+// 결제 완료
+async function completePayment(){if(!selectedSeat||!currentUser)return;
+  const r=await api('POST','/seats/confirm',{userId:currentUser,seatId:selectedSeat});
+  if(timerInterval)clearInterval(timerInterval);
+  document.getElementById('cmpEvent').textContent=document.getElementById('payEvent').textContent;
+  document.getElementById('cmpSeat').textContent=document.getElementById('paySeat').textContent;
+  document.getElementById('cmpPrice').textContent=document.getElementById('payPrice').textContent;
+  goPage('complete')}
+
+// 관리자
+async function adCreate(){const d={eventName:document.getElementById('adName').value,eventDate:document.getElementById('adDate').value,venue:document.getElementById('adVenue').value,totalSeats:parseInt(document.getElementById('adSeats').value),price:parseInt(document.getElementById('adPrice').value)};
+  const r=await api('POST','/event/create',d);document.getElementById('adResult').textContent=r.message;adLoadEvents();loadEventCards()||JSON.stringify(r)}
+async function adInfo(){const r=await api('GET','/event/info');document.getElementById('adResult').textContent=JSON.stringify(r,null,2)}
+async function adTkOpen(){await api('POST','/admin/ticketing/open');adTkCheck()}
+async function adTkClose(){await api('POST','/admin/ticketing/close');adTkCheck()}
+async function adTkCheck(){const r=await api('GET','/admin/ticketing/status');const el=document.getElementById('adTkStatus');const desc=document.getElementById('adTkDesc');
+  const cls={open:'badge-open',sold_out:'badge-soldout',closed:'badge-closed'};const txt={open:'OPEN',sold_out:'SOLD OUT',closed:'CLOSED'};
+  el.textContent=txt[r.status]||r.status;el.className='badge '+(cls[r.status]||'badge-closed');desc.textContent=r.description||''}
+async function adScheduleStandbyClose(){const v=document.getElementById('adStandbyClose').value;if(!v)return alert('시간을 선택하세요');
+  const r=await api('POST','/admin/ticketing/schedule-standby-close',{closeAt:new Date(v).toISOString()});alert(r.message||JSON.stringify(r))}
+async function adSetHold(){const s=parseInt(document.getElementById('adHoldDur').value);const r=await api('POST','/admin/hold-duration',{seconds:s});document.getElementById('adHoldResult').textContent=r.message||''}
+async function adGetHold(){const r=await api('GET','/admin/hold-duration');document.getElementById('adHoldResult').textContent='현재: '+r.display}
+async function adRefresh(){try{const q=await api('GET','/queue/stats');document.getElementById('adEligible').textContent=q.eligible||0;document.getElementById('adStandby').textContent=q.standby||0;document.getElementById('adAdmitted').textContent=q.admitted||0;document.getElementById('adTotal').textContent=q.totalSeats||0;
+  const s=await api('GET','/seats/available');document.getElementById('adSold').textContent=s.sold||0;document.getElementById('adAvailable').textContent=s.available||0;
+  const so=await api('GET','/seats/sold-out');document.getElementById('adSoldOutBadge').innerHTML=so.soldOut?'<span class="badge badge-closed">🚫 매진</span>':'<span class="badge badge-open">✅ 예매 가능</span>'}catch(e){}}
+async function adReservations(){const r=await api('GET','/reservations');document.getElementById('adResResult').textContent=JSON.stringify(r,null,2)}
+async function adCancel(){const reason=document.getElementById('adCancelReason').value;if(!reason)return alert('사유 입력');if(!confirm('정말 취소?'))return;await api('POST','/event/cancel',{reason,users:[]});alert('취소 완료');adRefresh();adLoadEvents();loadEventCards()}
+
+// 이벤트 목록
+async function adSeedEvents(){const r=await api('POST','/events/seed');alert(r.message);adLoadEvents();loadEventCards()}
+async function adLoadEvents(){const r=await api('GET','/events');const el=document.getElementById('adEventList');
+  if(!r.events||!r.events.length){el.innerHTML='<p style="font-size:13px;color:#6b7280">이벤트 없음</p>';return}
+  el.innerHTML=r.events.map(e=>'<div style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #f3f4f6"><span style="font-size:20px">'+(e.emoji||'🎵')+'</span><div style="flex:1"><div style="font-size:13px;font-weight:600">'+e.eventName+'</div><div style="font-size:11px;color:#6b7280">'+(e.eventDate||'')+' | '+(e.venue||'')+' | '+(e.price?Number(e.price).toLocaleString()+'원':'')+'</div></div><span class="badge '+(e.status==='open'?'badge-open':e.status==='cancelled'?'badge-closed':'badge-soldout')+'" style="font-size:10px">'+(e.status||'')+'</span><button class="btn btn-sm btn-danger" style="padding:4px 8px;font-size:11px" onclick="adDeleteEvent(\''+e.eventId+'\')">삭제</button></div>').join('')}
+async function adDeleteEvent(id){if(!confirm('이 이벤트를 삭제하시겠습니까?'))return;await api('DELETE','/events/'+id);adLoadEvents();loadEventCards()}
+
+// 이벤트 로그
+function addLog(type,msg){const l=document.getElementById('eventLog');const t=new Date().toLocaleTimeString();
+  const cls={'seat.held':'log-held','seat.sold':'log-sold','seat.released':'log-released','seat.cancelled':'log-cancelled','seat.sold_out':'log-soldout'}[type]||'';
+  l.innerHTML+='<div class="log-entry"><span class="log-time">['+t+']</span> <span class="'+cls+'">['+type+']</span> '+msg+'</div>';l.scrollTop=l.scrollHeight}
+
+// SSE
+try{const es=new EventSource('/sse');
+  ['seat.held','seat.sold','seat.released','seat.cancelled','seat.sold_out'].forEach(type=>{
+    es.addEventListener(type,(e)=>{const d=JSON.parse(e.data);addLog(d.type,(d.userId||'')+' → '+(d.seatId||'')+' '+(d.message||''));loadSeatUI();adRefresh();if(d.type==='seat.sold_out')adTkCheck()})});
+  es.onopen=()=>addLog('system','SSE 연결 완료 ✅');es.onerror=()=>addLog('system','SSE 재연결 중...')}catch(e){}
+
+// API
+async function api(m,p,b){const o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);try{return(await fetch(API+p,o)).json()}catch(e){return{}}}
+
+// ===== WebSocket 좌석 실시간 (A팀 연동) =====
+let seatSocket=null;
+
+function connectSeatSocket(eventId) {
+  if(seatSocket){seatSocket.close();seatSocket=null}
+  const url='ws://192.168.0.220/ws/seats/'+eventId;
+  seatSocket=new WebSocket(url);
+
+  seatSocket.onopen=()=>{
+    console.log('[WS] 연결:',eventId);
+    document.getElementById('wsStatus').innerHTML='<span style="color:#22c55e">● 연결됨</span> — '+eventId;
+    addWsLog('system','WebSocket 연결 완료 ('+eventId+')');
+  };
+
+  seatSocket.onmessage=(e)=>{
+    const d=JSON.parse(e.data);
+    if(d.type==='connected'){addWsLog('system','서버 확인 — 리스너 '+d.listeners+'명');return}
+    const status=d.status||'unknown';
+    const cls={'sold':'log-sold','holding':'log-held','available':'log-released','cancelled':'log-cancelled'}[status]||'';
+    addWsLog(status,'좌석 '+(d.seatId||'?')+' → '+status+(d.grade?' ('+d.grade+')':'')+(d.message?' — '+d.message:''));
+    showToast((d.seatId||'좌석')+' → '+status);
+    loadSeatUI();
+  };
+
+  seatSocket.onclose=()=>{
+    document.getElementById('wsStatus').innerHTML='<span style="color:#ef4444">● 연결 끊김</span>';
+    addWsLog('system','연결 종료');
+  };
+
+  seatSocket.onerror=()=>{addWsLog('system','연결 오류')};
+  return seatSocket;
+}
+
+function disconnectSeatSocket(){if(seatSocket){seatSocket.close();seatSocket=null}}
+
+function connectSeatSocketUI(){
+  const id=document.getElementById('wsEventId').value.trim();
+  if(!id){alert('공연 ID를 입력하세요');return}
+  connectSeatSocket(id);
+}
+
+function addWsLog(type,msg){
+  const l=document.getElementById('wsLog');const t=new Date().toLocaleTimeString();
+  const cls={'sold':'log-sold','holding':'log-held','available':'log-released','cancelled':'log-cancelled','system':''}[type]||'';
+  l.innerHTML+='<div class="log-entry"><span class="log-time">['+t+']</span> <span class="'+cls+'">['+type+']</span> '+msg+'</div>';
+  l.scrollTop=l.scrollHeight;
+}
+
+function showToast(msg){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;top:80px;right:24px;background:#1e293b;color:#fff;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);animation:pop .3s';
+  d.textContent=msg;document.body.appendChild(d);
+  setTimeout(()=>d.remove(),3000);
+}
+
+// 자동 갱신
+setInterval(()=>{if(document.getElementById('page-admin').classList.contains('active'))adRefresh()},5000);
+adTkCheck();
+</script>
+</body>
+</html>

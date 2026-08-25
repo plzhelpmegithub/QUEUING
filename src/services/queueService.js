@@ -1,4 +1,6 @@
 const redis = require('../config/redis');
+const pool = require('../config/mariadb');
+const { isPriorityUser } = require('./membershipService');
 
 // ===== Redis 키 정의 =====
 const QUEUE_KEY = 'queue:waiting';           // Sorted Set — eligible(예매 가능) 대기열
@@ -29,16 +31,32 @@ async function setTotalSeats(count) {
  * - 중복 진입 방지 (이미 있으면 기존 순번 반환)
  */
 async function enter(userId) {
-  // 0) 티켓팅이 오픈 상태인지 확인 — closed면 진입 차단
+  // 0) 티켓팅 상태 확인 — 3단계 제어
+  //   open     → eligible + standby 진입 가능
+  //   sold_out → standby만 진입 가능 (좌석 매진, 취소표 대기만 가능)
+  //   closed   → 아무도 진입 불가 (기존 standby는 취소표 대기 유지)
   const ticketingStatus = await redis.get(TICKETING_STATUS_KEY);
-  if (ticketingStatus !== 'open') {
-    return { status: 'closed', message: '현재 티켓팅이 오픈되지 않았습니다.' };
+  if (ticketingStatus === 'closed' || (!ticketingStatus)) {
+    return { status: 'closed', message: '현재 티켓팅이 마감되었습니다. 더 이상 대기열에 진입할 수 없습니다.' };
   }
 
-  // 1) 이미 입장 허용된 사용자 → 다시 대기열에 넣지 않음
+  // 1) 이미 입장 허용된 사용자
   const isAdmitted = await redis.sismember(ADMITTED_KEY, userId);
   if (isAdmitted) {
-    return { status: 'admitted', message: '이미 입장이 허용된 상태입니다.' };
+    // 아직 유효한 토큰이 서버에 남아있다면 재진입할 필요 없이 그 원본을 그대로
+    // 돌려줌 — 클라이언트가 새로고침 등으로 토큰을 잃어버렸어도(state는
+    // 새로고침하면 메모리에서 날아감) 다시 받아갈 수 있어야 좌석 선점이 됨.
+    const { getRawToken } = require('./tokenService');
+    const existing = await getRawToken(userId);
+    if (existing) {
+      return { status: 'admitted', token: existing.token, expiresAt: existing.expiresAt, message: '이미 입장이 허용된 상태입니다.' };
+    }
+
+    // 토큰이 없다(결제 확정으로 소모됐거나 만료됨) — 좌석을 바꾸거나 환불 후
+    // 다시 예매하려는 상황. 이미 admitted였다고 새치기하듯 바로 통과시키지 않고,
+    // admitted에서 빼고 대기열 맨 뒤로 새로 줄을 세움 — 지금 처음 줄 서는
+    // 다른 사용자들과 동일하게, 순서가 되면(/queue/admit) 새 토큰을 받음.
+    await redis.srem(ADMITTED_KEY, userId);
   }
 
   // 2) 이미 eligible 대기열에 있는지 확인 → 중복 진입 방지
@@ -75,30 +93,63 @@ async function enter(userId) {
   }
 
   // 5) 새 순번 발급 — INCR은 원자적이라 동시 요청에도 중복 없음
-  const ticket = await redis.incr(COUNTER_KEY);
+  let ticket = await redis.incr(COUNTER_KEY);
+
+  // 멤버십 우선순위 — 프리미엄 회원은 순번을 앞당김
+  let priorityLevel = 0;
+  try {
+    priorityLevel = await isPriorityUser(userId);
+    if (priorityLevel > 0) {
+      ticket = Math.max(1, ticket - (priorityLevel * 50));
+    }
+  } catch (_) {}
 
   // 6) eligible / standby 분류
-  if (ticket <= totalSeats) {
-    // ===== 예매 가능 대기열에 등록 =====
-    await redis.zadd(QUEUE_KEY, ticket, userId);  // score = 순번, member = userId
-    const position = await redis.zrank(QUEUE_KEY, userId);
-    return {
-      status: 'waiting',
-      type: 'eligible',              // 좌석을 확보할 수 있는 사용자
-      position: position + 1,
-      ticket,
-      message: `대기열에 등록되었습니다. (${position + 1}번째)`,
-    };
-  } else {
-    // ===== 취소표 대기열에 등록 (1001번~) =====
+  const currentStatus = await redis.get(TICKETING_STATUS_KEY);
+
+  if (currentStatus === 'sold_out' || ticket > totalSeats) {
     await redis.zadd(STANDBY_KEY, ticket, userId);
     const rank = await redis.zrank(STANDBY_KEY, userId);
+
+    // MariaDB waiting_queue 기록
+    try {
+      await pool.query(
+        `INSERT INTO waiting_queue (user_id, queue_type, queue_index, status) VALUES (?, 'standby', ?, 'WAITING')`,
+        [userId, ticket],
+      );
+    } catch (dbErr) {
+      console.error('[Queue] MariaDB standby 기록 실패:', dbErr.message);
+    }
+
     return {
       status: 'waiting',
-      type: 'standby',               // 취소표가 나야 기회가 오는 사용자
+      type: 'standby',
       standbyPosition: rank + 1,
       ticket,
+      priority: priorityLevel > 0,
       message: `현재 매진 상태입니다. 취소표 대기 ${rank + 1}번째로 등록되었습니다.`,
+    };
+  } else {
+    await redis.zadd(QUEUE_KEY, ticket, userId);
+    const position = await redis.zrank(QUEUE_KEY, userId);
+
+    // MariaDB waiting_queue 기록
+    try {
+      await pool.query(
+        `INSERT INTO waiting_queue (user_id, queue_type, queue_index, status) VALUES (?, 'eligible', ?, 'WAITING')`,
+        [userId, ticket],
+      );
+    } catch (dbErr) {
+      console.error('[Queue] MariaDB eligible 기록 실패:', dbErr.message);
+    }
+
+    return {
+      status: 'waiting',
+      type: 'eligible',
+      position: position + 1,
+      ticket,
+      priority: priorityLevel > 0,
+      message: `대기열에 등록되었습니다. (${position + 1}번째)`,
     };
   }
 }
@@ -148,10 +199,11 @@ async function getPosition(userId) {
 /**
  * 입장 허용 (배치)
  * - eligible 대기열 앞에서 100명씩 꺼내서 입장 허용
- * - standby는 건드리지 않음 (취소표 발생 시에만 B파트가 처리)
- * - 실제 운영에서는 스케줄러가 주기적으로 호출
+ * - 각 사용자에게 Admission Token(JWT) 발급
+ * - 토큰이 있어야 좌석 선점 가능
  */
 async function admitBatch() {
+  const { issueToken } = require('./tokenService'); // 토큰 서비스
   const users = await redis.zrange(QUEUE_KEY, 0, BATCH_SIZE - 1); // 상위 100명 조회
 
   if (users.length === 0) {
@@ -164,12 +216,31 @@ async function admitBatch() {
   pipeline.sadd(ADMITTED_KEY, ...users);  // admitted Set에 추가
   await pipeline.exec();
 
-  const remaining = await redis.zcard(QUEUE_KEY); // 남은 eligible 대기 인원
+  // 각 사용자에게 Admission Token 발급
+  const tokens = {};
+  for (const userId of users) {
+    const { token, expiresAt } = await issueToken(userId);
+    tokens[userId] = { token, expiresAt };
+  }
+
+  // MariaDB waiting_queue 상태 업데이트
+  try {
+    const placeholders = users.map(() => '?').join(',');
+    await pool.query(
+      `UPDATE waiting_queue SET status = 'ADMITTED', updated_at = NOW() WHERE user_id IN (${placeholders}) AND status = 'WAITING'`,
+      users,
+    );
+  } catch (dbErr) {
+    console.error('[Queue] MariaDB admit 동기화 실패:', dbErr.message);
+  }
+
+  const remaining = await redis.zcard(QUEUE_KEY);
   return {
     admitted: users,
+    tokens,
     count: users.length,
     remaining,
-    message: `${users.length}명 입장 허용. 남은 eligible 대기: ${remaining}명`,
+    message: `${users.length}명 입장 허용 + Admission Token 발급 완료`,
   };
 }
 
@@ -193,12 +264,24 @@ async function getNextStandby() {
  * - 이후 해당 사용자가 /seats/hold로 취소 좌석 선점 가능
  */
 async function promoteStandby(userId) {
+  const { issueToken } = require('./tokenService'); // 토큰 서비스
   const removed = await redis.zrem(STANDBY_KEY, userId); // standby에서 제거
   if (removed === 0) {
     return { success: false, message: '해당 사용자가 standby에 없습니다.' };
   }
-  await redis.sadd(ADMITTED_KEY, userId); // admitted에 추가
-  return { success: true, userId, message: `${userId} 입장 허용으로 전환` };
+  await redis.sadd(ADMITTED_KEY, userId);
+  const { token, expiresAt } = await issueToken(userId);
+
+  try {
+    await pool.query(
+      `UPDATE waiting_queue SET status = 'PROMOTED', updated_at = NOW() WHERE user_id = ? AND queue_type = 'standby' AND status = 'WAITING'`,
+      [userId],
+    );
+  } catch (dbErr) {
+    console.error('[Queue] MariaDB promote 동기화 실패:', dbErr.message);
+  }
+
+  return { success: true, userId, token, expiresAt, message: `${userId} 입장 허용 + Token 발급` };
 }
 
 /**
@@ -373,4 +456,58 @@ async function getSchedule() {
   };
 }
 
-module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule };
+/**
+ * 티켓팅 상태 조회 — 3단계
+ */
+async function getTicketingStatus() {
+  const status = await redis.get(TICKETING_STATUS_KEY) || 'closed';
+  const descriptions = {
+    open: '예매 가능 (eligible + standby 진입 가능)',
+    sold_out: '전석 매진 (취소표 대기만 가능)',
+    closed: '완전 마감 (진입 불가, 기존 standby만 취소표 대기)',
+  };
+  return { status, description: descriptions[status] || '알 수 없음' };
+}
+
+/**
+ * standby 마감 시간 예약
+ * - 매진 후 "밤 12시까지만 취소표 대기 접수" 설정
+ * - 해당 시간이 되면 sold_out → closed 로 전환
+ *
+ * @param {string} closeAt - 마감 시간 (ISO 8601, 예: "2026-08-18T00:00:00")
+ */
+let standbyCloseTimer = null;
+
+async function scheduleStandbyClose(closeAt) {
+  const closeTime = new Date(closeAt).getTime();
+  const now = Date.now();
+  const delayMs = closeTime - now;
+
+  if (delayMs <= 0) {
+    return { success: false, message: '마감 시간이 현재 시간보다 이전입니다.' };
+  }
+
+  if (standbyCloseTimer) clearTimeout(standbyCloseTimer);
+
+  await redis.hset('event:schedule', {
+    standbyCloseAt: closeAt,
+  });
+
+  standbyCloseTimer = setTimeout(async () => {
+    await redis.set(TICKETING_STATUS_KEY, 'closed');
+    console.log(`[Schedule] standby 마감 시간 도달 — 완전 마감 (기존 standby는 유지)`);
+  }, delayMs);
+
+  const delayMinutes = Math.floor(delayMs / 60000);
+  const delayHours = Math.floor(delayMinutes / 60);
+  const remainMin = delayMinutes % 60;
+
+  return {
+    success: true,
+    standbyCloseAt: closeAt,
+    closesIn: `${delayHours}시간 ${remainMin}분 후`,
+    message: `${closeAt}에 standby 접수가 마감됩니다. 이후 신규 진입 불가.`,
+  };
+}
+
+module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule, scheduleStandbyClose };

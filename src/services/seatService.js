@@ -1,8 +1,9 @@
 const redis = require('../config/redis');
+const pool = require('../config/mariadb');
 const { acquireLock, releaseLock } = require('./lockService');          // 분산 락
 const { startTimer, cancelTimer, getRemaining } = require('./timerService'); // 결제 타이머
 const { publishSeatEvent, EVENT_TYPE } = require('./eventService');     // 이벤트 발행
-const { saveReservation } = require('./dbService');                     // DynamoDB 저장
+const { saveReservation, cancelReservation } = require('./dbService');  // MariaDB 저장
 
 // ===== Redis 키 정의 =====
 const SEAT_PREFIX = 'seat:';              // Hash — 좌석 상태 (예: seat:A-001)
@@ -30,14 +31,30 @@ async function initSeats(seatIds, section = '', price = 0) {
   const pipeline = redis.pipeline();
   for (const id of seatIds) {
     pipeline.hset(`${SEAT_PREFIX}${id}`, {
-      status: STATUS.AVAILABLE,  // 초기 상태: 예매 가능
-      heldBy: '',                // 선점한 사용자 없음
-      heldAt: '',                // 선점 시간 없음
-      section: section,          // 구역 (VIP, R, S 등)
-      price: price.toString(),   // 가격 (Redis는 문자열 저장)
+      status: STATUS.AVAILABLE,
+      heldBy: '',
+      heldAt: '',
+      section: section,
+      price: price.toString(),
     });
   }
   await pipeline.exec();
+
+  // MariaDB seats 테이블에도 저장
+  // seat_id에서 event_id 추출 (형식: evt-171...:VIP-001)
+  const eventId = seatIds[0]?.split(':')[0] || '';
+  try {
+    const values = seatIds.map(id => [id, eventId, section, price, 'AVAILABLE', '', null]);
+    const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const flat = values.flat();
+    await pool.query(
+      `INSERT IGNORE INTO seats (seat_id, event_id, section, price, status, held_by, held_at) VALUES ${placeholders}`,
+      flat,
+    );
+  } catch (dbErr) {
+    console.error('[Seat] MariaDB 초기화 실패:', dbErr.message);
+  }
+
   return { initialized: seatIds.length, section, price, seats: seatIds };
 }
 
@@ -52,21 +69,29 @@ async function initSeats(seatIds, section = '', price = 0) {
  * 4. held로 변경 + 결제 타이머 시작 + 이벤트 발행
  * 5. 락 해제 (finally에서 — 성공이든 실패든 반드시)
  */
-async function holdSeat(userId, seatId) {
-  // 1) 입장 허용 여부 확인
+async function holdSeat(userId, seatId, admissionToken) {
+  const { verifyToken } = require('./tokenService'); // 토큰 서비스
+
+  // 1) Admission Token 검증
+  const tokenResult = await verifyToken(admissionToken, userId);
+  if (!tokenResult.valid) {
+    return { success: false, reason: tokenResult.reason, message: tokenResult.message };
+  }
+
+  // 2) 입장 허용 여부 확인 (이중 검증)
   const isAdmitted = await redis.sismember(ADMITTED_KEY, userId);
   if (!isAdmitted) {
     return { success: false, reason: 'not_admitted', message: '입장이 허용되지 않은 사용자입니다.' };
   }
 
-  // 2) 분산 락 획득 — 같은 좌석에 동시 요청 시 1명만 통과
+  // 3) 분산 락 획득 — 같은 좌석에 동시 요청 시 1명만 통과
   const lock = await acquireLock(seatId);
   if (!lock.acquired) {
     return { success: false, reason: 'lock_failed', message: '다른 사용자가 처리 중입니다. 잠시 후 다시 시도해주세요.' };
   }
 
   try {
-    // 3) 좌석 상태 확인
+    // 4) 좌석 상태 확인
     const seatKey = `${SEAT_PREFIX}${seatId}`;
     const status = await redis.hget(seatKey, 'status');
 
@@ -78,14 +103,29 @@ async function holdSeat(userId, seatId) {
       return { success: false, reason: 'unavailable', message: `이미 ${status} 상태인 좌석입니다.` };
     }
 
-    // 4) 좌석 선점 처리
+    // 5) 좌석 선점 처리
     await redis.hset(seatKey, {
-      status: STATUS.HELD,              // 상태 변경: available → held
-      heldBy: userId,                   // 누가 잡았는지 기록
-      heldAt: Date.now().toString(),    // 언제 잡았는지 기록
+      status: STATUS.HELD,
+      heldBy: userId,
+      heldAt: Date.now().toString(),
     });
-    await startTimer(seatId, userId);   // 결제 타이머 시작 (10분)
-    await publishSeatEvent(EVENT_TYPE.HELD, { seatId, userId }); // 이벤트 발행
+    await startTimer(seatId, userId);
+    await publishSeatEvent(EVENT_TYPE.HELD, { seatId, userId });
+
+    // MariaDB 동기화
+    try {
+      await pool.query(
+        `UPDATE seats SET status = 'LOCKED', held_by = ?, held_at = NOW() WHERE seat_id = ?`,
+        [userId, seatId],
+      );
+    } catch (dbErr) {
+      console.error('[Seat] MariaDB hold 동기화 실패:', dbErr.message);
+    }
+
+    // 토큰은 여기서 무효화하지 않음 — 결제를 확정(confirmSeat)하기 전까지는
+    // 같은 Admission Token으로 좌석을 바꿔 다시 선점할 수 있어야 함(선점 후
+    // 다른 자리로 바꾸는 흐름을 지원하려면 토큰이 세션 동안 계속 살아있어야 함).
+    // 재사용 방지는 confirmSeat에서 결제가 실제로 끝났을 때 처리.
 
     return {
       success: true,
@@ -97,6 +137,72 @@ async function holdSeat(userId, seatId) {
     // 5) 락 해제 — 성공이든 실패든 반드시 해제 (데드락 방지)
     await releaseLock(seatId, lock.token);
   }
+}
+
+/**
+ * 좌석 선점 해제 (본인이 held 상태로 선점한 좌석을 자발적으로 풀어줄 때)
+ * - 결제 전 다른 좌석으로 바꾸거나, 페이지를 벗어나는 경우 호출
+ * - held 상태 + 본인이 선점한 좌석일 때만 해제 (sold는 cancelSeat로 별도 처리)
+ * - standby 대기자가 있으면 타임아웃 해제와 동일하게 곧바로 다음 사용자에게 배정
+ *   (available로 잠깐 열었다가 다시 누가 잡는 경쟁 상태를 피하기 위함)
+ */
+async function releaseSeat(userId, seatId) {
+  const seatKey = `${SEAT_PREFIX}${seatId}`;
+  const [status, heldBy] = await Promise.all([
+    redis.hget(seatKey, 'status'),
+    redis.hget(seatKey, 'heldBy'),
+  ]);
+
+  if (status !== STATUS.HELD) {
+    return { success: false, reason: 'not_held', message: '선점 상태가 아닌 좌석입니다.' };
+  }
+  if (heldBy !== userId) {
+    return { success: false, reason: 'not_owner', message: '본인이 선점한 좌석이 아닙니다.' };
+  }
+
+  await cancelTimer(seatId); // 기존 결제 타이머 제거 (중복 만료 이벤트 방지)
+
+  // standby 대기자가 있으면 곧바로 다음 사람에게 배정 — 타임아웃 자동 해제(timerService)와 동일한 정책
+  const nextUsers = await redis.zrange('queue:standby', 0, 0);
+  if (nextUsers.length > 0) {
+    const nextUser = nextUsers[0];
+    await redis.zrem('queue:standby', nextUser);
+    await redis.sadd(ADMITTED_KEY, nextUser);
+    await redis.hset(seatKey, { status: STATUS.HELD, heldBy: nextUser, heldAt: Date.now().toString() });
+    await startTimer(seatId, nextUser);
+    await publishSeatEvent(EVENT_TYPE.HELD, {
+      seatId,
+      userId: nextUser,
+      reason: 'standby_auto_assign',
+      message: `${userId} 선점 해제 → ${nextUser}에게 자동 배정`,
+    });
+    return {
+      success: true,
+      seatId,
+      status: STATUS.HELD,
+      reassignedTo: nextUser,
+      message: '선점을 해제했고, 대기 중이던 다음 사용자에게 배정되었습니다.',
+    };
+  }
+
+  await redis.hset(seatKey, { status: STATUS.AVAILABLE, heldBy: '', heldAt: '' });
+  await publishSeatEvent(EVENT_TYPE.RELEASED, { seatId, userId });
+
+  try {
+    await pool.query(
+      `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id = ?`,
+      [seatId],
+    );
+  } catch (dbErr) {
+    console.error('[Seat] MariaDB release 동기화 실패:', dbErr.message);
+  }
+
+  return {
+    success: true,
+    seatId,
+    status: STATUS.AVAILABLE,
+    message: '좌석 선점이 해제되었습니다.',
+  };
 }
 
 /**
@@ -152,10 +258,26 @@ async function confirmSeat(userId, seatId) {
   }
 
   // 좌석 확정 처리
-  await redis.hset(seatKey, { status: STATUS.SOLD });           // 상태 변경: held → sold
-  await cancelTimer(seatId);                                      // 타이머 취소 (만료 이벤트 방지)
-  await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });   // 판매 완료 이벤트
-  await saveReservation({ seatId, userId });                      // DynamoDB에 예약 기록 영구 저장
+  await redis.hset(seatKey, { status: STATUS.SOLD });
+  await cancelTimer(seatId);
+  await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
+
+  // 예매 기록 저장 (event_id 포함)
+  const eventId = seatId.split(':')[0] || '';
+  await saveReservation({ seatId, userId, eventId });
+
+  // MariaDB seats 테이블 동기화
+  try {
+    await pool.query(`UPDATE seats SET status = 'RESERVED' WHERE seat_id = ?`, [seatId]);
+  } catch (dbErr) {
+    console.error('[Seat] MariaDB confirm 동기화 실패:', dbErr.message);
+  }
+
+  // 결제까지 끝났으니 이제 Admission Token 무효화 — 이 시점부터는 재사용 방지
+  // (선점만 하고 아직 결제 전인 동안은 좌석을 바꿀 수 있어야 해서 holdSeat에서는
+  // 무효화하지 않음)
+  const { revokeToken } = require('./tokenService');
+  await revokeToken(userId);
 
   // ===== 매진 체크 =====
   // 남은 좌석 (available + held)이 0이면 전석 매진
@@ -164,14 +286,15 @@ async function confirmSeat(userId, seatId) {
   if (remaining.length === 0) {
     await redis.set(SOLD_OUT_KEY, '1'); // 매진 플래그 설정
 
-    // 티켓팅 자동 마감 — 신규 진입 차단 (이미 standby인 사용자는 영향 없음)
-    await redis.set('event:ticketing-status', 'closed');
-    console.log('[Ticketing] 전석 매진 → 자동 마감 (standby 대기자는 유지)');
+    // 티켓팅 상태: sold_out (standby 진입은 허용, eligible만 마감)
+    // closed가 아니라 sold_out으로 설정 → standby 추가 접수 가능
+    await redis.set('event:ticketing-status', 'sold_out');
+    console.log('[Ticketing] 전석 매진 → sold_out (standby 대기 접수 계속 가능)');
 
     // 매진 이벤트 발행 → C파트가 대기 중인 사용자에게 "전석 매진" 알림
     await publishSeatEvent(EVENT_TYPE.SOLD_OUT, {
       seatId: 'ALL',
-      message: '전석 매진 — 신규 진입 마감, 취소표 대기자는 순서대로 안내됩니다.',
+      message: '전석 매진 — 취소표 대기는 계속 가능합니다.',
       totalSold: allSeats.filter(s => s.status === STATUS.SOLD).length,
     });
   }
@@ -210,6 +333,11 @@ async function cancelSeat(userId, seatId) {
   if (status !== STATUS.SOLD) {
     return { success: false, reason: 'not_sold', message: '판매 완료 상태가 아닌 좌석입니다.' };
   }
+  // 본인이 구매한 좌석이 아니면 거부 (confirmSeat에서 heldBy를 지우지 않고
+  // 그대로 두므로, sold 상태에서도 원 구매자가 누구인지 알 수 있음)
+  if (heldBy && heldBy !== userId) {
+    return { success: false, reason: 'not_owner', message: '본인이 구매한 좌석이 아닙니다.' };
+  }
 
   // 좌석을 다시 예매 가능 상태로 복구
   await redis.hset(seatKey, {
@@ -218,10 +346,19 @@ async function cancelSeat(userId, seatId) {
     heldAt: '',
   });
 
-  await redis.del(SOLD_OUT_KEY); // 매진 플래그 해제 (취소표 발생)
-
-  // 취소 이벤트 발행 → B파트가 이걸 받아서 재판매 순차배정 시작
+  await redis.del(SOLD_OUT_KEY);
   await publishSeatEvent(EVENT_TYPE.CANCELLED, { seatId, userId });
+  await cancelReservation(seatId, userId);
+
+  // MariaDB seats 테이블 동기화
+  try {
+    await pool.query(
+      `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id = ?`,
+      [seatId],
+    );
+  } catch (dbErr) {
+    console.error('[Seat] MariaDB cancel 동기화 실패:', dbErr.message);
+  }
 
   return {
     success: true,
@@ -265,4 +402,4 @@ async function getAvailableCount() {
   };
 }
 
-module.exports = { initSeats, holdSeat, confirmSeat, cancelSeat, getSeatTimer, getAllSeats, isSoldOut, getAvailableCount, STATUS };
+module.exports = { initSeats, holdSeat, confirmSeat, cancelSeat, releaseSeat, getSeatTimer, getAllSeats, isSoldOut, getAvailableCount, STATUS };

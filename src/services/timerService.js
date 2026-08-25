@@ -1,7 +1,9 @@
 const Redis = require('ioredis');
 const redis = require('../config/redis');
+const pool = require('../config/mariadb');
 const { publishSeatEvent, EVENT_TYPE } = require('./eventService');
-const { timerExpirations } = require('./metricsService'); // Prometheus 메트릭
+const { timerExpirations } = require('./metricsService');
+const { createAllocation, markExpired } = require('./cancelAllocationService');
 
 // ===== 타이머 설정 =====
 const TIMER_PREFIX = 'timer:seat:';  // 타이머 키 접두사 (예: timer:seat:A-001)
@@ -124,13 +126,33 @@ async function initExpiryListener() {
         // 새 타이머 시작 (다음 사용자에게도 결제 시간 부여)
         await startTimer(seatId, nextUser);
 
-        // 이벤트 발행 → B파트가 이메일/문자로 "좌석이 배정되었습니다. 10분 내 결제해주세요" 발송
         await publishSeatEvent(EVENT_TYPE.HELD, {
           seatId,
           userId: nextUser,
           reason: 'standby_auto_assign',
           message: `${heldBy} 시간 초과 → ${nextUser}에게 자동 배정`,
         });
+
+        // cancel_allocations에 링크 발급 기록
+        const holdDuration = await getCurrentHoldDuration();
+        try {
+          const eventId = seatId.split(':')[0] || '';
+          await createAllocation(nextUser, seatId, eventId, holdDuration);
+          await markExpired(heldBy, seatId);
+        } catch (allocErr) {
+          console.error('[Timer] cancel_allocation 기록 실패:', allocErr.message);
+        }
+
+        // MariaDB seats 동기화
+        try {
+          await pool.query(
+            `UPDATE seats SET status = 'LOCKED', held_by = ?, held_at = NOW() WHERE seat_id = ?`,
+            [nextUser, seatId],
+          );
+        } catch (dbErr) {
+          console.error('[Timer] MariaDB 좌석 동기화 실패:', dbErr.message);
+        }
+
         console.log(`[Timer] ${heldBy} 시간 초과 → ${nextUser}에게 바로 배정 (${seatId} held)`);
 
       } else {
@@ -141,6 +163,16 @@ async function initExpiryListener() {
           heldAt: '',
         });
         await publishSeatEvent(EVENT_TYPE.RELEASED, { seatId, userId: heldBy });
+
+        try {
+          await pool.query(
+            `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id = ?`,
+            [seatId],
+          );
+        } catch (dbErr) {
+          console.error('[Timer] MariaDB 복구 동기화 실패:', dbErr.message);
+        }
+
         console.log(`[Timer] standby 없음 — ${seatId} → available 복구`);
       }
     }
