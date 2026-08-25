@@ -32,10 +32,10 @@ curl -X POST http://localhost:8080/publish/seat/EVENT123 \
 
 ```bash
 # 1. 이미지 빌드
-docker build -t <your-registry>/realtime-ws:latest .
+docker build -t chlwldp/realtime-ws:latest .
 
 # 2. 레지스트리에 push (Harbor, Docker Hub 등)
-docker push <your-registry>/realtime-ws:latest
+docker push chlwldp/realtime-ws:latest
 
 # 3. k8s/deployment.yaml에서 image 경로를 본인 레지스트리로 수정 후 적용
 kubectl apply -f k8s/deployment.yaml
