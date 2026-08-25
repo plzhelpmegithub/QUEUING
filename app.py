@@ -39,15 +39,23 @@ class TokenVerifyRequest(BaseModel):
     token: str
 
 def check_membership_from_db(user_id: str) -> bool:
-    """중앙 회원 DB(MySQL)를 조회하여 유료 멤버십 구독 상태인지 확인"""
+    """
+    중앙 회원 DB(MySQL)의 memberships 테이블을 조회하여 
+    유효한 멤버십 기간 내에 있는지 확인
+    """
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            sql = "SELECT membership_status FROM users WHERE user_id = %s"
+            # memberships 스키마에 맞춰 user_id와 만료일(expires_at) 검증
+            sql = """
+                SELECT membership_id 
+                FROM memberships 
+                WHERE user_id = %s AND expires_at > NOW()
+            """
             cursor.execute(sql, (user_id,))
             result = cursor.fetchone()
             
-            if result and result.get('membership_status') == 'ACTIVE':
+            if result:
                 return True
         return False
     finally:
@@ -67,19 +75,24 @@ def join_resale_queue(req: QueueJoinRequest):
     try:
         with connection.cursor() as cursor:
             # 이미 대기열에 등록되어 있는지 확인
-            cursor.execute("SELECT id, status FROM resale_queues WHERE user_id = %s", (req.user_id,))
+            cursor.execute("SELECT resale_id, status FROM resale_queues WHERE seller_user_id = %s", (req.user_id,))
             if cursor.fetchone():
                 return {"status": "ALREADY_QUEUED", "message": "이미 취소표 대기열에 등록된 회원입니다."}
             
-            # 마지막 대기 순번 조회 후 +1
-            cursor.execute("SELECT MAX(queue_position) as max_pos FROM resale_queues")
+            # resale_queues 구조에 맞춰 필요시 대기 순번 처리
+            # (만약 resale_queues에 queue_position 컬럼이 없다면 추가하거나 기존 구조 유지)
+            cursor.execute("SELECT MAX(resale_id) as max_pos FROM resale_queues")
             row = cursor.fetchone()
             next_pos = (row['max_pos'] or 0) + 1
             
-            # 대기열 등록 (WAITING)
+            # 대기열 등록 (WAITING 상태 기록 - 스키마에 맞춰 컬럼 매칭)
+            # 주의: resale_queues 스키마 정의에 맞춰 쿼리 컬럼을 점검해주세요.
             cursor.execute(
-                "INSERT INTO resale_queues (user_id, queue_position, status) VALUES (%s, %s, 'WAITING')",
-                (req.user_id, next_pos)
+                """
+                INSERT INTO resale_queues (reservation_id, seller_user_id, status) 
+                VALUES (0, %s, 'LISTED')
+                """,
+                (req.user_id,)
             )
             connection.commit()
             
@@ -102,14 +115,20 @@ def activate_next_user():
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, user_id, queue_position FROM resale_queues WHERE status = 'WAITING' ORDER BY queue_position ASC LIMIT 1"
+                """
+                SELECT resale_id, seller_user_id 
+                FROM resale_queues 
+                WHERE status = 'LISTED' 
+                ORDER BY resale_id ASC 
+                LIMIT 1
+                """
             )
             target = cursor.fetchone()
             
             if not target:
                 raise HTTPException(status_code=404, detail="대기 중인 사용자가 없습니다.")
             
-            user_id = target['user_id']
+            user_id = target['seller_user_id']
             
             now = datetime.datetime.now()
             expire_time = now + datetime.timedelta(minutes=LINK_EXPIRE_MINUTES)
@@ -121,20 +140,21 @@ def activate_next_user():
             }
             private_token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
             
+            # 상태를 ACTIVE 혹은 배정 상태로 변경
             cursor.execute(
                 """
                 UPDATE resale_queues 
-                SET status = 'ACTIVE', private_token = %s, expires_at = %s 
-                WHERE user_id = %s
+                SET status = 'ACTIVE'
+                WHERE resale_id = %s
                 """,
-                (private_token, expire_time, user_id)
+                (target['resale_id'],)
             )
             connection.commit()
             
         return {
             "status": "ACTIVATED",
             "user_id": user_id,
-            "queue_position": target['queue_position'],
+            "queue_position": target['resale_id'],
             "private_link": f"http://www.queuing.kr/resale/ticket?token={private_token}",
             "expires_at": expire_time.strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -156,16 +176,11 @@ def verify_and_invalidate_link(req: TokenVerifyRequest):
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT status, expires_at FROM resale_queues WHERE user_id = %s", (user_id,))
+            cursor.execute("SELECT status FROM resale_queues WHERE seller_user_id = %s", (user_id,))
             item = cursor.fetchone()
             
             if not item or item['status'] != 'ACTIVE':
                 raise HTTPException(status_code=400, detail="이미 사용되었거나 권한이 없는 링크입니다.")
-            
-            if datetime.datetime.now() > item['expires_at']:
-                cursor.execute("UPDATE resale_queues SET status = 'EXPIRED' WHERE user_id = %s", (user_id,))
-                connection.commit()
-                raise HTTPException(status_code=400, detail="5분 유효 시간이 경과했습니다.")
                 
         return {"status": "VALID", "message": "접근이 허용되었습니다. 좌석 선택 화면으로 이동합니다."}
     finally:

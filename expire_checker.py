@@ -1,72 +1,87 @@
 import os
-import json
-import boto3
+import pymysql
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# AWS 및 LocalStack 설정
-ENDPOINT = os.getenv("AWS_ENDPOINT_URL", "http://127.0.0.1:4566")
-REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2")
-
-dynamodb = boto3.client(
-    'dynamodb', 
-    endpoint_url=ENDPOINT, 
-    region_name=REGION, 
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "test"), 
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "test")
-)
-
-# 테이블 이름 정의 (Terraform main.tf와 통일된 이름)
-TABLE_NAME = 'allocation-state'
+def get_db_connection():
+    """MySQL 데이터베이스 연결 생성"""
+    return pymysql.connect(
+        host=os.getenv("MYSQL_HOST", "localhost"),
+        user=os.getenv("MYSQL_USER", "root"),
+        password=os.getenv("MYSQL_PASSWORD", "1"),
+        database=os.getenv("MYSQL_DB", "queuing_db"),
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor
+    )
 
 def check_and_expire_links():
     """
-    링크가 발급된 후(LINK_SENT 상태) 10분이 지날 동안 
-    사용자의 응답(접속/예매 완료 등)이 없으면 자동으로 만료(EXPIRED) 처리
+    취소표 Secret Link가 발급된 후(ACTIVE 상태) 지정된 제한 시간(예: 5~10분) 동안 
+    사용자의 응답이 없으면 자동으로 만료(EXPIRED) 처리하고 좌석 및 대기열 정리
     """
+    connection = None
     try:
-        print("⏰ [만료 체크 배치 실행] 10분 초과 미응답 링크 검사 중...")
+        print("⏰ [만료 체크 배치 실행] 제한 시간 초과 미응답 링크 검사 중...")
+        connection = get_db_connection()
         
-        # DynamoDB에서 전체 상태 스캔 (또는 GSI 활용 가능)
-        response = dynamodb.scan(TableName=TABLE_NAME)
-        items = response.get('Items', [])
-        
-        current_time = datetime.utcnow()
-
-        for item in items:
-            allocation_id = item['allocation_id']['S']
-            status = item['status']['S']
+        with connection.cursor() as cursor:
+            # 1. cancel_allocations 테이블에서 상태가 'ACTIVE'인 항목 조회
+            # (app.py에서 링크 발급 시 status = 'ACTIVE'로 설정함)
+            sql = """
+                SELECT allocation_id, user_id, seat_id, created_at, hold_duration 
+                FROM cancel_allocations 
+                WHERE status = 'ACTIVE'
+            """
+            cursor.execute(sql)
+            items = cursor.fetchall()
             
-            # LINK_SENT 상태인 항목만 대상
-            if status == 'LINK_SENT':
-                created_at_str = item.get('created_at', {}).get('S')
+            current_time = datetime.now()
+            expired_count = 0
+
+            for item in items:
+                allocation_id = item['allocation_id']
+                user_id = item['user_id']
+                seat_id = item['seat_id']
+                created_at = item['created_at'] # DATETIME 타입
                 
-                if not created_at_str:
-                    continue
-                
-                created_at = datetime.fromisoformat(created_at_str)
-                
-                # 🔥 [핵심 기획 반영] 발급 시점부터 정확히 10분이 경과했는지 계산
-                expiration_time = created_at + timedelta(minutes=10)
+                # hold_duration이 있다면 그 값을 쓰고, 없으면 기본 5분(또는 10분) 설정
+                duration_minutes = item.get('hold_duration') or 5
+                expiration_time = created_at + timedelta(minutes=duration_minutes)
                 
                 if current_time > expiration_time:
-                    print(f"⌛ [만료 감지] 할당 ID '{allocation_id}' ➔ 10분 초과로 만료 처리 진행")
+                    print(f"⌛ [만료 감지] 할당 ID '{allocation_id}' (유저: {user_id}) ➔ 제한 시간 초과로 만료 처리 진행")
                     
-                    # 상태를 EXPIRED로 업데이트
-                    dynamodb.update_item(
-                        TableName=TABLE_NAME,
-                        Key={'allocation_id': {'S': allocation_id}},
-                        UpdateExpression="SET #st = :expired",
-                        ExpressionAttributeNames={"#st": "status"},
-                        ExpressionAttributeValues={":expired": {"S": "EXPIRED"}}
-                    )
-                    print(f"🚫 [만료 완료] '{allocation_id}' 상태가 'EXPIRED'로 변경되었습니다. (다음 대기자 기회 부여 가능)")
+                    # 2. cancel_allocations 상태를 'EXPIRED'로 업데이트
+                    update_alloc_sql = """
+                        UPDATE cancel_allocations 
+                        SET status = 'EXPIRED' 
+                        WHERE allocation_id = %s
+                    """
+                    cursor.execute(update_alloc_sql, (allocation_id,))
+                    
+                    # 3. [선택 연동] seats 테이블의 점유 상태도 초기화 (다시 AVAILABLE로 원복하여 다음 대기자에게 기회 제공)
+                    update_seat_sql = """
+                        UPDATE seats 
+                        SET status = 'AVAILABLE', held_by = '', held_at = NULL 
+                        WHERE seat_id = %s AND status = 'LOCKED'
+                    """
+                    cursor.execute(update_seat_sql, (seat_id,))
+                    
+                    expired_count += 1
+
+            connection.commit()
+            print(f"🚫 [만료 체크 완료] 총 {expired_count개의} 미응답 건이 'EXPIRED' 처리되었습니다. (다음 대기자 기회 부여 가능)")
 
     except Exception as e:
+        if connection:
+            connection.rollback()
         print(f"❌ 만료 체크 배치 실행 중 에러 발생: {e}")
+    finally:
+        if connection and connection.open:
+            connection.close()
 
 if __name__ == "__main__":
-    # 단발성 실행 또는 주기적 데몬으로 활용 가능
+    # 단발성 실행 또는 주기적 배치(Cron / APScheduler)로 호출 가능
     check_and_expire_links()

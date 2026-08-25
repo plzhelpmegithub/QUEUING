@@ -25,9 +25,18 @@ spec:
           value: "test"
         - name: AWS_DEFAULT_REGION
           value: "ap-northeast-2"
-        # 로컬스택과 통신하기 위한 환경 변수 세팅
+        # LocalStack과 통신하기 위한 환경 변수 세팅
         - name: AWS_ENDPOINT_URL
           value: "http://localstack-service.default.svc.cluster.local:4566"
+        # 🔥 [추가] 워커가 MySQL DB와 통신하기 위한 환경 변수
+        - name: MYSQL_HOST
+          value: "host.minikube.internal" # 또는 내부 MySQL 서비스 주소
+        - name: MYSQL_USER
+          value: "root"
+        - name: MYSQL_PASSWORD
+          value: "1"
+        - name: MYSQL_DB
+          value: "queuing_db"
         resources:
           limits:
             cpu: "500m"

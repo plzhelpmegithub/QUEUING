@@ -3,7 +3,8 @@ import json
 
 sqs = boto3.client('sqs', endpoint_url='http://127.0.0.1:4566', region_name='ap-northeast-2', aws_access_key_id='test', aws_secret_access_key='test')
 
-QUEUE_NAME = 'resale-email'
+# KEDA, Terraform, producer.py와 통일된 큐 이름으로 수정
+QUEUE_NAME = 'resale-queue'
 
 # 큐가 없으면 자동으로 생성하고, 있으면 URL을 가져옴
 try:
@@ -29,4 +30,4 @@ message_body = {
 }
 
 sqs.send_message(QueueUrl=url, MessageBody=json.dumps(message_body))
-print(f"✅ 사용자 '{username}' 테스트 메시지 전송 완료!")
+print(f"✅ 사용자 '{username}' 테스트 메시지가 '{QUEUE_NAME}' 큐로 전송 완료되었습니다!")
