@@ -116,6 +116,7 @@ async function eventRoutes(fastify) {
     }
 
     await queueService.setTotalSeats(totalSeatCount);
+    await queueService.openTicketing();
 
     // 부채꼴(아레나) 좌석맵일 때만 구역별 좌표(angle/radius/blockW/blockH) 자동 계산
     // — 프론트 신규 디자인의 .zone-fan 렌더링에 필요. standing은 좌표 없이 그리드로 표시.

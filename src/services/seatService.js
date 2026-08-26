@@ -9,6 +9,25 @@ const { saveReservation, cancelReservation } = require('./dbService');  // Maria
 const SEAT_PREFIX = 'seat:';              // Hash — 좌석 상태 (예: seat:A-001)
 const ADMITTED_KEY = 'queue:admitted';     // Set — 입장 허용된 사용자
 const SOLD_OUT_KEY = 'event:sold-out';    // 매진 플래그 (1이면 매진)
+const EVENT_LIST_KEY = 'events:list';     // 전체 이벤트 목록 (Redis)
+
+async function ensureEventInMariaDB(eventId) {
+  if (!eventId) return;
+  const rows = await pool.query('SELECT event_id FROM events WHERE event_id = ?', [eventId]);
+  if (rows.length > 0) return;
+  const cardStr = await redis.hget(EVENT_LIST_KEY, eventId);
+  if (!cardStr) {
+    console.warn(`[Seat] Redis에 이벤트 ${eventId} 없음 — events 테이블 동기화 건너뜀`);
+    return;
+  }
+  const e = JSON.parse(cardStr);
+  await pool.query(
+    `INSERT IGNORE INTO events (event_id, event_name, event_date, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+    [eventId, e.eventName || '', e.eventDate || '', e.venue || '', e.totalSeats || 0, e.seatingType || 'arena', JSON.stringify(e.sections || []), e.status || 'open', e.emoji || '', e.color || ''],
+  );
+  console.log(`[Seat] MariaDB events 테이블에 ${eventId} 자동 동기화 완료`);
+}
 
 // ===== 좌석 상태값 =====
 const STATUS = {
@@ -257,13 +276,10 @@ async function confirmSeat(userId, seatId) {
     return { success: false, reason: 'not_owner', message: '본인이 선점한 좌석이 아닙니다.' };
   }
 
-  // 좌석 확정 처리
-  await redis.hset(seatKey, { status: STATUS.SOLD });
-  await cancelTimer(seatId);
-  await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
-
-  // 예매 기록 저장 (event_id 포함)
+  // MariaDB에 예매 기록 저장 (Redis 상태 변경보다 먼저 — DB 저장이 실패하면
+  // Redis를 롤백할 필요 없이 held 상태가 유지되므로 재시도가 가능)
   const eventId = seatId.split(':')[0] || '';
+  await ensureEventInMariaDB(eventId);
   await saveReservation({ seatId, userId, eventId });
 
   // MariaDB seats 테이블 동기화
@@ -272,6 +288,11 @@ async function confirmSeat(userId, seatId) {
   } catch (dbErr) {
     console.error('[Seat] MariaDB confirm 동기화 실패:', dbErr.message);
   }
+
+  // 좌석 확정 처리 (DB 저장 성공 후에 Redis 상태 변경)
+  await redis.hset(seatKey, { status: STATUS.SOLD });
+  await cancelTimer(seatId);
+  await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
 
   // 결제까지 끝났으니 이제 Admission Token 무효화 — 이 시점부터는 재사용 방지
   // (선점만 하고 아직 결제 전인 동안은 좌석을 바꿀 수 있어야 해서 holdSeat에서는
