@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-counter
+  labels:
+    app: backend-counter
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: backend-counter
+  template:
+    metadata:
+      labels:
+        app: backend-counter
+    spec:
+      # 👇 도커허브 출입증은 Pod의 spec(template.spec) 안에 들어가는 게 정석이야!
+      imagePullSecrets:
+        - name: regcred
+      containers:
+      - name: backend-counter
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: "{{ .Values.image.pullPolicy }}"
+        env:
+        - name: SERVER_PORT
+          value: "{{ .Values.service.port }}"
+        - name: DB_HOST
+          value: "{{ .Values.env.dbHost }}"
+        - name: DB_PORT
+          value: "{{ .Values.env.dbPort }}"
+        - name: REDIS_HOST
+          value: "{{ .Values.env.redisHost }}"
+        - name: REDIS_PORT
+          value: "{{ .Values.env.redisPort }}"
+{{- if .Values.env.custom }}
+{{- range $key, $val := .Values.env.custom }}
+        - name: {{ $key }}
+          value: "{{ $val }}"
+{{- end }}
+{{- end }}
+        ports:
+        - containerPort: {{ .Values.service.port }}
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: {{ .Values.service.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: {{ .Values.service.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 20
