@@ -246,10 +246,31 @@ wss.on('connection', (ws, request) => {
 });
 
 // ---- Redis Pub/Sub 연결 ----
+// 우리 Redis — 채팅 fan-out(pod 간 메시지 전파) + 테스트용 /publish/seat 엔드포인트
 const redisPub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
 const redisSub = new Redis({ host: REDIS_HOST, port: REDIS_PORT });
 
-// 채팅은 chat:{eventId} 패턴 구독
+// A파트 Redis(192.168.0.190) — 진짜 좌석 이벤트는 여기서 온다. 처음엔 A가 우리 Redis로
+// 발행하는 구조로 하려다가 A가 클러스터 밖(로컬)에 있어서 인바운드 방화벽/NodePort 문제가
+// 계속 생겼음. 대신 우리가 "구독자"로 A의 Redis에 아웃바운드로 붙는 게 훨씬 간단함
+// (A쪽은 코드/설정 아무것도 안 바꿔도 됨, 우리 Redis도 외부에 노출할 필요 없음, 읽기 전용
+// 구독이라 A 데이터에 영향 없음).
+const A_REDIS_HOST = process.env.A_REDIS_HOST || '192.168.0.190';
+const A_REDIS_PORT = process.env.A_REDIS_PORT || 6379;
+const redisSubA = new Redis({
+  host: A_REDIS_HOST,
+  port: A_REDIS_PORT,
+  // SUBSCRIBE 연결은 이벤트가 없을 때 계속 idle 상태로 남아있는데, 중간 네트워크
+  // 장비(공유기 등)가 오래 idle인 연결을 끊어버리는 것으로 보임(ECONNRESET 반복).
+  // TCP 레벨 keepalive를 짧은 주기로 보내서 "살아있는 연결"로 인식시켜 끊김을 방지.
+  keepAlive: 10000,
+  // 끊기더라도 1초 고정 주기로 빠르게 재연결 (기본 backoff보다 공백 시간을 줄임)
+  retryStrategy: () => 1000,
+});
+redisSubA.on('error', (err) => console.error(`[A-Redis] 연결 에러 (${A_REDIS_HOST}:${A_REDIS_PORT}):`, err.message));
+redisSubA.on('connect', () => console.log(`[A-Redis] 연결됨: ${A_REDIS_HOST}:${A_REDIS_PORT}`));
+
+// 채팅은 우리 Redis에서 chat:{eventId} 패턴 구독
 redisSub.psubscribe('chat:*', (err, count) => {
   if (err) {
     console.error('Redis psubscribe 실패:', err);
@@ -258,26 +279,15 @@ redisSub.psubscribe('chat:*', (err, count) => {
   console.log(`Redis 패턴 채널 ${count}개 구독 중`);
 });
 
-// 좌석 이벤트는 A파트 실제 구현 기준 고정 채널 하나만 구독
-// (예전엔 psubscribe('seat:*')로 잡으려 했는데, A는 seat:{eventId} 패턴이 아니라
-//  events:seat-status라는 고정 채널 하나에 발행하는 구조라 안 잡혔음 — 이번에 맞춤)
-redisSub.subscribe(SEAT_EVENT_CHANNEL, (err) => {
-  if (err) {
-    console.error('Redis subscribe 실패 (좌석 이벤트):', err);
-    return;
-  }
-  console.log(`Redis 채널 구독 중: ${SEAT_EVENT_CHANNEL}`);
-});
-
 redisSub.on('pmessage', (pattern, channel, message) => {
   // 여기로는 chat:{eventId}만 들어옴
   broadcastToChannel(channel, message);
   messagesCounter.inc({ kind: 'chat' });
 });
 
-redisSub.on('message', (channel, message) => {
-  if (channel !== SEAT_EVENT_CHANNEL) return;
-
+// 좌석 이벤트 처리 — A의 진짜 Redis, 그리고 테스트용 우리 Redis 양쪽에서 오는 메시지를
+// 똑같은 방식으로 처리한다 (형식이 같으므로).
+function handleSeatEventMessage(message) {
   let event;
   try {
     event = JSON.parse(message);
@@ -300,6 +310,32 @@ redisSub.on('message', (channel, message) => {
     }
   }
   messagesCounter.inc({ kind: 'seats' });
+}
+
+// 테스트용 — 우리 Redis(POST /publish/seat/:eventId로 흉내낸 이벤트)도 계속 구독
+redisSub.subscribe(SEAT_EVENT_CHANNEL, (err) => {
+  if (err) {
+    console.error('Redis subscribe 실패 (테스트용 좌석 이벤트):', err);
+    return;
+  }
+  console.log(`Redis 채널 구독 중 (테스트용, 우리 Redis): ${SEAT_EVENT_CHANNEL}`);
+});
+redisSub.on('message', (channel, message) => {
+  if (channel !== SEAT_EVENT_CHANNEL) return;
+  handleSeatEventMessage(message);
+});
+
+// 진짜 좌석 이벤트 — A파트 Redis 구독
+redisSubA.subscribe(SEAT_EVENT_CHANNEL, (err) => {
+  if (err) {
+    console.error('Redis subscribe 실패 (A파트 좌석 이벤트):', err);
+    return;
+  }
+  console.log(`Redis 채널 구독 중 (A파트 진짜 이벤트, ${A_REDIS_HOST}): ${SEAT_EVENT_CHANNEL}`);
+});
+redisSubA.on('message', (channel, message) => {
+  if (channel !== SEAT_EVENT_CHANNEL) return;
+  handleSeatEventMessage(message);
 });
 
 server.listen(PORT, () => {
