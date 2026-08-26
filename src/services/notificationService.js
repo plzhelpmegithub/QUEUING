@@ -3,20 +3,20 @@ const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
 
 // ===== AWS 클라이언트 설정 (LocalStack 호환) =====
 const sesClient = new SESClient({
-  endpoint: process.env.AWS_ENDPOINT || 'http://192.168.0.191:4566',
+  endpoint: process.env.AWS_ENDPOINT,
   region: process.env.AWS_REGION || 'ap-northeast-2',
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || 'fakekey',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || 'fakesecret',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
 
 const snsClient = new SNSClient({
-  endpoint: process.env.AWS_ENDPOINT || 'http://192.168.0.191:4566',
+  endpoint: process.env.AWS_ENDPOINT,
   region: process.env.AWS_REGION || 'ap-northeast-2',
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || 'fakekey',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || 'fakesecret',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
 
