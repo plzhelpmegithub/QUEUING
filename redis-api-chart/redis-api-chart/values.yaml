@@ -1,0 +1,82 @@
+replicaCount: 2
+
+image:
+  # 온프레미스 프라이빗 레지스트리 주소로 변경 (예: harbor.내부도메인/queuing/backend)
+  repository: "mover14/redis-api-backend"
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: NodePort
+  port: 3000        # 파드 내부 포트 (Dockerfile EXPOSE 3000)
+  nodePort: 30090   # 조장PC_IP:30090 으로 외부 접근 (30000~32767 범위)
+
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# 앱 코드 기준 환경변수 — 조장 PC 쿠버네티스에서 주입되는 값
+env:
+  # redis.js / timerService.js
+  redisHost: "redis-service.redis.svc.cluster.local"  # 클러스터 내부 Redis 서비스명으로 변경
+  redisPort: "6379"
+  # mariadb.js
+  dbHost: "mariadb-service.default.svc.cluster.local"  # 클러스터 내부 MariaDB 서비스명으로 변경
+  dbPort: "3306"
+  dbUser: "root"
+  dbPassword: "1"
+  dbName: "queuing_db"
+  # Node 환경
+  nodeEnv: "production"
+
+# 온프레미스 파드 리소스 제한 (클러스터 용량에 맞게 조정)
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+volumes: []
+volumeMounts: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
