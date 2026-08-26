@@ -1,0 +1,78 @@
+# ──────────────────────────────────────────────
+# LocalStack — 건아님 PC(192.168.0.191)에서 돌던 가짜 AWS(SES/SNS)를
+# 지예님 클러스터 안으로 통합.
+#
+# 진짜 AWS 자격증명이 아니라 LocalStack 관례상 더미값("test")을 쓰므로
+# Secret 불필요 — YAML에 그대로 둬도 안전함.
+#
+# ■ 적용
+#   kubectl apply -f localstack.yaml
+#
+# ■ 확인
+#   kubectl get pods -n queuing-localstack
+#   kubectl port-forward -n queuing-localstack svc/localstack 4566:4566
+#   curl http://localhost:4566/_localstack/health
+# ──────────────────────────────────────────────
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: queuing-localstack
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+  namespace: queuing-localstack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: localstack
+  template:
+    metadata:
+      labels:
+        app: localstack
+    spec:
+      containers:
+        - name: localstack
+          image: localstack/localstack:3
+          ports:
+            - containerPort: 4566
+          env:
+            # 찬규님 코드가 실제로 쓰는 서비스만 활성화 (SES, SNS) —
+            # 다 켜면 시작이 느려지고 리소스만 더 먹음
+            - name: SERVICES
+              value: "ses,sns"
+            - name: DEFAULT_REGION
+              value: "ap-northeast-2"
+            - name: AWS_ACCESS_KEY_ID
+              value: "test"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "test"
+          readinessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: 4566
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+  namespace: queuing-localstack
+spec:
+  selector:
+    app: localstack
+  ports:
+    - port: 4566
+      targetPort: 4566
+  type: ClusterIP

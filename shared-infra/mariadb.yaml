@@ -1,0 +1,112 @@
+# ──────────────────────────────────────────────
+# MariaDB — A(찬규)/B(건아)가 공용으로 쓰는 queuing_db를
+# 지예님 클러스터 안으로 통합.
+#
+# ⚠️ 이건 팀이 개발 중 자체적으로 띄운 "queuing_db"이고,
+#    더존비즈온이 지급한 D-Cloud(211.46.52.164) MariaDB와는 완전히
+#    다른 DB예요. D-Cloud는 그대로 두고, 이것만 옮기는 거예요.
+#
+# ■ 스키마 마이그레이션 불필요
+#   찬규님 앱이 시작할 때 initTable()로 테이블 9개를 자동 생성함
+#   (dbService.js) — 그러니 새 MariaDB는 비어있는 상태로 시작해도
+#   앱이 알아서 스키마를 만듦. 옮기려면 "기존 데이터"만 신경 쓰면 됨
+#   (테스트 데이터라 안 옮겨도 되면 그냥 새로 시작해도 무방).
+#
+# ■ 적용 전 필수 — Secret 먼저 생성 (비밀번호를 YAML에 안 박아두기 위함)
+#   kubectl create namespace queuing-db
+#   kubectl create secret generic mariadb-credentials -n queuing-db \
+#     --from-literal=MARIADB_ROOT_PASSWORD='<직접 정한 비밀번호>' \
+#     --from-literal=MARIADB_DATABASE=queuing_db
+#
+# ■ 적용
+#   kubectl apply -f mariadb.yaml
+#
+# ■ 스토리지 — PVC가 Pending 상태로 안 넘어가면 클러스터에
+#   기본 StorageClass가 없는 것. 아래에서 확인:
+#   kubectl get storageclass
+#   없으면 파일 맨 아래 "스토리지클래스 없을 때" 주석 참고
+# ──────────────────────────────────────────────
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: queuing-db
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+  namespace: queuing-db
+spec:
+  serviceName: mariadb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11
+          ports:
+            - containerPort: 3306
+          envFrom:
+            - secretRef:
+                name: mariadb-credentials
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: queuing-db
+spec:
+  selector:
+    app: mariadb
+  ports:
+    - port: 3306
+      targetPort: 3306
+  type: ClusterIP
+
+# ── 스토리지클래스가 없을 때 (온프레미스 kubeadm 클러스터에 흔함) ──
+# 아래를 volumeClaimTemplates 대신 넣고, PersistentVolume을 노드
+# 로컬 디렉터리로 수동 지정해야 함:
+#
+# apiVersion: v1
+# kind: PersistentVolume
+# metadata:
+#   name: mariadb-pv
+# spec:
+#   capacity: { storage: 5Gi }
+#   accessModes: ["ReadWriteOnce"]
+#   hostPath: { path: "/data/mariadb" }   # 워커 노드 로컬 경로 — 미리 mkdir 필요
