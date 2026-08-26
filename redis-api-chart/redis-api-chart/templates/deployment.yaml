@@ -56,11 +56,20 @@ spec:
             - name: DB_USER
               value: {{ .Values.env.dbUser | quote }}
             - name: DB_PASSWORD
-              value: {{ .Values.env.dbPassword | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dbPasswordSecret.name }}
+                  key: {{ .Values.dbPasswordSecret.key }}
             - name: DB_NAME
               value: {{ .Values.env.dbName | quote }}
             - name: NODE_ENV
               value: {{ .Values.env.nodeEnv | quote }}
+            - name: AWS_ENDPOINT
+              value: {{ .Values.env.awsEndpoint | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ .Values.env.awsAccessKeyId | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ .Values.env.awsSecretAccessKey | quote }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
