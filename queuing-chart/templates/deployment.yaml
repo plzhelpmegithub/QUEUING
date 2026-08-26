@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-worker
+  labels:
+    app: email-worker
+spec:
+  replicas: 1 # 기본 1개, KEDA가 동적으로 조절
+  selector:
+    matchLabels:
+      app: email-worker
+  template:
+    metadata:
+      labels:
+        app: email-worker
+    spec:
+      containers:
+      - name: worker
+        image: my-python-worker:latest
+        imagePullPolicy: Never  # 로컬(Minikube) 환경에서 로컬 이미지 사용할 때 필수적
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: "test"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "test"
+        - name: AWS_DEFAULT_REGION
+          value: "ap-northeast-2"
+        # LocalStack과 통신하기 위한 환경 변수 세팅
+        - name: AWS_ENDPOINT_URL
+          value: "http://localstack-service.default.svc.cluster.local:4566"
+        # 🔥 [추가] 워커가 MySQL DB와 통신하기 위한 환경 변수
+        - name: MYSQL_HOST
+          value: "host.minikube.internal" # 또는 내부 MySQL 서비스 주소
+        - name: MYSQL_USER
+          value: "root"
+        - name: MYSQL_PASSWORD
+          value: "1"
+        - name: MYSQL_DB
+          value: "queuing_db"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
