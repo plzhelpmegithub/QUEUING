@@ -4,7 +4,7 @@ image:
   # 온프레미스 프라이빗 레지스트리 주소로 변경 (예: harbor.내부도메인/queuing/backend)
   repository: "mover14/redis-api-backend"
   pullPolicy: IfNotPresent
-  tag: "1.0.1"   # Docker Hub에 실제로 push된 태그로 수정 (1.0.0은 존재하지 않아 ImagePullBackOff 발생했음)
+  tag: "1.0.0"
 
 imagePullSecrets: []
 
