@@ -35,6 +35,8 @@ def get_db_connection():
 
 class QueueJoinRequest(BaseModel):
     user_id: str
+    seat_id: int = 1   # 필요한 경우 요청 모델에 포함 (기본값 설정 가능)
+    event_id: int = 1  # 필요한 경우 요청 모델에 포함
 
 class TokenVerifyRequest(BaseModel):
     token: str
@@ -47,7 +49,6 @@ def check_membership_from_db(user_id: str) -> bool:
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            # memberships 스키마에 맞춰 user_id와 만료일(expires_at) 검증
             sql = """
                 SELECT membership_id 
                 FROM memberships 
@@ -65,7 +66,7 @@ def check_membership_from_db(user_id: str) -> bool:
 
 @app.post("/api/v1/resale/queue/join")
 def join_resale_queue(req: QueueJoinRequest):
-    """1. 취소표 대기열 등록 API (입구 컷: 유료 회원만 허용)"""
+    """1. 취소표 대기열 등록 API (입구 컷: 유료 회원만 허용) - cancel_allocations 테이블 연동"""
     if not check_membership_from_db(req.user_id):
         raise HTTPException(
             status_code=403, 
@@ -75,23 +76,23 @@ def join_resale_queue(req: QueueJoinRequest):
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            # 이미 대기열에 등록되어 있는지 확인
-            cursor.execute("SELECT resale_id, status FROM resale_queues WHERE seller_user_id = %s", (req.user_id,))
+            # 이미 대기열에 등록되어 있는지 확인 (PENDING 상태 기준)
+            cursor.execute("SELECT id, status FROM cancel_allocations WHERE user_id = %s AND status = 'PENDING'", (req.user_id,))
             if cursor.fetchone():
                 return {"status": "ALREADY_QUEUED", "message": "이미 취소표 대기열에 등록된 회원입니다."}
             
-            # resale_queues 구조에 맞춰 필요시 대기 순번 처리
-            cursor.execute("SELECT MAX(resale_id) as max_pos FROM resale_queues")
+            # 대기 순번 계산 (id 기준 MAX)
+            cursor.execute("SELECT MAX(id) as max_pos FROM cancel_allocations")
             row = cursor.fetchone()
             next_pos = (row['max_pos'] or 0) + 1
             
-            # 대기열 등록 (WAITING 상태 기록 - 스키마에 맞춰 컬럼 매칭)
+            # cancel_allocations 테이블 스키마에 맞춰 INSERT
             cursor.execute(
                 """
-                INSERT INTO resale_queues (reservation_id, seller_user_id, status) 
-                VALUES (0, %s, 'LISTED')
+                INSERT INTO cancel_allocations (user_id, seat_id, event_id, status, created_at) 
+                VALUES (%s, %s, %s, 'PENDING', NOW())
                 """,
-                (req.user_id,)
+                (req.user_id, req.seat_id, req.event_id)
             )
             connection.commit()
             
@@ -108,17 +109,17 @@ def join_resale_queue(req: QueueJoinRequest):
 def activate_next_user():
     """
     3. 순차 배정 워크플로우 API (수동 트리거용)
-    - 대기 중인 다음 회원을 활성화하고 실제 도메인 링크 발급
+    - cancel_allocations 테이블에서 PENDING 상태인 다음 회원을 활성화
     """
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT resale_id, seller_user_id 
-                FROM resale_queues 
-                WHERE status = 'LISTED' 
-                ORDER BY resale_id ASC 
+                SELECT id, user_id 
+                FROM cancel_allocations 
+                WHERE status = 'PENDING' 
+                ORDER BY id ASC 
                 LIMIT 1
                 """
             )
@@ -127,7 +128,7 @@ def activate_next_user():
             if not target:
                 raise HTTPException(status_code=404, detail="대기 중인 사용자가 없습니다.")
             
-            user_id = target['seller_user_id']
+            user_id = target['user_id']
             
             now = datetime.datetime.now()
             expire_time = now + datetime.timedelta(minutes=LINK_EXPIRE_MINUTES)
@@ -139,21 +140,21 @@ def activate_next_user():
             }
             private_token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
             
-            # 상태를 ACTIVE 혹은 배정 상태로 변경
+            # 상태를 'ACTIVE'로 변경하고 expires_at 업데이트
             cursor.execute(
                 """
-                UPDATE resale_queues 
-                SET status = 'ACTIVE'
-                WHERE resale_id = %s
+                UPDATE cancel_allocations 
+                SET status = 'ACTIVE', expires_at = %s
+                WHERE id = %s
                 """,
-                (target['resale_id'],)
+                (expire_time, target['id'])
             )
             connection.commit()
             
         return {
             "status": "ACTIVATED",
             "user_id": user_id,
-            "queue_position": target['resale_id'],
+            "queue_position": target['id'],
             "private_link": f"http://www.queuing.kr/resale/ticket?token={private_token}",
             "expires_at": expire_time.strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -175,7 +176,7 @@ def verify_and_invalidate_link(req: TokenVerifyRequest):
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT status FROM resale_queues WHERE seller_user_id = %s", (user_id,))
+            cursor.execute("SELECT status FROM cancel_allocations WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
             item = cursor.fetchone()
             
             if not item or item['status'] != 'ACTIVE':
@@ -184,6 +185,35 @@ def verify_and_invalidate_link(req: TokenVerifyRequest):
         return {"status": "VALID", "message": "접근이 허용되었습니다. 좌석 선택 화면으로 이동합니다."}
     finally:
         connection.close()
+
+
+# --- 누락되었던 회원 멤버십 조회 API 추가 ---
+@app.get("/api/v1/membership/{user_id}")
+def get_membership(user_id: str):
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM memberships WHERE user_id = %s", (user_id,))
+            membership = cursor.fetchone()
+            if not membership:
+                raise HTTPException(status_code=404, detail="Membership not found")
+            return membership
+    finally:
+        connection.close()
+
+
+# --- 누락되었던 위시리스트 조회 API 추가 ---
+@app.get("/api/v1/wishlist/{user_id}")
+def get_wishlist(user_id: str):
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM wishlists WHERE user_id = %s", (user_id,))
+            wishlist = cursor.fetchall()
+            return wishlist
+    finally:
+        connection.close()
+
 
 def time_to_timestamp(dt):
     return int(time.mktime(dt.timetuple()))

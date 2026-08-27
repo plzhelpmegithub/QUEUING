@@ -12,7 +12,7 @@ SECRET_KEY = "your-secure-jwt-secret-key"
 ALGORITHM = "HS256"
 LINK_EXPIRE_MINUTES = 5
 
-# 이메일(SMTP) 설정 (실제 사용하는 계정이나 테스트 계정으로 수정 가능)
+# 이메일(SMTP) 설정
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SENDER_EMAIL = "your-email@gmail.com"
@@ -74,11 +74,10 @@ def process_resale_queue_job():
         with connection.cursor() as cursor:
             now = datetime.datetime.now()
             
-            # 1. 만료된 링크 일괄 처리 (resale_queues 스키마 반영: expires_at 컬럼 활용)
-            # 주의: 만약 resale_queues에 expires_at 컬럼이 없다면 추가해주셔야 합니다.
+            # 1. 만료된 링크 일괄 처리 (cancel_allocations 스키마 반영)
             cursor.execute(
                 """
-                UPDATE resale_queues 
+                UPDATE cancel_allocations 
                 SET status = 'EXPIRED' 
                 WHERE status = 'ACTIVE' AND expires_at < %s
                 """,
@@ -88,18 +87,18 @@ def process_resale_queue_job():
             if expired_count > 0:
                 print(f"[{now}] ⏰ 만료된 링크 {expired_count}건을 EXPIRED 처리했습니다.")
             
-            # 2. 현재 ACTIVE 유저 확인 (스키마의 seller_user_id 활용)
-            cursor.execute("SELECT resale_id FROM resale_queues WHERE status = 'ACTIVE' LIMIT 1")
+            # 2. 현재 ACTIVE 유저 확인
+            cursor.execute("SELECT id FROM cancel_allocations WHERE status = 'ACTIVE' LIMIT 1")
             active_user = cursor.fetchone()
             
-            # 3. 활성 유저가 없다면 다음 LISTED(대기) 유저 선점 (비관적 락 FOR UPDATE 적용)
+            # 3. 활성 유저가 없다면 다음 PENDING(대기) 유저 선점 (비관적 락 FOR UPDATE 적용)
             if not active_user:
                 cursor.execute(
                     """
-                    SELECT resale_id, seller_user_id 
-                    FROM resale_queues 
-                    WHERE status = 'LISTED' 
-                    ORDER BY resale_id ASC 
+                    SELECT id, user_id 
+                    FROM cancel_allocations 
+                    WHERE status = 'PENDING' 
+                    ORDER BY id ASC 
                     LIMIT 1 
                     FOR UPDATE
                     """
@@ -107,8 +106,8 @@ def process_resale_queue_job():
                 next_target = cursor.fetchone()
                 
                 if next_target:
-                    user_id = next_target['seller_user_id']
-                    target_id = next_target['resale_id']
+                    user_id = next_target['user_id']
+                    target_id = next_target['id']
                     
                     # users 테이블에서 실제 이메일 조회
                     cursor.execute("SELECT email FROM users WHERE user_id = %s", (user_id,))
@@ -124,14 +123,14 @@ def process_resale_queue_job():
                     }
                     private_token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
                     
-                    # 상태를 ACTIVE로 전환하고 토큰 및 만료 시간 기록
+                    # 상태를 ACTIVE로 전환하고 만료 시간 기록 (cancel_allocations 테이블 스키마 기준)
                     cursor.execute(
                         """
-                        UPDATE resale_queues 
-                        SET status = 'ACTIVE', private_token = %s, expires_at = %s 
-                        WHERE resale_id = %s
+                        UPDATE cancel_allocations 
+                        SET status = 'ACTIVE', expires_at = %s 
+                        WHERE id = %s
                         """,
-                        (private_token, expire_time, target_id)
+                        (expire_time, target_id)
                     )
                     
                     private_link = f"http://www.queuing.kr/resale/ticket?token={private_token}"
