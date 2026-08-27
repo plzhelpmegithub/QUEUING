@@ -5,7 +5,8 @@ import { formatPrice, formatNumber, formatDeadline } from '../utils/format.js';
 import { mountRefundSummary } from '../components/refundPolicy.js';
 import { mountLiveChat } from '../components/liveChat.js';
 import { navigate } from '../router.js';
-import { isLoggedIn, setReturnTo } from '../state/store.js';
+import { isLoggedIn, setReturnTo, setSelectedSession } from '../state/store.js';
+import { generateEventSessions } from '../data/concerts.js';
 
 export const concertDetailPage = {
   render(container, params) {
@@ -28,6 +29,7 @@ export const concertDetailPage = {
         }
 
         const bgColor = `linear-gradient(135deg,${c.color || '#667eea,#764ba2'})`;
+        const sessions = generateEventSessions(c.eventDate);
 
         container.innerHTML = `
           <section class="detail-hero" style="background:${bgColor}">
@@ -64,7 +66,7 @@ export const concertDetailPage = {
               <div class="detail-info-card">
                 <h3>예매 유의사항</h3>
                 <div class="notice-box">
-                  <p>· <strong>한 회차당 1매, 인당 최대 2매</strong> 구매 가능합니다.</p>
+                  <p>· <strong>공연일마다 1매, 인당 최대 2매</strong> 구매 가능합니다.</p>
                   <p>· 예매 후 취소 시 취소 수수료가 부과될 수 있습니다.</p>
                   <p>· <strong>멤버십 가입자</strong>에 한해 매진 이후 좌석 선택 화면까지 진입했던 회원은 <strong>취소표 대기열</strong> 대상자로 자동 등록됩니다.</p>
                   <p>· 실명 확인 및 본인 입장이 원칙입니다.</p>
@@ -74,25 +76,128 @@ export const concertDetailPage = {
             </div>
 
             <div class="detail-right-col">
-              <div class="booking-panel" data-panel>
-                <div class="booking-panel__seats-left">현재 남은 좌석</div>
-                <div class="booking-panel__seats-num num-mono">${formatNumber(c.totalSeats)}석</div>
-                <div class="badge badge-red" data-status-badge style="margin-bottom:18px;">● 예매 진행중</div>
-                <button class="btn btn-primary btn-block" data-book>예매하기</button>
+              <div class="booking-panel" data-panel style="padding:0;overflow:hidden;">
+                <div data-booking-cal></div>
+                <div style="padding:0 24px 20px;">
+                  <button class="btn btn-primary btn-block" data-book disabled>날짜를 선택해주세요</button>
+                </div>
               </div>
               <div class="live-panel" data-live></div>
             </div>
           </div>
         `;
 
-        // 예매하기 버튼
+        // 캘린더 날짜 + 회차 선택
+        let selectedDate = null;
+        let selectedSessionIdx = null;
+        let bookingOpen = true;
+        const validDates = new Set(sessions.map((s) => s.date));
+
+        function renderBookingCal(calHost) {
+          const first = new Date(sessions[0].date);
+          let calYear = first.getFullYear();
+          let calMonth = first.getMonth();
+          const WDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+
+          function paint() {
+            const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+            const startDay = new Date(calYear, calMonth, 1).getDay();
+            let cells = '';
+            for (let i = 0; i < startDay; i++) cells += `<div class="bcal-day bcal-day--empty"></div>`;
+            for (let d = 1; d <= daysInMonth; d++) {
+              const ds = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+              const isValid = validDates.has(ds);
+              const isSel = ds === selectedDate;
+              const cls = ['bcal-day', isValid ? 'bcal-day--valid' : 'bcal-day--disabled', isSel ? 'bcal-day--selected' : ''].join(' ');
+              cells += `<div class="${cls}" ${isValid ? `data-cal-date="${ds}"` : ''}>${d}</div>`;
+            }
+
+            const timesForDate = selectedDate ? sessions.filter((s) => s.date === selectedDate) : [];
+            let sessionArea;
+            if (!selectedDate) {
+              sessionArea = `<span style="font-size:13px;color:var(--color-text-secondary);">날짜를 먼저 선택해주세요</span>`;
+            } else {
+              sessionArea = timesForDate.map((s) => {
+                const idx = sessions.indexOf(s);
+                const active = idx === selectedSessionIdx ? 'active' : '';
+                return `<button type="button" class="chip-btn ${active}" data-pick-session="${idx}" style="padding:10px 20px;font-size:14px;">${s.round}회 ${s.time}</button>`;
+              }).join('');
+            }
+
+            calHost.innerHTML = `
+              <div class="bcal">
+                <div class="bcal-section">
+                  <div class="bcal-section-hd"><span style="font-weight:700;">관람일</span></div>
+                  <div class="bcal-nav">
+                    <button type="button" data-cal-dir="-1" class="bcal-nav-btn">‹</button>
+                    <span class="bcal-nav-title">${calYear}. ${String(calMonth + 1).padStart(2, '0')}</span>
+                    <button type="button" data-cal-dir="1" class="bcal-nav-btn">›</button>
+                  </div>
+                  <div class="bcal-weekdays">${WDAYS.map((w) => `<span>${w}</span>`).join('')}</div>
+                  <div class="bcal-grid">${cells}</div>
+                </div>
+                <div class="bcal-section" style="border-top:1px solid var(--color-border);">
+                  <div class="bcal-section-hd"><span style="font-weight:700;">회차</span></div>
+                  <div style="padding:0 20px 16px;display:flex;gap:8px;flex-wrap:wrap;" data-session-area>${sessionArea}</div>
+                </div>
+                <div style="padding:0 20px 4px;font-size:12px;color:var(--color-text-secondary);">
+                  · 공연일마다 <strong>1매</strong>, 인당 최대 <strong>2매</strong> 예매 가능
+                </div>
+              </div>
+            `;
+
+            calHost.querySelectorAll('[data-cal-dir]').forEach((btn) => {
+              btn.addEventListener('click', () => {
+                calMonth += parseInt(btn.dataset.calDir);
+                if (calMonth < 0) { calMonth = 11; calYear--; }
+                if (calMonth > 11) { calMonth = 0; calYear++; }
+                paint();
+              });
+            });
+            calHost.querySelectorAll('[data-cal-date]').forEach((cell) => {
+              cell.addEventListener('click', () => {
+                selectedDate = cell.dataset.calDate;
+                selectedSessionIdx = null;
+                paint();
+                updateBookBtn();
+              });
+            });
+            calHost.querySelectorAll('[data-pick-session]').forEach((btn) => {
+              btn.addEventListener('click', () => {
+                selectedSessionIdx = parseInt(btn.dataset.pickSession);
+                paint();
+                updateBookBtn();
+              });
+            });
+          }
+          paint();
+        }
+
+        renderBookingCal(container.querySelector('[data-booking-cal]'));
+
+        function updateBookBtn() {
+          if (!bookingOpen) return;
+          const bookBtn = container.querySelector('[data-book]');
+          if (!bookBtn) return;
+          if (selectedSessionIdx == null) {
+            bookBtn.disabled = true;
+            bookBtn.textContent = '날짜를 선택해주세요';
+          } else {
+            bookBtn.disabled = false;
+            bookBtn.textContent = '예매하기';
+          }
+        }
+
         container.querySelector('[data-book]')?.addEventListener('click', () => {
           if (!isLoggedIn()) {
             setReturnTo(`concert/${c.eventId}`);
             navigate('login');
             return;
           }
-          navigate(`booking/${c.eventId}`);
+          if (selectedSessionIdx == null) return;
+          const s = sessions[selectedSessionIdx];
+          setSelectedSession(c.eventId, { date: s.date, time: s.time });
+          navigate(`queue/${c.eventId}`);
         });
 
         mountRefundSummary(container.querySelector('[data-refund-summary]'));
@@ -109,35 +214,22 @@ export const concertDetailPage = {
         // "5분 이내일 때만 노출"이라 10분 후 오픈처럼 5분보다 긴 대기에서는
         // 카운트다운이 아예 안 보이는(그래서 "표시 안 됨"으로 보이는) 버그가 있었음.
         const bookBtn = container.querySelector('[data-book]');
-        const statusBadge = container.querySelector('[data-status-badge]');
 
         function startOpenCountdown(openAtMs) {
+          bookingOpen = false;
           function paint() {
             const remaining = openAtMs - Date.now();
             if (remaining <= 0) {
               clearInterval(openTimer);
               openTimer = null;
-              bookBtn.disabled = false;
-              bookBtn.textContent = '예매하기';
+              bookingOpen = true;
+              updateBookBtn();
               bookBtn.classList.remove('btn--countdown');
-              if (statusBadge) {
-                statusBadge.textContent = '● 예매 진행중';
-                statusBadge.classList.remove('badge-gray');
-                statusBadge.classList.add('badge-red');
-              }
               return;
             }
             bookBtn.disabled = true;
             bookBtn.classList.add('btn--countdown');
-            // formatDeadline은 하루 이내는 "00:10:00" 형태, 그 이상은 "D-2 03:00:00"처럼
-            // 압축 표시돼서 오픈 시각이 며칠 뒤라도 버튼 안에서 줄바꿈 없이 들어감.
             bookBtn.textContent = `예매 시작까지 ${formatDeadline(remaining)}`;
-            // 오픈 전엔 "예매 진행중"이 혼란을 주므로 "예매 오픈 예정"으로 바꿔둠
-            if (statusBadge) {
-              statusBadge.textContent = '● 예매 오픈 예정';
-              statusBadge.classList.remove('badge-red');
-              statusBadge.classList.add('badge-gray');
-            }
           }
           paint();
           openTimer = setInterval(paint, 1000);

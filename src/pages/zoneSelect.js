@@ -18,14 +18,13 @@ import { showSoldOutModal } from '../components/soldOutModal.js';
 import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { connectSeats } from '../services/realtimeIntegration.js';
+import { generateEventSessions } from '../data/concerts.js';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
 const POLL_MS = 4000;
 const HOLD_MS = 8 * 60 * 1000 + 42 * 1000;
-// Same fixed slot list bookingDateTime.js offers for this (single) event date —
-// kept here too so users can switch times without leaving the seat screen.
-const SESSION_TIMES = ['14:00', '19:00'];
+
 const WEEKDAYS_KO = ['일', '월', '화', '수', '목', '금', '토'];
 
 function formatSessionLabel(session, eventDate) {
@@ -85,6 +84,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const allSeats = seatsData.seats || [];
       const layout = (c.sections || []).length ? c.sections : [{ name: 'A', seats: c.totalSeats, price: c.price }];
       let session = getSelectedSession(c.eventId);
+      const eventSessions = generateEventSessions(c.eventDate);
 
       // 구역(zone) 하나 = mountSeatMap의 section 하나. 전체 구역의 좌석을 한 번에
       // 넘겨서 지도 전체가 곧 좌석 선택 화면이 되게 함.
@@ -155,7 +155,6 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
               <div class="seat-page-header__title">${c.eventName}</div>
               <div class="seat-page-header__date">
                 <span data-session-date>${formatSessionLabel(session, c.eventDate)}</span> · ${c.venue}
-                <button type="button" class="date-edit-link" data-edit-session>변경</button>
               </div>
             </div>
             <div class="seat-page-header__right"></div>
@@ -167,6 +166,15 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             <div style="text-align:right;">
               <div class="seats-left-banner__num num-mono" data-remaining>${formatNumber(totalAvailable)}석</div>
             </div>
+          </div>
+        </div>
+        <div class="container" style="padding-top:12px;padding-bottom:0;">
+          <div class="chip-row" data-session-tabs style="gap:8px;flex-wrap:wrap;">
+            ${eventSessions.map((s, i) => `
+              <button type="button" class="chip-btn ${session?.date === s.date && session?.time === s.time ? 'active' : ''}" data-session-tab="${i}" style="flex:1;min-width:calc(50% - 6px);justify-content:center;padding:10px 12px;font-size:13px;">
+                ${s.shortLabel} ${s.round}회 ${s.time}
+              </button>
+            `).join('')}
           </div>
         </div>
         <div class="container" data-body>
@@ -201,7 +209,31 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       }
       renderRailEmpty();
 
-      container.querySelector('[data-edit-session]')?.addEventListener('click', openSessionChangeModal);
+      container.querySelectorAll('[data-session-tab]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.dataset.sessionTab);
+          const s = eventSessions[idx];
+          if (!s || (session?.date === s.date && session?.time === s.time)) return;
+          if (mySeats.length) {
+            clearHold();
+            const userId = getState().user?.email;
+            mySeats.forEach((seat) => {
+              releaseHeldSeat({ seatId: seat.id, userId });
+              seat.status = 'available';
+            });
+            mySeats = [];
+            activeHolds.length = 0;
+            seatMapApi.updateStatuses(flatSeats);
+          }
+          session = { date: s.date, time: s.time };
+          setSelectedSession(c.eventId, session);
+          const dateEl = container.querySelector('[data-session-date]');
+          if (dateEl) dateEl.textContent = formatSessionLabel(session, c.eventDate);
+          container.querySelectorAll('[data-session-tab]').forEach((b, i) => b.classList.toggle('active', i === idx));
+          renderRailEmpty();
+          showToast({ title: '공연 일정이 변경되었습니다', body: s.label, type: 'success' });
+        });
+      });
 
       // /seats/hold requires an Admission Token issued once the queue admits this
       // user. Normally that happens on the queue page (queue.js), but this screen
@@ -464,55 +496,6 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         holdTimer = null;
       }
 
-      // 공연 날짜/시간 변경 — 좌석 선택 화면을 벗어나지 않고 세션을 바꿀 수 있게
-      // 함. 이미 선점 중인 좌석이 있으면(다른 회차 좌석과 뒤섞이지 않도록) 변경과
-      // 동시에 해제해서 "선택 좌석과 세션 불일치" 상태가 절대 생기지 않게 함.
-      function openSessionChangeModal() {
-        openModal({
-          title: '공연 날짜 · 시간 변경',
-          bodyHtml: `
-            <div class="booking-dt-block" style="margin-top:0;">
-              <h3 style="margin-top:0;">공연 시간</h3>
-              <div class="chip-row" data-modal-times>
-                ${SESSION_TIMES.map(
-                  (t) => `<button type="button" class="chip-btn ${session?.time === t ? 'active' : ''}" data-time="${t}">${t}</button>`
-                ).join('')}
-              </div>
-            </div>
-            ${mySeats.length ? '<p class="policy-note mt-16">시간을 변경하면 현재 선택한 좌석 선점은 모두 자동으로 해제됩니다.</p>' : ''}
-          `,
-          footerHtml: `<button type="button" class="btn btn-ghost btn-block" data-modal-close>취소</button>`,
-        });
-
-        document.querySelectorAll('[data-modal-times] [data-time]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            const newTime = btn.dataset.time;
-            if (session?.time === newTime) {
-              closeModal();
-              return;
-            }
-            if (mySeats.length) {
-              clearHold();
-              const userId = getState().user?.email;
-              mySeats.forEach((s) => {
-                releaseHeldSeat({ seatId: s.id, userId });
-                s.status = 'available';
-              });
-              mySeats = [];
-              activeHolds.length = 0;
-              seatMapApi.updateStatuses(flatSeats);
-            }
-            session = { date: session?.date || c.eventDate, time: newTime };
-            setSelectedSession(c.eventId, session);
-            const label = formatSessionLabel(session, c.eventDate);
-            const dateEl = container.querySelector('[data-session-date]');
-            if (dateEl) dateEl.textContent = label;
-            renderRailEmpty();
-            closeModal();
-            showToast({ title: '공연 시간이 변경되었습니다', body: label, type: 'success' });
-          });
-        });
-      }
 
       // 실제 판매 현황을 주기적으로 반영 (전체 잔여석 숫자만 — 개별 좌석 점/색은
       // 최초 스냅샷 기준. 다른 사용자가 실시간으로 사는 걸 완전히 반영하려면

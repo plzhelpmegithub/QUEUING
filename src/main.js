@@ -8,7 +8,7 @@ import { mountToastRoot } from './components/toast.js';
 import { homePage } from './pages/home.js';
 import { concertsListPage } from './pages/concertsList.js';
 import { concertDetailPage } from './pages/concertDetail.js';
-import { bookingDateTimePage } from './pages/bookingDateTime.js';
+import { navigate as nav } from './router.js';
 import { queuePage } from './pages/queue.js';
 import { zoneSelectPage } from './pages/zoneSelect.js';
 import { seatSelectPage } from './pages/seatSelect.js';
@@ -29,7 +29,7 @@ import { subscribe, isAdmin, clearSeatSelectTimer, clearCurrentOrder, touchSessi
 registerRoute(/^$/, homePage);
 registerRoute(/^concerts$/, concertsListPage);
 registerRoute(/^concert\/(?<id>[\w-]+)$/, concertDetailPage);
-registerRoute(/^booking\/(?<id>[\w-]+)$/, bookingDateTimePage);
+registerRoute(/^booking\/(?<id>[\w-]+)$/, { render(_, p) { nav(`concert/${p.id}`); } });
 registerRoute(/^queue\/(?<id>[\w-]+)$/, queuePage);
 registerRoute(/^zones\/(?<id>[\w-]+)$/, zoneSelectPage);
 registerRoute(/^seats\/(?<id>[\w-]+)\/(?<zoneId>[\w-]+)$/, seatSelectPage);

@@ -112,7 +112,7 @@ export const seatSelectPage = {
           <div class="seat-page-header__right" data-hold-timer-box></div>
         </div>
         <div class="container" style="padding:0;">
-          <div class="notice-box mt-16"><p><strong>한 회차당 1매, 인당 최대 2매</strong> 구매 가능합니다.</p></div>
+          <div class="notice-box mt-16"><p><strong>공연일마다 1매, 인당 최대 2매</strong> 구매 가능합니다.</p></div>
         </div>
       </section>
 
