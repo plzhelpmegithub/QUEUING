@@ -281,7 +281,7 @@ async function eventRoutes(fastify) {
         // pu = { section: "VIP", price: 180000 }
         let cursor = '0';
         do {
-          const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${pu.section}-*`, 'COUNT', 200);
+          const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${info.eventId}:${pu.section}-*`, 'COUNT', 200);
           cursor = nextCursor;
           const pipeline = redis.pipeline();
           for (const key of keys) {
@@ -390,19 +390,8 @@ async function eventRoutes(fastify) {
       console.error('[Event] MariaDB 취소 동기화 실패:', dbErr.message);
     }
 
-    // 2) 모든 좌석 상태 초기화
-    let cancelledSeats = 0;
-    let cursor = '0';
-    do {
-      const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}*`, 'COUNT', 200);
-      cursor = nextCursor;
-      const pipeline = redis.pipeline();
-      for (const key of keys) {
-        pipeline.hset(key, { status: 'cancelled', heldBy: '', heldAt: '' });
-        cancelledSeats++;
-      }
-      await pipeline.exec();
-    } while (cursor !== '0');
+    // 2) 해당 이벤트의 좌석 키 일괄 삭제 (Redis 메모리 확보)
+    const { deleted: cancelledSeats } = await seatService.cleanupEventSeats(info.eventId);
 
     // 3) 대기열 초기화
     await redis.del('queue:waiting', 'queue:standby', 'queue:admitted', 'queue:counter');
@@ -539,6 +528,7 @@ async function eventRoutes(fastify) {
     if (removed === 0) {
       return reply.status(404).send({ message: '해당 이벤트가 없습니다.' });
     }
+    await seatService.cleanupEventSeats(eventId);
     try {
       await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
     } catch (dbErr) {

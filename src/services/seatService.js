@@ -6,9 +6,10 @@ const { publishSeatEvent, EVENT_TYPE } = require('./eventService');     // 이�
 const { saveReservation, cancelReservation } = require('./dbService');  // MariaDB 저장
 
 // ===== Redis 키 정의 =====
-const SEAT_PREFIX = 'seat:';              // Hash — 좌석 상태 (예: seat:A-001)
+const SEAT_PREFIX = 'seat:';              // Hash — 좌석 상태 (예: seat:evt-171...:A-001)
 const ADMITTED_KEY = 'queue:admitted';     // Set — 입장 허용된 사용자
 const SOLD_OUT_KEY = 'event:sold-out';    // 매진 플래그 (1이면 매진)
+const EVENT_KEY = 'event:info';           // 현재 활성 이벤트
 const EVENT_LIST_KEY = 'events:list';     // 전체 이벤트 목록 (Redis)
 
 async function ensureEventInMariaDB(eventId) {
@@ -49,7 +50,8 @@ const STATUS = {
 async function initSeats(seatIds, section = '', price = 0) {
   const pipeline = redis.pipeline();
   for (const id of seatIds) {
-    pipeline.hset(`${SEAT_PREFIX}${id}`, {
+    const key = `${SEAT_PREFIX}${id}`;
+    pipeline.hset(key, {
       status: STATUS.AVAILABLE,
       heldBy: '',
       heldAt: '',
@@ -225,33 +227,67 @@ async function releaseSeat(userId, seatId) {
 }
 
 /**
- * 전체 좌석 현황 조회
- * - SCAN으로 seat:* 키를 순회하며 전체 좌석 상태 반환
- * - 매진 체크, 남은 좌석 수 계산 등에 사용
+ * 현재 활성 이벤트의 좌석만 조회
+ * - event:info에서 eventId를 읽어 해당 이벤트 좌석만 SCAN
+ * - 다른 이벤트의 잔여 키가 섞이지 않음
+ *
+ * @param {string} [eventId] - 특정 이벤트 ID (미지정 시 현재 활성 이벤트)
  */
-async function getAllSeats() {
+async function getAllSeats(eventId) {
+  if (!eventId) {
+    const info = await redis.hgetall(EVENT_KEY);
+    eventId = info && info.eventId ? info.eventId : null;
+  }
+
+  const pattern = eventId
+    ? `${SEAT_PREFIX}${eventId}:*`
+    : `${SEAT_PREFIX}*`;
+
   const keys = [];
   let cursor = '0';
   do {
-    // SCAN — 전체 키를 한 번에 가져오지 않고 나눠서 조회 (성능 안전)
-    const [nextCursor, results] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}*`, 'COUNT', 100);
+    const [nextCursor, results] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
     cursor = nextCursor;
     keys.push(...results);
   } while (cursor !== '0');
 
   if (keys.length === 0) return [];
 
-  // 파이프라인으로 모든 좌석 상태를 한 번에 조회
   const pipeline = redis.pipeline();
   for (const key of keys) {
-    pipeline.hgetall(key); // Hash 전체 값 조회
+    pipeline.hgetall(key);
   }
   const results = await pipeline.exec();
 
   return keys.map((key, i) => ({
-    seatId: key.replace(SEAT_PREFIX, ''), // 키에서 접두사 제거 → 좌석 ID
-    ...results[i][1],                      // 좌석 상태 데이터
+    seatId: key.replace(SEAT_PREFIX, ''),
+    ...results[i][1],
   }));
+}
+
+/**
+ * 특정 이벤트의 좌석 키를 일괄 삭제
+ * - 이벤트 취소/종료 시 호출하여 Redis 메모리 확보
+ *
+ * @param {string} eventId - 삭제할 이벤트 ID
+ * @returns {{ deleted: number }}
+ */
+async function cleanupEventSeats(eventId) {
+  if (!eventId) return { deleted: 0 };
+
+  let deleted = 0;
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${eventId}:*`, 'COUNT', 200);
+    cursor = nextCursor;
+    if (keys.length > 0) {
+      await redis.del(...keys);
+      deleted += keys.length;
+    }
+  } while (cursor !== '0');
+
+  console.log(`[Seat] cleanup — ${eventId} 좌석 키 ${deleted}개 삭제`);
+  return { deleted };
 }
 
 /**
@@ -423,4 +459,4 @@ async function getAvailableCount() {
   };
 }
 
-module.exports = { initSeats, holdSeat, confirmSeat, cancelSeat, releaseSeat, getSeatTimer, getAllSeats, isSoldOut, getAvailableCount, STATUS };
+module.exports = { initSeats, holdSeat, confirmSeat, cancelSeat, releaseSeat, getSeatTimer, getAllSeats, isSoldOut, getAvailableCount, cleanupEventSeats, STATUS };
