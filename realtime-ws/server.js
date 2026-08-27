@@ -99,7 +99,12 @@ app.get('/rooms', async (req, res) => {
 app.get('/rooms/:eventId', async (req, res) => {
   const meta = await redisPub.hgetall(`room:${req.params.eventId}`);
   if (!meta.name) return res.status(404).json({ error: '존재하지 않는 방입니다' });
-  res.json({ eventId: req.params.eventId, ...meta });
+  res.json({
+    eventId: req.params.eventId,
+    ...meta,
+    chatConnections: channelClients.get(`chat:${req.params.eventId}`)?.size || 0,
+    seatConnections: channelClients.get(`seats:${req.params.eventId}`)?.size || 0,
+  });
 });
 
 const server = http.createServer(app);
