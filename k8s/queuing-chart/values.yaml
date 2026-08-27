@@ -6,8 +6,9 @@ image:
   pullPolicy: IfNotPresent
 
 service:
-  type: ClusterIP
+  type: NodePort
   port: 8080
+  nodePort: 30083
 
 env:
   dbHost: "mariadb.queuing-db.svc.cluster.local"
