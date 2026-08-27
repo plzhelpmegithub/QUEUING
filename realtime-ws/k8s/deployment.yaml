@@ -60,7 +60,8 @@ spec:
     - name: http
       port: 80
       targetPort: 8080
-  type: ClusterIP
+      nodePort: 30081   # 찬규님(A)의 30090과 같은 방식 — 노드IP:30081로 직접 접속
+  type: NodePort        # Ingress+Host헤더 위장이 WebSocket 업그레이드에서 안 먹혀서 전환
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
