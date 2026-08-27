@@ -5,11 +5,12 @@ metadata:
   labels:
     app: email-worker
 spec:
-  type: ClusterIP  # 내부 통신용 (외부 노출이 필요하면 NodePort나 LoadBalancer로 변경 가능)
+  type: NodePort
   ports:
     - port: 8000
       targetPort: 8000
       protocol: TCP
       name: http
+      nodePort: 30082
   selector:
     app: email-worker
