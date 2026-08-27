@@ -10,9 +10,9 @@ service:
   port: 8080
 
 env:
-  dbHost: "localhost"
-  dbPort: "5432"
-  redisHost: "localhost"
+  dbHost: "mariadb.queuing-db.svc.cluster.local"
+  dbPort: "3306"
+  redisHost: "redis-master.realtime.svc.cluster.local"
   redisPort: "6379"
 
 autoscaling:
