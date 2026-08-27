@@ -144,7 +144,7 @@ function refreshEventsList(container) {
       tbody.querySelectorAll('[data-delete-event]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const name = btn.closest('tr')?.children[0]?.textContent || '';
-          if (!confirm(`"${name}" 공연을 삭제할까요? (좌석 데이터는 남아있고 목록에서만 제거됩니다)`)) return;
+          if (!confirm(`"${name}" 공연을 삭제할까요? (좌석 데이터도 함께 삭제됩니다)`)) return;
           btn.disabled = true;
           fetch(`/events/${btn.dataset.deleteEvent}`, { method: 'DELETE' })
             .then((res) => res.json())
