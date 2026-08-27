@@ -35,11 +35,16 @@ def get_db_connection():
 
 class QueueJoinRequest(BaseModel):
     user_id: str
-    seat_id: int = 1   # 필요한 경우 요청 모델에 포함 (기본값 설정 가능)
-    event_id: int = 1  # 필요한 경우 요청 모델에 포함
+    seat_id: int = 1   
+    event_id: int = 1  
 
 class TokenVerifyRequest(BaseModel):
     token: str
+
+class MembershipCreateRequest(BaseModel):
+    user_id: str
+    plan: str
+    expires_at: str  # 예: "2026-12-31 23:59:59" 형식 또는 날짜 문자열
 
 def check_membership_from_db(user_id: str) -> bool:
     """
@@ -187,30 +192,67 @@ def verify_and_invalidate_link(req: TokenVerifyRequest):
         connection.close()
 
 
-# --- 누락되었던 회원 멤버십 조회 API 추가 ---
-@app.get("/api/v1/membership/{user_id}")
+# --- 멤버십 등록 API (추가됨) ---
+@app.post("/api/v1/membership")
+def create_membership(req: MembershipCreateRequest):
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO memberships (user_id, plan, created_at, expires_at)
+                VALUES (%s, %s, NOW(), %s)
+                """,
+                (req.user_id, req.plan, req.expires_at)
+            )
+            connection.commit()
+        return {"status": "SUCCESS", "message": "멤버십이 성공적으로 등록되었습니다."}
+    finally:
+        connection.close()
+
+
+# --- 프론트 연동 규격 맞춘 멤버십 조회 API ---
+@app.get("/membership/{user_id}")
 def get_membership(user_id: str):
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT * FROM memberships WHERE user_id = %s", (user_id,))
             membership = cursor.fetchone()
+            
             if not membership:
-                raise HTTPException(status_code=404, detail="Membership not found")
-            return membership
+                return {
+                    "isMembership": False,
+                    "plan": None,
+                    "createdAt": None
+                }
+                
+            return {
+                "isMembership": True,
+                "plan": membership.get("plan") or membership.get("membership_type"),
+                "createdAt": str(membership.get("created_at")) if membership.get("created_at") else None
+            }
     finally:
         connection.close()
 
 
-# --- 누락되었던 위시리스트 조회 API 추가 ---
-@app.get("/api/v1/wishlist/{user_id}")
+# --- 프론트 연동 규격 맞춘 위시리스트 조회 API ---
+@app.get("/wishlist/{user_id}")
 def get_wishlist(user_id: str):
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT * FROM wishlists WHERE user_id = %s", (user_id,))
-            wishlist = cursor.fetchall()
-            return wishlist
+            wishlist_rows = cursor.fetchall()
+            
+            formatted_wishlists = []
+            for row in wishlist_rows:
+                event_id = row.get("event_id") or row.get("eventId")
+                formatted_wishlists.append({"eventId": event_id})
+                
+            return {
+                "wishlists": formatted_wishlists
+            }
     finally:
         connection.close()
 
