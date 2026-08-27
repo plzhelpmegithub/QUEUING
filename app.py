@@ -1,4 +1,5 @@
 import datetime
+import os
 import time
 import jwt
 from fastapi import FastAPI, HTTPException
@@ -21,12 +22,12 @@ SECRET_KEY = "your-secure-jwt-secret-key"
 ALGORITHM = "HS256"
 LINK_EXPIRE_MINUTES = 5
 
-# MySQL 연결 설정 (비밀번호 '1' 반영)
+# MySQL 연결 설정 (환경변수 반영)
 def get_db_connection():
     return pymysql.connect(
-        host="localhost",
+        host=os.getenv("MYSQL_HOST", "localhost"),
         user="root",
-        password="1",
+        password=os.getenv("MYSQL_PASSWORD", "1"),
         database="queuing_db",
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
@@ -80,13 +81,11 @@ def join_resale_queue(req: QueueJoinRequest):
                 return {"status": "ALREADY_QUEUED", "message": "이미 취소표 대기열에 등록된 회원입니다."}
             
             # resale_queues 구조에 맞춰 필요시 대기 순번 처리
-            # (만약 resale_queues에 queue_position 컬럼이 없다면 추가하거나 기존 구조 유지)
             cursor.execute("SELECT MAX(resale_id) as max_pos FROM resale_queues")
             row = cursor.fetchone()
             next_pos = (row['max_pos'] or 0) + 1
             
             # 대기열 등록 (WAITING 상태 기록 - 스키마에 맞춰 컬럼 매칭)
-            # 주의: resale_queues 스키마 정의에 맞춰 쿼리 컬럼을 점검해주세요.
             cursor.execute(
                 """
                 INSERT INTO resale_queues (reservation_id, seller_user_id, status) 

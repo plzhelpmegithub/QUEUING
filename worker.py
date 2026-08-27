@@ -1,4 +1,5 @@
 import datetime
+import os
 import time
 import jwt
 import pymysql
@@ -19,9 +20,9 @@ SENDER_PASSWORD = "your-email-app-password"
 
 def get_db_connection():
     return pymysql.connect(
-        host="localhost",
+        host=os.getenv("MYSQL_HOST", "localhost"),
         user="root",
-        password="1",
+        password=os.getenv("MYSQL_PASSWORD", "1"),
         database="queuing_db",
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor

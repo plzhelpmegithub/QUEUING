@@ -34,8 +34,6 @@ def check_membership(connection, user_id):
     """MySQL memberships 테이블을 조회하여 사용자의 유효한 멤버십 가입 여부 확인"""
     try:
         with connection.cursor() as cursor:
-            # memberships 테이블과 users 테이블 스키마에 맞춘 쿼리
-            # expires_at이 현재 시간보다 미래인 유효한 멤버십이 존재하는지 확인
             sql = """
                 SELECT m.membership_id 
                 FROM memberships m 
@@ -59,13 +57,6 @@ def process_next_queue(target_queue_id):
         
         with connection.cursor() as cursor:
             # 1. waiting_queue 테이블과 users 테이블을 조인하여 사용자 정보 조회
-            sql = """
-                subquery (SELECT w.queue_id, w.user_id, w.event_id, w.queue_status, u.email 
-                FROM waiting_queue w 
-                JOIN users u ON w.user_id = u.user_id 
-                WHERE w.queue_id = %s)
-            """
-            # 조인 문법 수정 반영 쿼리
             cursor.execute("""
                 SELECT w.queue_id, w.user_id, w.event_id, w.queue_status, u.email 
                 FROM waiting_queue w 

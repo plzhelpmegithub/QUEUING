@@ -1,15 +1,29 @@
+import os
 import boto3
 import json
+from dotenv import load_dotenv
 
-sqs = boto3.client('sqs', endpoint_url='http://127.0.0.1:4566', region_name='ap-northeast-2', aws_access_key_id='test', aws_secret_access_key='test')
+load_dotenv()
 
-# KEDA, Terraform, producer.py와 통일된 큐 이름으로 수정
+# AWS 및 LocalStack 설정 (환경변수 지원)
+ENDPOINT = os.getenv("AWS_ENDPOINT_URL", "http://127.0.0.1:4566")
+REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2")
+
+sqs = boto3.client(
+    'sqs', 
+    endpoint_url=ENDPOINT, 
+    region_name=REGION, 
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "test"), 
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "test")
+)
+
+# KEDA, Terraform, producer.py와 통일된 큐 이름
 QUEUE_NAME = 'resale-queue'
 
 # 큐가 없으면 자동으로 생성하고, 있으면 URL을 가져옴
 try:
     url = sqs.get_queue_url(QueueName=QUEUE_NAME)['QueueUrl']
-except sqs.exceptions.QueueDoesNotExist:
+except sqs.exceptions.ClientError:
     created = sqs.create_queue(QueueName=QUEUE_NAME)
     url = created['QueueUrl']
     print(f"📦 '{QUEUE_NAME}' 큐가 새로 생성되었습니다.")
@@ -17,7 +31,7 @@ except sqs.exceptions.QueueDoesNotExist:
 # 기존 큐 비우기 (선택 사항)
 try:
     sqs.purge_queue(QueueUrl=url)
-except:
+except Exception:
     pass
 
 # 테스트할 사용자 이름 입력 받기
