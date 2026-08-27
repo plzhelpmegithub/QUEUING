@@ -73,7 +73,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: queuing.co.kr   # 실습 환경이면 /etc/hosts에 등록해서 사용
+    - host: www.queuing.kr   # 실제 보유 도메인 — 로컬 테스트 시 hosts 파일에 192.168.0.220 등록해서 사용
       http:
         paths:
           - path: /ws
