@@ -46,6 +46,8 @@ const wishlistRoutes = require('./routes/wishlistRoutes');
 fastify.register(wishlistRoutes);    // /wishlist/* 엔드포인트
 const backupRoutes = require('./routes/backupRoutes');
 fastify.register(backupRoutes);      // /admin/backup/* 엔드포인트
+const cancelQueueRoutes = require('./routes/cancelQueueRoutes');
+fastify.register(cancelQueueRoutes); // /cancel-queue/* 엔드포인트
 
 // 헬스체크 — 서버 살아있는지 확인용 (ALB, 쿠버네티스 probe에서 사용)
 fastify.get('/health', async () => ({ status: 'ok' }));

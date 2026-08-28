@@ -5,16 +5,17 @@ async function subscribe(userId, plan = 'monthly') {
   const expiresAt = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000);
 
   const existing = await pool.query(
-    `SELECT id FROM memberships WHERE user_id = ? AND is_membership = TRUE AND expires_at > NOW()`,
+    `SELECT user_id FROM memberships WHERE user_id = ?`,
     [userId],
   );
   if (existing.length > 0) {
     return { success: false, message: '이미 활성 멤버십이 있습니다.' };
   }
 
+  const tierName = plan === 'yearly' ? 'ANNUAL' : 'MONTHLY';
   await pool.query(
-    `INSERT INTO memberships (user_id, is_membership, plan, expires_at, priority_level) VALUES (?, TRUE, ?, ?, ?)`,
-    [userId, plan, expiresAt, plan === 'yearly' ? 2 : 1],
+    `INSERT INTO memberships (user_id, is_membership, plan, tier_name, expires_at, priority_level) VALUES (?, TRUE, ?, ?, ?, ?)`,
+    [userId, plan, tierName, expiresAt, plan === 'yearly' ? 2 : 1],
   );
   console.log(`[Membership] 구독: ${userId} (${plan})`);
   return { success: true, userId, plan, expiresAt: expiresAt.toISOString(), message: '멤버십 구독이 완료되었습니다.' };
@@ -22,7 +23,7 @@ async function subscribe(userId, plan = 'monthly') {
 
 async function getMembership(userId) {
   const rows = await pool.query(
-    `SELECT id, user_id, is_membership, plan, expires_at, priority_level, created_at
+    `SELECT user_id, is_membership, plan, expires_at, priority_level, created_at
      FROM memberships WHERE user_id = ? AND is_membership = TRUE AND expires_at > NOW()
      ORDER BY created_at DESC LIMIT 1`,
     [userId],
@@ -42,13 +43,13 @@ async function getMembership(userId) {
 
 async function cancelMembership(userId) {
   const result = await pool.query(
-    `UPDATE memberships SET is_membership = FALSE WHERE user_id = ? AND is_membership = TRUE AND expires_at > NOW()`,
+    `DELETE FROM memberships WHERE user_id = ?`,
     [userId],
   );
   if (result.affectedRows === 0) {
     return { success: false, message: '활성 멤버십이 없습니다.' };
   }
-  console.log(`[Membership] 해지: ${userId}`);
+  console.log(`[Membership] 해지(삭제): ${userId}`);
   return { success: true, message: '멤버십이 해지되었습니다.' };
 }
 

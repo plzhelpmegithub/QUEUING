@@ -238,6 +238,106 @@ async function queueRoutes(fastify) {
 
   // 재접속 (이탈 후 다시 줄 서기 — 새 순번 부여)
   // → 기존 POST /queue/enter를 그대로 사용하면 됨 (중복 방지 로직이 있어서 안전)
+
+  // ===== 대기열 시뮬레이션 (관리자 전용) =====
+
+  fastify.post('/admin/queue/simulate', async (request, reply) => {
+    const { count, membershipRatio } = request.body || {};
+    const total = Math.min(parseInt(count, 10) || 1000, 500000);
+    const mRatio = Math.max(0, Math.min(1, parseFloat(membershipRatio) || 0));
+    const totalSeats = parseInt(await redis.get('event:total-seats'), 10) || 0;
+
+    if (totalSeats === 0) {
+      return reply.status(400).send({ error: '먼저 공연을 생성하고 좌석 수를 설정해주세요.' });
+    }
+
+    await redis.set('event:ticketing-status', 'open');
+
+    const BATCH = 5000;
+    let eligibleCount = 0;
+    let standbyCount = 0;
+    let memberCount = 0;
+
+    for (let i = 0; i < total; i += BATCH) {
+      const batchEnd = Math.min(i + BATCH, total);
+      const pipeline = redis.pipeline();
+
+      for (let j = i; j < batchEnd; j++) {
+        const ticket = j + 1;
+        const simUserId = `sim-user-${String(j + 1).padStart(6, '0')}@test.com`;
+
+        if (ticket <= totalSeats) {
+          pipeline.zadd('queue:waiting', ticket, simUserId);
+          eligibleCount++;
+        } else {
+          pipeline.zadd('queue:standby', ticket, simUserId);
+          standbyCount++;
+        }
+      }
+
+      await pipeline.exec();
+    }
+
+    await redis.set('queue:counter', total);
+
+    if (mRatio > 0) {
+      const pool = require('../config/mariadb');
+      const mCount = Math.floor(standbyCount * mRatio);
+      const mBatch = 500;
+      for (let i = 0; i < mCount; i += mBatch) {
+        const values = [];
+        const params = [];
+        const batchEnd = Math.min(i + mBatch, mCount);
+        for (let j = i; j < batchEnd; j++) {
+          const idx = totalSeats + j + 1;
+          const simUserId = `sim-user-${String(idx).padStart(6, '0')}@test.com`;
+          const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+          values.push('(?, TRUE, ?, ?, ?, 1)');
+          params.push(simUserId, 'monthly', 'MONTHLY', expiresAt);
+          memberCount++;
+        }
+        try {
+          await pool.query(
+            `INSERT IGNORE INTO memberships (user_id, is_membership, plan, tier_name, expires_at, priority_level) VALUES ${values.join(',')}`,
+            params,
+          );
+        } catch (e) {
+          console.error('[Simulate] 멤버십 생성 실패:', e.message);
+        }
+      }
+    }
+
+    if (standbyCount > 0) {
+      await redis.set('event:ticketing-status', 'sold_out');
+    }
+
+    return reply.send({
+      success: true,
+      total,
+      eligible: eligibleCount,
+      standby: standbyCount,
+      memberships: memberCount,
+      totalSeats,
+      message: `${total.toLocaleString()}명 시뮬레이션 완료 (eligible: ${eligibleCount.toLocaleString()}, standby: ${standbyCount.toLocaleString()}, 멤버십: ${memberCount.toLocaleString()})`,
+    });
+  });
+
+  fastify.post('/admin/queue/reset', async (request, reply) => {
+    const pipeline = redis.pipeline();
+    pipeline.del('queue:waiting');
+    pipeline.del('queue:standby');
+    pipeline.del('queue:admitted');
+    pipeline.del('queue:counter');
+    await pipeline.exec();
+
+    const pool = require('../config/mariadb');
+    try {
+      await pool.query(`DELETE FROM waiting_queue WHERE user_id LIKE 'sim-user-%'`);
+      await pool.query(`DELETE FROM memberships WHERE user_id LIKE 'sim-user-%'`);
+    } catch (_) {}
+
+    return reply.send({ success: true, message: '대기열 및 시뮬레이션 데이터가 초기화되었습니다.' });
+  });
 }
 
 module.exports = queueRoutes;
