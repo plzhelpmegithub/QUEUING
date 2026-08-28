@@ -413,6 +413,14 @@ export const adminPage = {
         <div class="admin-panel admin-panel--wide" data-viewers></div>
         <div class="admin-panel admin-panel--wide" data-cancelpool></div>
 
+        <div class="admin-panel admin-panel--wide" style="padding-bottom:0;">
+          <div class="mchart__head"><span class="mchart__title">C파트(realtime-ws) 자체 모니터링</span></div>
+          <p class="section-sub" style="margin:2px 0 14px;">실시간 채팅/좌석 WebSocket 서버(C파트)의 자체 지표 — 위 JVM 패널(D파트)과는 별개입니다.</p>
+        </div>
+        <div class="admin-panel" data-c-cpu></div>
+        <div class="admin-panel" data-c-mem></div>
+        <div class="admin-panel" data-c-ws></div>
+
         <div class="admin-panel">
           <div class="mchart__head"><span class="mchart__title">Kubernetes Pods</span><span class="badge badge-gray">${POD_ROWS.length}/${POD_ROWS.length} Ready</span></div>
           <table class="pods-table">
@@ -477,6 +485,21 @@ export const adminPage = {
       unit: '%',
       formatValue: (v) => v.toFixed(1),
     });
+    // C파트(realtime-ws) 전용 차트 — D파트 heapChart/cpuChart/reqChart와 별개 변수/DOM
+    const cCpuChart = mountLineChart(container.querySelector('[data-c-cpu]'), {
+      title: 'C파트 CPU Usage (process_cpu_seconds_total)',
+      unit: '%',
+      formatValue: (v) => v.toFixed(1),
+    });
+    const cMemChart = mountLineChart(container.querySelector('[data-c-mem]'), {
+      title: 'C파트 Memory (process_resident_memory_bytes)',
+      unit: ' MB',
+    });
+    const cWsChart = mountLineChart(container.querySelector('[data-c-ws]'), {
+      title: 'WebSocket 활성 연결 수 (ws_active_connections)',
+      unit: '개',
+      formatValue: (v) => v.toFixed(0),
+    });
     const reqChart = mountLineChart(container.querySelector('[data-req]'), {
       title: 'HTTP Request Rate',
       unit: ' req/s',
@@ -536,6 +559,51 @@ export const adminPage = {
     tickMetrics(); // 즉시 첫 번째 호출
     const metricsTimer = setInterval(tickMetrics, 15000);
 
+    // C파트(realtime-ws) /metrics 평문 파싱 헬퍼 — D파트 parsePromText와 별개 함수/상태
+    function parseCMetricsText(text) {
+      let cpuSecondsTotal = 0;
+      let memBytes = 0;
+      let wsConnections = 0;
+      const prevCpuSeconds = parseCMetricsText._prevCpuSeconds || 0;
+      const prevTs = parseCMetricsText._prevTs || Date.now();
+
+      for (const line of text.split('\n')) {
+        if (line.startsWith('#') || !line.trim()) continue;
+        if (line.startsWith('process_cpu_seconds_total')) {
+          cpuSecondsTotal = parseFloat(line.split(' ')[1]) || 0;
+        }
+        if (line.startsWith('process_resident_memory_bytes')) {
+          memBytes = parseFloat(line.split(' ')[1]) || 0;
+        }
+        if (line.startsWith('ws_active_connections')) {
+          const m = line.match(/\}\s+([\d.E+-]+)/);
+          if (m) wsConnections += parseFloat(m[1]);
+        }
+      }
+
+      const nowTs = Date.now();
+      const elapsed = (nowTs - prevTs) / 1000 || 15;
+      const cpuPercent = Math.max(0, ((cpuSecondsTotal - prevCpuSeconds) / elapsed) * 100);
+      parseCMetricsText._prevCpuSeconds = cpuSecondsTotal;
+      parseCMetricsText._prevTs = nowTs;
+
+      return { cpuPercent, memMb: memBytes / 1024 / 1024, wsConnections };
+    }
+
+    function tickCMetrics() {
+      fetch('/metrics')
+        .then((r) => r.text())
+        .then((text) => {
+          const { cpuPercent, memMb, wsConnections } = parseCMetricsText(text);
+          cCpuChart.push(cpuPercent);
+          cMemChart.push(memMb);
+          cWsChart.push(wsConnections);
+        })
+        .catch(() => {}); // 실패 시 차트 업데이트 건너뜀 — D파트 tickMetrics와 서로 영향 없음
+    }
+    tickCMetrics();
+    const cMetricsTimer = setInterval(tickCMetrics, 15000);
+
     function renderBars() {
       renderBarChart(container.querySelector('[data-viewers]'), {
         title: 'Redis Counter — 콘서트별 실시간 시청자수',
@@ -576,6 +644,7 @@ export const adminPage = {
 
     return () => {
       clearInterval(metricsTimer);
+      clearInterval(cMetricsTimer);
       clearInterval(barTimer);
       clearInterval(healthTimer);
       clearInterval(scrapeTimer);

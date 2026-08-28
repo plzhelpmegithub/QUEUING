@@ -13,6 +13,7 @@ export default defineConfig({
       '/rooms':   { target: 'http://192.168.0.192:30081', changeOrigin: true },
       '/publish': { target: 'http://192.168.0.192:30081', changeOrigin: true },
       '/healthz': { target: 'http://192.168.0.192:30081', changeOrigin: true },
+      '/metrics': { target: 'http://192.168.0.192:30081', changeOrigin: true },
 
       // API 서버 (쿠버네티스 NodePort 30090) — 공연 목록·인증·대기열·좌석·예매·SSE 등 주요 비즈니스 로직
       // 찬규님 파트가 K8s로 이전되면서 단독 VM(192.168.0.190:2000) 대신 클러스터 마스터 노드 IP + NodePort로 접근

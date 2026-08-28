@@ -4,8 +4,6 @@ import { getConcert } from '../data/concerts.js';
 import { mountCountdown } from '../components/countdown.js';
 import { navigate } from '../router.js';
 
-const BACKEND_URL = "http://192.168.0.189:8000";
-
 export const privateLinkPage = {
   async render(container, params) {
     // 1. URL 쿼리 파라미터에서 token 추출 (예: /private-link/1?token=eyJ...)
@@ -39,8 +37,8 @@ export const privateLinkPage = {
     `;
 
     try {
-      // 3. 백엔드 토큰 검증 API 호출 (/api/v1/resale/verify-link)
-      const response = await fetch(`${BACKEND_URL}/api/v1/resale/verify-link`, {
+      // 3. 백엔드 토큰 검증 API 호출 (B파트 — Vite 프록시 경유)
+      const response = await fetch(`/api/v1/resale/verify-link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: token })

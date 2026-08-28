@@ -11,9 +11,8 @@ import {
   consumeCancelPool,
   isLoggedIn,
   setReturnTo,
+  getState,
 } from '../state/store.js';
-
-const BACKEND_URL = "http://192.168.0.189:8000";
 
 export const cancelQueuePage = {
   async render(container, params) {
@@ -29,8 +28,8 @@ export const cancelQueuePage = {
       return;
     }
 
-    // 현재 로그인된 유저 ID 가져오기 (스토어 또는 세션 기준, 예시로 'test_user' 또는 로컬스토리지 활용 가능)
-    const userId = localStorage.getItem('user_id') || 'test_user'; 
+    // 실제 로그인된 유저 ID (store.js가 관리하는 세션 기준)
+    const userId = getState().user?.userId;
     const pool = ensureCancelPool(c.id);
 
     // 기본 뼈대 먼저 렌더링
@@ -96,14 +95,14 @@ export const cancelQueuePage = {
     // 1. 백엔드 API를 통해 멤버십 상태 및 대기열 등록 처리
     let isMember = false;
     try {
-      // 멤버십 조회 API 호출
-      const memberRes = await fetch(`${BACKEND_URL}/membership/${userId}`);
+      // 멤버십 조회 API 호출 (A파트 — Vite 프록시 경유)
+      const memberRes = await fetch(`/membership/${userId}`);
       const memberData = await memberRes.json();
       isMember = memberData.isMembership;
 
       if (isMember) {
-        // 유료 회원인 경우 대기열 등록 API 호출 (/api/v1/resale/queue/join)
-        const joinRes = await fetch(`${BACKEND_URL}/api/v1/resale/queue/join`, {
+        // 유료 회원인 경우 대기열 등록 API 호출 (B파트 — Vite 프록시 경유)
+        const joinRes = await fetch(`/api/v1/resale/queue/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_id: userId, seat_id: 1, event_id: c.id })
