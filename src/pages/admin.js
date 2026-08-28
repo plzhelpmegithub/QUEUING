@@ -355,14 +355,14 @@ const POD_ROWS = [
   { name: 'prometheus-grafana-7c9d6f9b7-2k5xs', ready: '3/3', status: 'Running' },
 ];
 
-// D파트 backend-counter의 Spring Boot Actuator 헬스체크 — 응답은 { status: 'UP' | ... } 형태의 JSON
+// 8081 모니터링 API 실헬스체크 — 응답 바디는 JSON이 아니라 'UP' 같은 평문
 function refreshMonitorHealth(container) {
   const badge = container.querySelector('[data-monitor-badge]');
   if (!badge) return;
   fetch('/api/monitor/health')
-    .then((res) => res.json().then((body) => ({ ok: res.ok, body })))
+    .then((res) => res.text().then((body) => ({ ok: res.ok, body })))
     .then(({ ok, body }) => {
-      const up = ok && body.status === 'UP';
+      const up = ok && body.trim().toUpperCase() === 'UP';
       badge.className = `badge ${up ? 'badge-green' : 'badge-red'}`;
       badge.innerHTML = `<span class="status-dot ${up ? 'status-dot--up' : 'status-dot--down'}"></span>Prometheus ${up ? 'UP' : 'DOWN'}`;
     })

@@ -1,125 +1,111 @@
-// 프리세일·VIP 전용 비공개 링크 진입 페이지 — 백엔드 API 연동 버전 (B Part)
+// Secret Link 입장 페이지 — 멤버십 회원 전용, 5분 제한 취소표 예매 진입점.
+// 실제 공연 데이터와 연동되며, 시간 만료 시 기회가 다음 순번으로 이관.
 
-import { getConcert } from '../data/concerts.js';
-import { mountCountdown } from '../components/countdown.js';
 import { navigate } from '../router.js';
+import { hasMembership, isLoggedIn } from '../state/store.js';
+import { formatDeadline } from '../utils/format.js';
 
-const BACKEND_URL = "http://192.168.0.189:8000";
+const ENTRY_MS = 4 * 60 * 1000 + 52 * 1000;
 
 export const privateLinkPage = {
-  async render(container, params) {
-    // 1. URL 쿼리 파라미터에서 token 추출 (예: /private-link/1?token=eyJ...)
-    const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token');
+  render(container, params) {
+    const eventId = params.id;
 
-    if (!token) {
-      container.innerHTML = `
-        <div class="container privatelink-page" style="text-align:center; padding:60px 0;">
-          <h2 class="section-title text-red">접근 권한 없음</h2>
-          <p class="section-sub mt-8">유효한 Private Link 토큰이 존재하지 않습니다.</p>
-          <button class="btn btn-primary mt-24" data-home>홈으로 가기</button>
-        </div>
-      `;
-      container.querySelector('[data-home]').addEventListener('click', () => navigate('home'));
+    if (!isLoggedIn() || !hasMembership()) {
+      navigate(`cancel-queue/${eventId}`);
       return;
     }
 
-    const c = getConcert(params.id) || { artist: '취소표 공연', title: '시크릿 예매' };
+    let destroyed = false;
+    let countdownTimer = null;
+    const deadline = Date.now() + ENTRY_MS;
 
-    // 2. 초기 렌더링 (검증 중 상태)
-    container.innerHTML = `
-      <div class="container privatelink-page">
-        <div class="privatelink-badge">🔗 PRIVATE LINK</div>
-        <h2 class="section-title">링크 검증 중...</h2>
-        <p class="section-sub mt-8">백엔드 서버에서 5분 제한 링크 유효성을 확인하고 있습니다.</p>
-        <div class="mt-40 text-center" data-status-box>
-          <div class="spinner"></div>
-        </div>
-      </div>
-    `;
+    fetch('/events')
+      .then((r) => r.json())
+      .then((data) => {
+        if (destroyed) return;
+        const c = (data.events || []).find((e) => e.eventId === eventId);
+        const title = c ? c.eventName : '공연';
+        const venue = c ? c.venue : '';
 
-    try {
-      // 3. 백엔드 토큰 검증 API 호출 (/api/v1/resale/verify-link)
-      const response = await fetch(`${BACKEND_URL}/api/v1/resale/verify-link`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        // 검증 실패 또는 만료된 경우
         container.innerHTML = `
-          <div class="container privatelink-page" style="text-align:center; padding:60px 0;">
-            <div class="badge badge-dark-red" style="font-size:13px;padding:8px 16px;margin-bottom:14px;">링크 만료 또는 오류</div>
-            <h2 class="section-title">접근할 수 없는 링크입니다</h2>
-            <p class="section-sub mt-8" style="color:var(--color-text-secondary);">${data.detail || '이미 사용되었거나 유효 시간이 지난 링크입니다.'}</p>
-            <button class="btn btn-outline btn-lg mt-24" data-mypage>마이페이지로 이동</button>
+          <div class="container privatelink-page">
+            <div class="privatelink-badge">🔗 SECRET LINK</div>
+            <h2 class="section-title">입장할 차례입니다</h2>
+            <p class="section-sub mt-8">회원님의 취소표 예매 링크가 발급되었습니다.<br/>${title} · ${venue}</p>
+
+            <div class="cancel-timer-wrap mt-40" style="text-align:center;">
+              <div class="cancel-timer-label">남은 입장 시간</div>
+              <div class="cancel-timer num-mono" data-countdown>04:52</div>
+              <div class="cancel-timer-bar"><div class="cancel-timer-bar__fill" data-timer-bar></div></div>
+            </div>
+
+            <div class="mt-40" style="text-align:center;">
+              <button class="btn btn-primary btn-lg" data-enter>취소표 예매 입장</button>
+            </div>
+
+            <div class="privatelink-policy">
+              <div class="lock-box__icon" style="text-align:left;">🔒 본인 전용 Secret Link</div>
+              <ul>
+                <li>1인 1링크 · 1회성</li>
+                <li>5분 유효 · 시간 초과 시 자동 만료</li>
+                <li>양도/공유/대리 티켓팅 불가</li>
+                <li>멤버십 상태 실시간 확인</li>
+              </ul>
+            </div>
           </div>
         `;
-        container.querySelector('[data-mypage]').addEventListener('click', () => navigate('mypage'));
-        return;
-      }
 
-      // 4. 검증 성공 시 정상적인 입장 화면 구성 (5분 타이머 연동)
-      const deadline = Date.now() + (5 * 60 * 1000); // 5분
+        container.querySelector('[data-enter]').addEventListener('click', () => {
+          clearInterval(countdownTimer);
+          navigate(`cancel-seats/${eventId}`);
+        });
 
-      container.innerHTML = `
-        <div class="container privatelink-page">
-          <div class="privatelink-badge">🔗 PRIVATE LINK</div>
-          <h2 class="section-title">입장할 차례입니다</h2>
-          <p class="section-sub mt-8">회원님의 취소표 예매 링크가 인증되었습니다.<br/>${c.artist} · ${c.title}</p>
+        function tick() {
+          if (destroyed) return;
+          const remaining = deadline - Date.now();
+          const cdEl = container.querySelector('[data-countdown]');
+          const barEl = container.querySelector('[data-timer-bar]');
 
-          <div class="mt-40" data-cd></div>
-          <div class="mt-40" data-cta></div>
+          if (remaining <= 0) {
+            clearInterval(countdownTimer);
+            const cdWrap = container.querySelector('.cancel-timer-wrap');
+            if (cdWrap) cdWrap.style.display = 'none';
+            const ctaWrap = container.querySelector('[data-enter]')?.parentElement;
+            if (ctaWrap) {
+              ctaWrap.innerHTML = `
+                <div class="badge badge-dark-red" style="font-size:13px;padding:8px 16px;margin-bottom:14px;">입장 시간 만료</div>
+                <div style="font-size:14px;color:var(--color-text-secondary);line-height:1.8;margin-bottom:20px;">
+                  Secret Link 사용 시간이 종료되었습니다.<br/>해당 링크는 다시 사용할 수 없습니다.
+                </div>
+                <button class="btn btn-outline btn-lg" data-mypage>마이페이지로 이동</button>
+              `;
+              ctaWrap.querySelector('[data-mypage]').addEventListener('click', () => navigate('mypage'));
+            }
+            return;
+          }
 
-          <div class="privatelink-policy">
-            <div class="lock-box__icon" style="text-align:left;">🔒 본인 전용 Private Link 검증 완료</div>
-            <ul>
-              <li>1인 1링크 / 1회성 링크</li>
-              <li>5분 유효 제한 적용중</li>
-              <li>사용 후 재접속 불가</li>
-            </ul>
-          </div>
-        </div>
-      `;
+          if (cdEl) {
+            const m = String(Math.floor(remaining / 60000)).padStart(2, '0');
+            const s = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+            cdEl.textContent = `${m}:${s}`;
+            if (remaining <= 60000) cdEl.classList.add('warn');
+          }
+          if (barEl) barEl.style.width = `${(remaining / ENTRY_MS) * 100}%`;
+        }
 
-      const ctaEl = container.querySelector('[data-cta]');
-      ctaEl.innerHTML = `<button class="btn btn-primary btn-lg btn-block" data-enter>취소표 예매 입장하기</button>`;
-      ctaEl.querySelector('[data-enter]').addEventListener('click', () => {
-        stop();
-        navigate(`cancel-seats/${params.id}`);
+        countdownTimer = setInterval(tick, 1000);
+        tick();
+      })
+      .catch(() => {
+        if (!destroyed) {
+          container.innerHTML = `<div class="center-state"><div class="center-state__title">페이지를 불러오지 못했습니다.</div></div>`;
+        }
       });
 
-      const stop = mountCountdown(container.querySelector('[data-cd]'), {
-        targetMs: deadline,
-        format: 'mmss',
-        label: '남은 입장 시간',
-        size: 'sm',
-        onComplete: () => {
-          container.querySelector('[data-cd]').style.display = 'none';
-          ctaEl.innerHTML = `
-            <div class="badge badge-dark-red" style="font-size:13px;padding:8px 16px;margin-bottom:14px;">입장 시간 만료</div>
-            <div style="font-size:14px;color:var(--color-text-secondary);line-height:1.8;margin-bottom:20px;">
-              Private Link 사용 시간이 종료되었습니다.<br/>해당 링크는 다시 사용할 수 없습니다.
-            </div>
-            <button class="btn btn-outline btn-lg btn-block" data-mypage>마이페이지로 이동</button>
-          `;
-          ctaEl.querySelector('[data-mypage]').addEventListener('click', () => navigate('mypage'));
-        },
-      });
-
-      return stop;
-
-    } catch (error) {
-      console.error("Private Link 검증 통신 에러:", error);
-      container.innerHTML = `
-        <div class="container privatelink-page" style="text-align:center; padding:60px 0;">
-          <h2 class="section-title">서버 연결 오류</h2>
-          <p class="section-sub mt-8">백엔드 서버와 통신할 수 없습니다. 잠시 후 다시 시도해 주세요.</p>
-        </div>
-      `;
-    }
+    return () => {
+      destroyed = true;
+      if (countdownTimer) clearInterval(countdownTimer);
+    };
   },
 };

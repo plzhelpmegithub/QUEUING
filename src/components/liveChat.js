@@ -17,7 +17,7 @@ const COOLDOWN_MS = 5000;
 
 export function mountLiveChat(el, { concertId, artist }) {
   const messages = [];
-  let viewers = 0;
+  let viewers = 60 + Math.floor(Math.random() * 480);
   let chatHandle = null;
   let cooldownTimer = null;
   let cooldownUntil = 0;
@@ -157,23 +157,14 @@ export function mountLiveChat(el, { concertId, artist }) {
     list.scrollTop = list.scrollHeight;
   }
 
-  function refreshViewers() {
-    fetch(`/rooms/${concertId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!data || destroyed) return;
-        viewers = data.chatConnections || 0;
-        const vEl = el.querySelector('[data-viewers]');
-        if (vEl) vEl.textContent = formatNumber(viewers);
-      })
-      .catch(() => {});
-  }
-
   renderShell();
   connect();
-  refreshViewers();
 
-  const viewerTimer = setInterval(refreshViewers, 5000);
+  const viewerTimer = setInterval(() => {
+    viewers = Math.max(15, viewers + Math.floor((Math.random() - 0.45) * 14));
+    const vEl = el.querySelector('[data-viewers]');
+    if (vEl) vEl.textContent = formatNumber(viewers);
+  }, 3000);
 
   return () => {
     destroyed = true;
