@@ -141,20 +141,52 @@ export function expireSession() {
 
 export function subscribeMembership(plan) {
   const userId = state.user?.userId;
-  state.membership = { plan, since: new Date().toISOString() };
-  saveAuth();
-  emit();
-  if (userId) {
-    fetch('/membership/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, plan }),
-    }).catch(() => {});
-  }
+  if (!userId) return Promise.resolve({ success: false, message: '로그인이 필요합니다.' });
+  return fetch('/membership/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, plan }),
+  })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.success) {
+        state.membership = { plan, since: data.expiresAt || new Date().toISOString() };
+        saveAuth();
+        emit();
+      }
+      return data;
+    })
+    .catch((err) => {
+      console.error('[Membership] 가입 API 실패:', err);
+      return { success: false, message: '네트워크 오류가 발생했습니다.' };
+    });
 }
 
 export function hasMembership() {
   return !!state.membership;
+}
+
+export function cancelMembership() {
+  const userId = state.user?.userId;
+  if (!userId) return Promise.resolve({ success: false, message: '로그인이 필요합니다.' });
+  return fetch('/membership/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
+  })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.success) {
+        state.membership = null;
+        saveAuth();
+        emit();
+      }
+      return data;
+    })
+    .catch((err) => {
+      console.error('[Membership] 해지 API 실패:', err);
+      return { success: false, message: '네트워크 오류가 발생했습니다.' };
+    });
 }
 
 export function loadMembershipFromServer() {

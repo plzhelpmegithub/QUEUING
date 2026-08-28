@@ -18,6 +18,7 @@ import {
   toggleInterest,
   requestRefund,
   subscribe,
+  cancelMembership,
   getNotifications,
   markAllNotificationsRead,
   updateProfile,
@@ -363,12 +364,55 @@ export const myPage = {
               <div style="font-size:13px;color:var(--color-text-secondary);margin-bottom:8px;">멤버십 상태</div>
               <div style="font-size:24px;font-weight:900;" class="${m ? 'text-red' : ''}">${m ? 'ACTIVE' : 'INACTIVE'}</div>
               ${m ? `<div class="text-secondary" style="font-size:12.5px;margin-top:6px;">플랜: ${m.plan === 'yearly' ? '연간 멤버십' : '월간 멤버십'}</div>` : ''}
+              ${m && m.since ? `<div class="text-secondary" style="font-size:12px;margin-top:4px;">가입일: ${new Date(m.since).toLocaleDateString('ko-KR')}</div>` : ''}
             </div>
             ${!m ? `<button class="btn btn-primary" data-join>멤버십 가입하기</button>` : `<span class="badge badge-red">✓ 이용중</span>`}
           </div>
+          ${m ? `
+          <div style="border-top:1px solid var(--color-border);margin-top:24px;padding-top:20px;">
+            <h4 style="font-size:14px;font-weight:700;margin-bottom:12px;">멤버십 혜택</h4>
+            <ul style="font-size:13px;color:var(--color-text-secondary);line-height:2;">
+              <li>취소표 대기열 우선 배정</li>
+              <li>Secret Link 전용 예매 기회</li>
+              <li>비회원 대비 빠른 순번 배정</li>
+            </ul>
+            <button class="btn btn-outline btn-block mt-24" style="color:var(--color-text-secondary);border-color:var(--color-border);" data-cancel-membership>멤버십 해지하기</button>
+          </div>
+          ` : ''}
         </div>
       `;
       content.querySelector('[data-join]')?.addEventListener('click', () => navigate('membership'));
+      content.querySelector('[data-cancel-membership]')?.addEventListener('click', () => {
+        openModal({
+          title: '멤버십을 해지하시겠습니까?',
+          bodyHtml: `
+            <p style="margin-bottom:14px;">멤버십을 해지하시면 다음 혜택을 더 이상 이용할 수 없습니다.</p>
+            <ul style="font-size:13.5px;color:var(--color-text-secondary);line-height:2;margin-bottom:14px;">
+              <li>취소표 대기열 우선 배정</li>
+              <li>Secret Link 전용 예매 기회</li>
+            </ul>
+            <div class="notice-box"><p>해지 후 재가입은 언제든 가능합니다.</p></div>
+          `,
+          footerHtml: `
+            <button type="button" class="btn btn-ghost" data-modal-close>유지하기</button>
+            <button type="button" class="btn btn-primary" style="background:var(--color-text-secondary);" data-confirm-cancel>해지하기</button>
+          `,
+        });
+        document.querySelector('[data-confirm-cancel]')?.addEventListener('click', () => {
+          const btn = document.querySelector('[data-confirm-cancel]');
+          if (btn) { btn.disabled = true; btn.textContent = '처리 중...'; }
+          cancelMembership().then((result) => {
+            if (result.success) {
+              closeModal();
+              showToast({ title: '멤버십이 해지되었습니다', body: '재가입은 멤버십 페이지에서 언제든 가능합니다.', type: 'success' });
+              renderMembership();
+            } else {
+              if (btn) { btn.disabled = false; btn.textContent = '해지하기'; }
+              showToast({ title: '해지에 실패했습니다', body: result.message || '잠시 후 다시 시도해주세요.' });
+            }
+          });
+        });
+      });
     }
 
     function mockInterestCardHtml(c) {
