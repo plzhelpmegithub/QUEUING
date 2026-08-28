@@ -1,5 +1,4 @@
-// 취소표 대기열 페이지 — 매진 후 취소표 대기열에 등록된 사용자의 순번·현황을 안내.
-// 취소표 발생 시 이메일로 안내 예정임을 표시하며, 취소표 좌석 선택으로 이동하는 진입점 역할.
+// 취소표 대기열 페이지 — 백엔드 API 연동 버전 (B Part)
 
 import { getConcert } from '../data/concerts.js';
 import { formatNumber } from '../utils/format.js';
@@ -7,20 +6,17 @@ import { navigate } from '../router.js';
 import { mountSeatMap } from '../components/seatMap.js';
 import { generateSeats, seatSectionsForCancelPool } from '../state/seatEngine.js';
 import {
-  joinCancelQueue,
-  getCancelQueue,
   ensureCancelPool,
   bumpCancelPool,
   consumeCancelPool,
-  hasMembership,
   isLoggedIn,
   setReturnTo,
 } from '../state/store.js';
 
-const MEMBER_TURN_DURATION_MS = 14000;
+const BACKEND_URL = "http://192.168.0.189:8000";
 
 export const cancelQueuePage = {
-  render(container, params) {
+  async render(container, params) {
     const c = getConcert(params.id);
     if (!c) {
       container.innerHTML = `<div class="center-state"><div class="center-state__title">공연을 찾을 수 없습니다</div></div>`;
@@ -33,9 +29,11 @@ export const cancelQueuePage = {
       return;
     }
 
-    const q = joinCancelQueue(c.id);
+    // 현재 로그인된 유저 ID 가져오기 (스토어 또는 세션 기준, 예시로 'test_user' 또는 로컬스토리지 활용 가능)
+    const userId = localStorage.getItem('user_id') || 'test_user'; 
     const pool = ensureCancelPool(c.id);
 
+    // 기본 뼈대 먼저 렌더링
     container.innerHTML = `
       <section class="cancel-hero">
         <div class="container">
@@ -50,13 +48,13 @@ export const cancelQueuePage = {
           <div class="card" style="padding:28px;">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <h3 style="font-size:15px;font-weight:800;">내 취소표 대기 현황</h3>
-              <span class="queue-status-pill"><span class="dot"></span><span data-status>대기 중</span></span>
+              <span class="queue-status-pill"><span class="dot"></span><span data-status>확인 중...</span></span>
             </div>
             <div class="queue-mynum-label" style="margin-top:22px;">내 대기번호</div>
-            <div class="queue-mynum num-mono" style="font-size:64px;" data-mynum>${formatNumber(q.myNumber)}번</div>
+            <div class="queue-mynum num-mono" style="font-size:64px;" data-mynum>--번</div>
             <div class="divider"></div>
-            <div class="kv-row"><span>전체 대기자</span><b class="num-mono">${formatNumber(q.total)}명</b></div>
-            <div class="kv-row"><span>예상 대기시간</span><b class="num-mono" data-eta>약 ${Math.max(1, Math.round((q.myNumber / q.total) * 210))}분</b></div>
+            <div class="kv-row"><span>전체 대기자</span><b class="num-mono" data-total-queue>--명</b></div>
+            <div class="kv-row"><span>예상 대기시간</span><b class="num-mono" data-eta>약 --분</b></div>
           </div>
 
           <div class="card mt-24" style="padding:28px;" data-private-link-card></div>
@@ -88,35 +86,50 @@ export const cancelQueuePage = {
               <h3 style="font-size:15px;font-weight:800;">취소표 좌석 현황</h3>
               <span class="badge badge-gray">실시간 미리보기</span>
             </div>
-            <p class="section-sub" style="margin-bottom:14px;">아직 순서가 아니어도 현재 Pool에 있는 좌석을 미리 확인할 수 있어요. 내 차례가 되면 이 중에서 선택합니다.</p>
+            <p class="section-sub" style="margin-bottom:14px;">아직 순서가 아니어도 현재 Pool에 있는 좌석을 미리 확인할 수 있어요.</p>
             <div class="seatmap-scroll" style="max-height:340px;"><div class="seatmap-inner" data-seat-preview></div></div>
-          </div>
-
-          <div class="card mt-24" style="padding:28px;">
-            <h3 style="font-size:15px;font-weight:800;margin-bottom:14px;">취소표 순차 배부 방식</h3>
-            <div class="flow-diagram">
-              <span class="flow-step active">1번 Private Link 발급</span>
-              <span class="flow-arrow">→</span>
-              <span class="flow-step">취켓팅 진행</span>
-              <span class="flow-arrow">→</span>
-              <span class="flow-step">종료</span>
-              <span class="flow-arrow">→</span>
-              <span class="flow-step">2번 Private Link 발급</span>
-              <span class="flow-arrow">→</span>
-              <span class="flow-step">... 2,000번까지 반복</span>
-            </div>
-            <div class="notice-box mt-16">
-              <p><strong>1인 1매</strong> — 취소표는 1인 1매만 구매할 수 있습니다.</p>
-              <p>한 사용자가 여러 장의 취소표를 구매할 수 없습니다.</p>
-              <p>티켓을 확보하면 해당 사용자의 취소표 예매 기회가 종료됩니다.</p>
-            </div>
-            <div class="mt-16"><span class="badge badge-red">1인 1매</span></div>
           </div>
         </div>
       </div>
     `;
 
-    // ---- Seat status preview: read-only view of what's currently in the Pool ----
+    // 1. 백엔드 API를 통해 멤버십 상태 및 대기열 등록 처리
+    let isMember = false;
+    try {
+      // 멤버십 조회 API 호출
+      const memberRes = await fetch(`${BACKEND_URL}/membership/${userId}`);
+      const memberData = await memberRes.json();
+      isMember = memberData.isMembership;
+
+      if (isMember) {
+        // 유료 회원인 경우 대기열 등록 API 호출 (/api/v1/resale/queue/join)
+        const joinRes = await fetch(`${BACKEND_URL}/api/v1/resale/queue/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId, seat_id: 1, event_id: c.id })
+        });
+        const joinData = await joinRes.json();
+
+        if (joinRes.ok) {
+          const myNum = joinData.queue_position || 1;
+          container.querySelector('[data-mynum]').textContent = `${formatNumber(myNum)}번`;
+          container.querySelector('[data-total-queue]').textContent = `${formatNumber(myNum)}명`;
+          container.querySelector('[data-eta]').textContent = `약 ${Math.max(1, Math.round(myNum * 2))}분`;
+          container.querySelector('[data-status]').textContent = '대기 중';
+          
+          renderMemberWaiting(myNum);
+        } else {
+          alert(joinData.detail || "대기열 등록 중 오류가 발생했습니다.");
+        }
+      } else {
+        renderMemberLocked();
+      }
+    } catch (error) {
+      console.error("백엔드 API 통신 실패:", error);
+      container.querySelector('[data-status]').textContent = '서버 연결 오류';
+    }
+
+    // ---- Seat status preview ----
     const previewHost = container.querySelector('[data-seat-preview]');
     function renderSeatPreview() {
       const p = ensureCancelPool(c.id);
@@ -126,8 +139,7 @@ export const cancelQueuePage = {
     }
     renderSeatPreview();
 
-    // ---- Pool live simulation: new cancellations arrive, and members ahead of
-    // me in line occasionally complete their sequential purchase. ----
+    // ---- Pool live simulation ----
     const poolInterval = setInterval(() => {
       const grades = ['VIP', 'R', 'S'];
       const roll = Math.random();
@@ -151,74 +163,36 @@ export const cancelQueuePage = {
       renderSeatPreview();
     }, 2600);
 
-    // ---- Private link access card (membership-gated) ----
     const plCard = container.querySelector('[data-private-link-card]');
-    let memberTimer = null;
 
     function renderMemberLocked() {
       plCard.innerHTML = `
         <div class="lock-box">
           <div class="lock-box__icon">🔒</div>
           <div class="lock-box__title">멤버십 가입 필요</div>
-          <div class="lock-box__desc">취소표 Private Link는 멤버십 회원에게만 제공됩니다.<br/>대기번호는 모든 회원에게 공개되지만, 실제 입장 링크는 멤버십 전용입니다.</div>
+          <div class="lock-box__desc">취소표 Private Link는 멤버십 회원에게만 제공됩니다.<br/>지금 바로 멤버십에 가입하고 대기열에 진입하세요.</div>
           <button class="btn btn-primary" data-join-membership>멤버십 가입하기</button>
         </div>
       `;
       plCard.querySelector('[data-join-membership]').addEventListener('click', () => navigate('membership'));
     }
 
-    function renderMemberWaiting() {
+    function renderMemberWaiting(myNum) {
       plCard.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
           <h3 style="font-size:15px;font-weight:800;">Private Link 대기 현황 <span class="site-header__member-chip" style="background:var(--color-primary-light);color:var(--color-primary-dark);">MEMBERSHIP</span></h3>
           <span style="font-size:12.5px;color:var(--color-text-secondary);">알림 <b class="text-red">ON</b></span>
         </div>
-        <div class="kv-row"><span>내 대기번호</span><b class="num-mono" data-m-num>${formatNumber(q.myNumber)}번</b></div>
-        <div class="kv-row"><span>전체 대기자</span><b class="num-mono">${formatNumber(q.total)}명</b></div>
-        <div class="kv-row"><span>예상 대기시간</span><b class="num-mono" data-m-eta>약 --분</b></div>
-        <div class="kv-row"><span>상태</span><b><span class="queue-status-pill"><span class="dot"></span>대기 중</span></b></div>
-        <div class="mt-16" data-m-progress></div>
-      `;
-      const startNum = q.myNumber;
-      const startTime = Date.now();
-      let done = false;
-      function tick() {
-        if (done) return;
-        const elapsed = Date.now() - startTime;
-        const t = Math.min(1, elapsed / MEMBER_TURN_DURATION_MS);
-        const eased = 1 - Math.pow(1 - t, 4);
-        const current = Math.max(1, Math.round(startNum - (startNum - 1) * eased));
-        const numEl = plCard.querySelector('[data-m-num]');
-        const etaEl = plCard.querySelector('[data-m-eta]');
-        if (numEl) numEl.textContent = `${formatNumber(current)}번`;
-        if (etaEl) etaEl.textContent = current <= 1 ? '곧 입장' : `약 ${Math.max(1, Math.ceil((current / startNum) * 40))}분`;
-        if (current <= 1) {
-          done = true;
-          clearInterval(memberTimer);
-          renderMemberReady();
-        }
-      }
-      memberTimer = setInterval(tick, 200);
-      tick();
-    }
-
-    function renderMemberReady() {
-      plCard.innerHTML = `
-        <div style="text-align:center;padding:10px 0 4px;">
-          <div class="badge badge-green" style="font-size:13px;padding:8px 16px;margin-bottom:16px;">내 차례입니다</div>
-          <div style="font-size:15px;font-weight:700;margin-bottom:22px;">취소표 입장이 가능합니다.</div>
-          <button class="btn btn-primary btn-lg btn-block" data-enter>Private Link 입장하기</button>
+        <div class="kv-row"><span>내 대기번호</span><b class="num-mono">${formatNumber(myNum)}번</b></div>
+        <div class="kv-row"><span>상태</span><b><span class="queue-status-pill"><span class="dot"></span>순번 대기 중</span></b></div>
+        <div class="mt-16 text-center">
+          <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:12px;">관리자 툴 또는 순차 배정 타이밍에 맞춰 링크가 활성화됩니다.</p>
         </div>
       `;
-      plCard.querySelector('[data-enter]').addEventListener('click', () => navigate(`private-link/${c.id}`));
     }
-
-    if (hasMembership()) renderMemberWaiting();
-    else renderMemberLocked();
 
     return () => {
       clearInterval(poolInterval);
-      if (memberTimer) clearInterval(memberTimer);
     };
   },
 };
