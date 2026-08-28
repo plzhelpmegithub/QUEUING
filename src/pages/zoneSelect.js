@@ -196,7 +196,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
 
       const seatMapHost = container.querySelector('[data-seatmap]');
       const orderBox = container.querySelector('[data-order-box]');
-      const MAX_SEATS = 4;
+      const MAX_SEATS = 1;
       // 페이지 재접속 시 중복 예매가 가능했던 예전 허점(선점 개수가 프론트 변수에만
       // 있고 화면에 명확히 안 보였음)을 보완 — 선택한 좌석을 배열로 관리하고
       // 우측에 항상 리스트로 보여줘서 몇 매를 들고 있는지 항상 명확하게 함.
@@ -329,7 +329,6 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           return;
         }
 
-        // 이미 선택한 좌석을 다시 클릭하면 선택 해제(다른 좌석은 그대로 유지)
         const already = mySeats.find((s) => s.id === id);
         if (already) {
           deselectSeat(already);
@@ -337,8 +336,14 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         }
 
         if (mySeats.length >= MAX_SEATS) {
-          showToast({ title: `최대 ${MAX_SEATS}매까지 선택할 수 있습니다`, body: '더 선택하려면 먼저 다른 좌석의 선택을 취소해주세요.', type: 'default' });
-          return;
+          const prev = mySeats[0];
+          releaseHeldSeat({ seatId: prev.id, userId });
+          prev.status = 'available';
+          mySeats = [];
+          const idx = activeHolds.findIndex((h) => h.seatId === prev.id);
+          if (idx >= 0) activeHolds.splice(idx, 1);
+          clearHold();
+          seatMapApi.updateStatuses(flatSeats);
         }
 
         holdRequestInFlight = true;

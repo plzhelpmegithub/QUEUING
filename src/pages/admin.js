@@ -355,7 +355,6 @@ const POD_ROWS = [
   { name: 'prometheus-grafana-7c9d6f9b7-2k5xs', ready: '3/3', status: 'Running' },
 ];
 
-// D파트 backend-counter의 Spring Boot Actuator 헬스체크 — 응답은 { status: 'UP' | ... } 형태의 JSON
 function refreshMonitorHealth(container) {
   const badge = container.querySelector('[data-monitor-badge]');
   if (!badge) return;
@@ -406,6 +405,33 @@ export const adminPage = {
             <tbody data-events-tbody><tr><td colspan="6" class="text-secondary">불러오는 중...</td></tr></tbody>
           </table>
         </div>
+        <div class="admin-panel admin-panel--wide">
+          <div class="mchart__head">
+            <span class="mchart__title">대기열 시뮬레이션</span>
+            <span class="badge badge-gray" data-sim-status>대기</span>
+          </div>
+          <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;">
+            <div class="field" style="margin-bottom:0;flex:1;min-width:150px;">
+              <label style="font-size:12px;">접속자 수</label>
+              <input type="number" data-sim-count value="100000" min="100" max="500000" step="1000" />
+            </div>
+            <div class="field" style="margin-bottom:0;flex:1;min-width:150px;">
+              <label style="font-size:12px;">멤버십 비율 (standby 중)</label>
+              <select data-sim-membership>
+                <option value="0">0% (멤버십 없음)</option>
+                <option value="0.1">10%</option>
+                <option value="0.3" selected>30%</option>
+                <option value="0.5">50%</option>
+                <option value="1">100%</option>
+              </select>
+            </div>
+            <button class="btn btn-primary btn-sm" data-sim-start style="height:42px;padding:0 24px;">시뮬레이션 실행</button>
+            <button class="btn btn-outline btn-sm" data-sim-reset style="height:42px;padding:0 16px;">초기화</button>
+          </div>
+          <div data-sim-result style="display:none;" class="notice-box"></div>
+          <div data-sim-stats></div>
+        </div>
+
         <div class="admin-panel" data-heap></div>
         <div class="admin-panel" data-cpu></div>
         <div class="admin-panel" data-req></div>
@@ -454,6 +480,97 @@ export const adminPage = {
 
     refreshEventsList(container);
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
+
+    // 대기열 시뮬레이션
+    const simStartBtn = container.querySelector('[data-sim-start]');
+    const simResetBtn = container.querySelector('[data-sim-reset]');
+    const simStatus = container.querySelector('[data-sim-status]');
+    const simResult = container.querySelector('[data-sim-result]');
+    const simStats = container.querySelector('[data-sim-stats]');
+
+    function refreshQueueStats() {
+      fetch('/queue/stats')
+        .then((r) => r.json())
+        .then((s) => {
+          simStats.innerHTML = `
+            <table class="qtable" style="margin-top:8px;">
+              <thead><tr><th>총좌석</th><th>Eligible 대기</th><th>Standby 대기</th><th>입장 허용</th><th>마지막 순번</th></tr></thead>
+              <tbody><tr>
+                <td class="num-mono">${(s.totalSeats || 0).toLocaleString()}</td>
+                <td class="num-mono">${(s.eligible || 0).toLocaleString()}</td>
+                <td class="num-mono text-red">${(s.standby || 0).toLocaleString()}</td>
+                <td class="num-mono">${(s.admitted || 0).toLocaleString()}</td>
+                <td class="num-mono">${(s.lastTicket || 0).toLocaleString()}</td>
+              </tr></tbody>
+            </table>`;
+        })
+        .catch(() => { simStats.innerHTML = '<p class="text-secondary">통계 로딩 실패</p>'; });
+    }
+    refreshQueueStats();
+
+    simStartBtn.addEventListener('click', () => {
+      const count = parseInt(container.querySelector('[data-sim-count]').value, 10) || 100000;
+      const membershipRatio = parseFloat(container.querySelector('[data-sim-membership]').value) || 0;
+      simStartBtn.disabled = true;
+      simStartBtn.textContent = '실행 중...';
+      simStatus.textContent = '실행 중';
+      simStatus.className = 'badge badge-orange';
+      simResult.style.display = 'none';
+
+      fetch('/admin/queue/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count, membershipRatio }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.success) {
+            simStatus.textContent = '완료';
+            simStatus.className = 'badge badge-green';
+            simResult.style.display = 'block';
+            simResult.innerHTML = `
+              <p><strong>${data.message}</strong></p>
+              <p style="margin-top:6px;font-size:13px;color:var(--color-text-secondary);">
+                좌석 수: ${data.totalSeats.toLocaleString()}석 →
+                eligible(예매 가능): ${data.eligible.toLocaleString()}명,
+                standby(취소표 대기): ${data.standby.toLocaleString()}명,
+                멤버십 회원: ${data.memberships.toLocaleString()}명
+              </p>`;
+            showToast({ title: '시뮬레이션 완료', body: data.message, type: 'success' });
+          } else {
+            simStatus.textContent = '실패';
+            simStatus.className = 'badge badge-red';
+            simResult.style.display = 'block';
+            simResult.innerHTML = `<p class="text-red">${data.error || data.message}</p>`;
+          }
+          refreshQueueStats();
+        })
+        .catch(() => {
+          simStatus.textContent = '오류';
+          simStatus.className = 'badge badge-red';
+          showToast({ title: '시뮬레이션 실행 중 오류 발생' });
+        })
+        .finally(() => {
+          simStartBtn.disabled = false;
+          simStartBtn.textContent = '시뮬레이션 실행';
+        });
+    });
+
+    simResetBtn.addEventListener('click', () => {
+      if (!confirm('대기열 및 시뮬레이션 데이터를 모두 초기화할까요?')) return;
+      simResetBtn.disabled = true;
+      fetch('/admin/queue/reset', { method: 'POST' })
+        .then((r) => r.json())
+        .then((data) => {
+          showToast({ title: '초기화 완료', body: data.message, type: 'success' });
+          simStatus.textContent = '대기';
+          simStatus.className = 'badge badge-gray';
+          simResult.style.display = 'none';
+          refreshQueueStats();
+        })
+        .catch(() => showToast({ title: '초기화 중 오류 발생' }))
+        .finally(() => { simResetBtn.disabled = false; });
+    });
     container.querySelector('[data-open-create-event]').addEventListener('click', () => {
       openCreateEventModal(() => refreshEventsList(container));
     });

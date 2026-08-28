@@ -68,10 +68,20 @@ export const membershipCheckoutPage = {
     container.querySelector('[data-cancel]').addEventListener('click', () => navigate('membership'));
 
     container.querySelector('[data-pay]').addEventListener('click', () => {
-      subscribeMembership(plan);
-      showToast({ title: '멤버십 결제 완료', body: '취소표 Private Link 이용이 가능합니다.', type: 'success' });
-      const back = popReturnTo();
-      navigate(back || 'mypage/membership');
+      const btn = container.querySelector('[data-pay]');
+      btn.disabled = true;
+      btn.textContent = '처리 중...';
+      subscribeMembership(plan).then((result) => {
+        if (result.success) {
+          showToast({ title: '멤버십 결제 완료', body: '취소표 Private Link 이용이 가능합니다.', type: 'success' });
+          const back = popReturnTo();
+          navigate(back || 'mypage/membership');
+        } else {
+          btn.disabled = false;
+          btn.textContent = '결제하기';
+          showToast({ title: '결제에 실패했습니다', body: result.message || '잠시 후 다시 시도해주세요.' });
+        }
+      });
     });
   },
 };
