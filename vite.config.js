@@ -39,6 +39,13 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api\/monitor\/health/, '/actuator/health'),
       },
 
+      // Prometheus API (쿠버네티스 NodePort 30092) — Grafana/admin.js에서 메트릭 쿼리용
+      '/prom-api': {
+        target: 'http://192.168.0.192:30092',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/prom-api/, ''),
+      },
+
       // B파트 — 재판매 대기열 전용 (쿠버네티스 NodePort 30082, 건아 파트)
       '/api':      { target: 'http://192.168.0.192:30082', changeOrigin: true },
     }

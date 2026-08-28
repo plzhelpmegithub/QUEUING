@@ -440,8 +440,11 @@ export const adminPage = {
         <div class="admin-panel admin-panel--wide" data-cancelpool></div>
 
         <div class="admin-panel admin-panel--wide" style="padding-bottom:0;">
-          <div class="mchart__head"><span class="mchart__title">C파트(realtime-ws) 자체 모니터링</span></div>
-          <p class="section-sub" style="margin:2px 0 14px;">실시간 채팅/좌석 WebSocket 서버(C파트)의 자체 지표 — 위 JVM 패널(D파트)과는 별개입니다.</p>
+          <div class="mchart__head">
+            <span class="mchart__title">C파트(realtime-ws) Prometheus 모니터링</span>
+            <a href="http://192.168.0.192:30091" target="_blank" class="btn btn-outline btn-sm" style="font-size:11px;padding:4px 12px;">Grafana 대시보드 열기 ↗</a>
+          </div>
+          <p class="section-sub" style="margin:2px 0 14px;">Prometheus에서 수집한 C파트 지표 (전체 Pod 합산) — 위 JVM 패널(D파트)과는 별개입니다.</p>
         </div>
         <div class="admin-panel" data-c-cpu></div>
         <div class="admin-panel" data-c-mem></div>
@@ -676,47 +679,23 @@ export const adminPage = {
     tickMetrics(); // 즉시 첫 번째 호출
     const metricsTimer = setInterval(tickMetrics, 15000);
 
-    // C파트(realtime-ws) /metrics 평문 파싱 헬퍼 — D파트 parsePromText와 별개 함수/상태
-    function parseCMetricsText(text) {
-      let cpuSecondsTotal = 0;
-      let memBytes = 0;
-      let wsConnections = 0;
-      const prevCpuSeconds = parseCMetricsText._prevCpuSeconds || 0;
-      const prevTs = parseCMetricsText._prevTs || Date.now();
-
-      for (const line of text.split('\n')) {
-        if (line.startsWith('#') || !line.trim()) continue;
-        if (line.startsWith('process_cpu_seconds_total')) {
-          cpuSecondsTotal = parseFloat(line.split(' ')[1]) || 0;
-        }
-        if (line.startsWith('process_resident_memory_bytes')) {
-          memBytes = parseFloat(line.split(' ')[1]) || 0;
-        }
-        if (line.startsWith('ws_active_connections')) {
-          const m = line.match(/\}\s+([\d.E+-]+)/);
-          if (m) wsConnections += parseFloat(m[1]);
-        }
-      }
-
-      const nowTs = Date.now();
-      const elapsed = (nowTs - prevTs) / 1000 || 15;
-      const cpuPercent = Math.max(0, ((cpuSecondsTotal - prevCpuSeconds) / elapsed) * 100);
-      parseCMetricsText._prevCpuSeconds = cpuSecondsTotal;
-      parseCMetricsText._prevTs = nowTs;
-
-      return { cpuPercent, memMb: memBytes / 1024 / 1024, wsConnections };
-    }
-
     function tickCMetrics() {
-      fetch('/metrics')
-        .then((r) => r.text())
-        .then((text) => {
-          const { cpuPercent, memMb, wsConnections } = parseCMetricsText(text);
+      const queries = [
+        'rate(process_cpu_seconds_total{job="realtime-ws"}[1m])*100',
+        'sum(process_resident_memory_bytes{job="realtime-ws"})',
+        'sum(ws_active_connections{job="realtime-ws"})',
+      ];
+      Promise.all(queries.map((q) => fetch(`/prom-api/api/v1/query?query=${encodeURIComponent(q)}`).then((r) => r.json())))
+        .then(([cpuRes, memRes, wsRes]) => {
+          const cpuVals = cpuRes.data?.result || [];
+          const cpuPercent = cpuVals.reduce((s, r) => s + parseFloat(r.value[1]), 0) / (cpuVals.length || 1);
+          const memBytes = memRes.data?.result?.[0]?.value?.[1] || 0;
+          const wsConns = wsRes.data?.result?.[0]?.value?.[1] || 0;
           cCpuChart.push(cpuPercent);
-          cMemChart.push(memMb);
-          cWsChart.push(wsConnections);
+          cMemChart.push(parseFloat(memBytes) / 1024 / 1024);
+          cWsChart.push(parseFloat(wsConns));
         })
-        .catch(() => {}); // 실패 시 차트 업데이트 건너뜀 — D파트 tickMetrics와 서로 영향 없음
+        .catch(() => {});
     }
     tickCMetrics();
     const cMetricsTimer = setInterval(tickCMetrics, 15000);
