@@ -242,6 +242,8 @@ export function getConcertStatus(c) {
 // Multiple performance sessions (date + time) per concert, generated from its
 // date range — most shows run two sessions/day except a single evening show
 // on the final day of a multi-day run.
+const WEEKDAYS_KR = ['일', '월', '화', '수', '목', '금', '토'];
+
 export function getSessions(c) {
   const start = new Date(c.dateStart);
   const end = new Date(c.dateEnd);
@@ -250,13 +252,44 @@ export function getSessions(c) {
   for (let i = 0; i < dayCount; i++) {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
-    const isLastOfMulti = dayCount > 1 && i === dayCount - 1;
     sessions.push({
       date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
-      times: isLastOfMulti ? ['19:00'] : ['14:00', '19:00'],
+      times: ['19:00'],
     });
   }
   return sessions;
+}
+
+export function generateEventSessions(eventDate) {
+  if (!eventDate) return [];
+  const base = eventDate.includes('T') ? eventDate.split('T')[0] : eventDate;
+  const [y, m, d] = base.split('-').map(Number);
+  const baseDate = new Date(y, m - 1, d);
+  const dow = baseDate.getDay();
+
+  let sat;
+  if (dow === 0) {
+    sat = new Date(y, m - 1, d - 1);
+  } else {
+    const off = (6 - dow + 7) % 7;
+    sat = new Date(y, m - 1, d + off);
+  }
+  const sun = new Date(sat);
+  sun.setDate(sun.getDate() + 1);
+
+  function fmt(dt) {
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  }
+  function lbl(dt) {
+    const dw = WEEKDAYS_KR[dt.getDay()];
+    return `${dt.getMonth() + 1}.${String(dt.getDate()).padStart(2, '0')} (${dw})`;
+  }
+  return [
+    { date: fmt(sat), time: '14:00', label: `${lbl(sat)} 14:00`, shortLabel: lbl(sat), round: 1 },
+    { date: fmt(sat), time: '19:00', label: `${lbl(sat)} 19:00`, shortLabel: lbl(sat), round: 2 },
+    { date: fmt(sun), time: '14:00', label: `${lbl(sun)} 14:00`, shortLabel: lbl(sun), round: 1 },
+    { date: fmt(sun), time: '19:00', label: `${lbl(sun)} 19:00`, shortLabel: lbl(sun), round: 2 },
+  ];
 }
 
 // Zone layouts come in two venue shapes so different concerts don't all look

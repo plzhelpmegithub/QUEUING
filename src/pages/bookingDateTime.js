@@ -42,7 +42,7 @@ export const bookingDateTimePage = {
             <p class="section-sub">${c.venue}</p>
 
             <div class="notice-box mt-16">
-              <p><strong>한 회차당 1매, 인당 최대 2매</strong> 구매 가능합니다.</p>
+              <p><strong>공연일마다 1매, 인당 최대 2매</strong> 구매 가능합니다.</p>
             </div>
 
             <div class="booking-dt-block">
