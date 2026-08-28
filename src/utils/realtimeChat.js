@@ -1,7 +1,7 @@
 // C팀(192.168.0.220) 실시간 좌석 WebSocket 연결 래퍼.
 // seatSelect.js에서 사용 — 자동 재연결 + 상태 콜백 제공.
 
-const WS_HOST = '192.168.0.220';
+const WS_HOST = location.host;
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 1000;
 
