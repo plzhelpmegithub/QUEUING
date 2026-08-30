@@ -1,10 +1,7 @@
 name: Deploy realtime-ws
 
 on:
-  push:
-    branches: [develop]
-    paths:
-      - "realtime-ws/**"
+  workflow_dispatch: #수동 실행만 가능하게(자동없앴다.)
 
 jobs:
   deploy:
