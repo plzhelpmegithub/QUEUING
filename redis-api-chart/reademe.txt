@@ -1,0 +1,4 @@
+kubectl create secret generic mariadb-credentials \
+  --from-literal=MARIADB_ROOT_PASSWORD='password_insert'
+
+' ' 안에 비번값을 먼저 넣고 실행해야 레디스가 정상 작동
