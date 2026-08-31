@@ -13,8 +13,10 @@ service:
 env:
   dbHost: "mariadb.queuing-db.svc.cluster.local"
   dbPort: "3306"
+  dbPassword: "hWE6Nka0dG"
   redisHost: "redis-master.realtime.svc.cluster.local"
   redisPort: "6379"
+  redisPassword: "SJsQlDBpnFTKfyu3i0z3nv55"
 
 autoscaling:
   enabled: true
