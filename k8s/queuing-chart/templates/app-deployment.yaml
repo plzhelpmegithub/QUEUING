@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend-counter
+  namespace: queuing-d
   labels:
     app: backend-counter
 spec:
@@ -20,8 +21,12 @@ spec:
       containers:
       - name: backend-counter
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-        imagePullPolicy: "{{ .Values.image.pullPolicy }}"
+        imagePullPolicy: IfNotPresent
         env:
+        - name: SPRING_DATASOURCE_PASSWORD
+          value: "{{ .Values.env.dbPassword }}"
+        - name: SPRING_DATA_REDIS_PASSWORD
+          value: "{{ .Values.env.redisPassword }}"
         - name: SERVER_PORT
           value: "{{ .Values.service.port }}"
         - name: DB_HOST
