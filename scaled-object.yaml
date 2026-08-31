@@ -1,0 +1,19 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: queuing-worker-b-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: queuing-worker-b
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: "http://localstack.localstack.svc.cluster.local:4566/000000000000/my-queue"
+        queueLength: "5"
+        awsRegion: "us-east-1"
+        endpoint: "http://localstack.localstack.svc.cluster.local:4566"
+      authenticationRef:
+        name: keda-aws-credentials
