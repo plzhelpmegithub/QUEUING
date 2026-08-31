@@ -1,0 +1,26 @@
+# =============================================================================
+# [Chart.yaml] 헬름 차트의 메타데이터 정의 파일.
+# 차트 이름, 버전, 설명 등 패키지 정보를 담는다.
+# `helm install`, `helm search`, `helm repo` 등에서 이 정보를 참조.
+# =============================================================================
+apiVersion: v2
+
+# 차트 이름 — helm install 시 이 이름으로 식별됨
+name: redis-api-chart
+
+# 차트 설명 — helm search/show 시 표시
+description: Redis live chat, live, seat 를 제외한 API 서비스를 위한 팀 공용 헬름 차트
+
+# 차트 타입
+#   application : 배포 가능한 애플리케이션 차트 (기본)
+#   library     : 다른 차트에서 재사용하는 유틸리티 (단독 배포 불가)
+type: application
+
+# 차트 버전 (Semantic Versioning)
+# 차트 구조나 템플릿을 수정할 때마다 올려야 함.
+# 예: 템플릿 변경 → 0.1.0 → 0.2.0
+version: 0.1.0
+
+# 애플리케이션 버전 — 이 차트가 배포하는 앱(API 서버)의 버전.
+# image.tag의 기본 fallback으로도 사용됨.
+appVersion: "1.0.0"
