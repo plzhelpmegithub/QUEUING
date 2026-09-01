@@ -77,6 +77,8 @@ spec:
               value: {{ .Values.env.dbName | quote }}
             - name: NODE_ENV
               value: {{ .Values.env.nodeEnv | quote }}
+            - name: NODE_OPTIONS
+              value: {{ .Values.env.nodeOptions | quote }} # Node.js V8 힙 메모리 고갈로 인한 파드 부하시 프로세스 죽음 현상 해결
             - name: AWS_ENDPOINT
               value: {{ .Values.env.awsEndpoint | quote }}
             - name: AWS_ACCESS_KEY_ID
