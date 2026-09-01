@@ -127,6 +127,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `POST /event/cancel` | 공연 취소. 좌석 전체 정리, 대기열 초기화, 취소 알림 |
 | `GET /events` | 이벤트 목록 조회 (MariaDB 폴백) |
 | `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정 |
+| `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제 (자동 마감) |
 | `DELETE /events/:eventId` | 이벤트 삭제 |
 | `POST /events/seed` | 데모용 더미 이벤트 5개 생성 |
 
@@ -239,7 +240,7 @@ Redis 기반 대기열 관리의 핵심 로직.
 | `queue:standby` | Sorted Set | 취소표 대기열 |
 | `queue:admitted` | Set | 입장 허용된 사용자 |
 | `queue:counter` | String | 대기 번호 카운터 |
-| `ticketing:status` | String | 티켓팅 상태 (open/sold_out/closed) |
+| `event:ticketing-status` | String | 티켓팅 상태 (open/sold_out/closed) |
 
 **주요 함수:**
 - `enter()`: 대기열 진입. 티켓팅 상태에 따라 eligible 또는 standby 배정. 멤버십 레벨당 score -50 우선순위 부여. 중복 진입 방지
@@ -484,7 +485,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
    POST /event/create → Redis + MariaDB 저장, 좌석 초기화
 
 2. 티켓팅 오픈
-   POST /admin/ticketing/open → ticketing:status = "open"
+   POST /admin/ticketing/open → event:ticketing-status = "open"
 
 3. 대기열 진입 (사용자)
    POST /queue/enter → queue:waiting Sorted Set에 추가 (멤버십 우선순위 적용)
@@ -528,3 +529,96 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `DB_NAME` | `queuing_db` | MariaDB 데이터베이스명 |
 | `JWT_SECRET` | `queuing-admission-secret-key-2026` | JWT 서명 키 |
 | `HOLD_DURATION` | `600` | 결제 제한 시간 (초) |
+
+---
+
+## 최근 수정 사항 및 트러블슈팅
+
+이 절은 QUEUING API와 `redis-api-chart`를 운영·테스트하는 과정에서 반영한 변경 사항과 문제 원인을 정리한 것이다.
+
+### 1. 공연 생성 및 포스터 세션 데이터 연동
+
+- `POST /event/create`가 다음 공연 부가 정보를 함께 저장하도록 확장했다.
+  - `description`: 공연 상세 설명
+  - `cast`: 출연진
+  - `agency`: 기획사
+  - `runtime`: 관람 시간
+  - `ageRating`: 관람 연령
+  - `notices`: 예매/관람 유의사항
+  - `sessions`: 포스터에 표시된 실제 공연 날짜와 시간 목록
+- `sessions`는 Redis의 `event:info`와 `events:list`에 JSON으로 저장된다.
+- 프론트엔드는 저장된 세션을 우선 사용하므로, 포스터 공연 생성 시 임의로 날짜를 추가하거나 시간을 바꾸지 않는다.
+- 기존에 생성되어 `sessions`가 없는 공연은 프론트엔드의 기존 날짜 생성 로직으로 보완된다. 정확한 포스터 일정이 필요한 경우 해당 공연을 새로 생성해야 한다.
+
+### 2. 티켓팅 상태 및 조기 마감 수정
+
+- 티켓팅 상태 키가 없는 상황에서 API가 무조건 `closed`를 반환하던 문제를 수정했다.
+  - 활성 공연(`event:info.eventId`)이 있으면 상태를 `open`으로 복구한다.
+  - 활성 공연이 없을 때만 `closed`로 처리한다.
+- 새 공연을 열 때 기존 자동 마감 타이머와 standby 마감 타이머를 정리하도록 수정했다. 이전 공연의 타이머가 새 공연을 몇 분 후 마감시키는 문제를 방지한다.
+- 좌석이 모두 판매된 경우 `closed`가 아니라 `sold_out`으로 저장한다.
+  - `open`: 일반 대기열과 취소표 대기열 이용 가능
+  - `sold_out`: 좌석은 매진되었지만 취소표 대기 가능
+  - `closed`: 티켓팅과 대기열 모두 종료
+
+### 3. 공연 마감 시간 설정
+
+- `PATCH /events/:eventId/close-time`을 추가했다.
+- `ticketCloseAt`에 ISO 8601 날짜/시간을 지정하면 해당 시각에 티켓팅 상태가 `closed`로 전환된다.
+- `ticketCloseAt: null`을 보내면 자동 마감 예약을 해제하고 수동 마감 방식으로 전환한다.
+- 공연 생성 직후에는 `open` 상태로 시작하며, 좌석 매진과 운영자가 지정한 마감 시각은 서로 다른 상태 흐름으로 처리된다.
+
+### 4. 관리자·모니터링 계정 분리
+
+- API 초기화 시 기본 모니터링 계정을 생성하도록 추가했다.
+  - 계정: `monitor@queuing.kr`
+  - 초기 비밀번호: `monitor1234`
+- 회원가입 API에서 `admin` 또는 `monitor` 역할을 요청하더라도 일반 `user`로 강제한다.
+- 관리자/모니터링 권한은 일반 회원가입으로 획득할 수 없으며, 초기 계정 또는 별도 운영 절차로만 부여해야 한다.
+
+### 5. Kubernetes Helm 차트 수정
+
+`redis-api-chart/values.yaml`의 Probe 설정을 50명 부하 테스트에서 오탐이 발생하지 않도록 조정했다.
+
+```yaml
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+- Liveness는 컨테이너 자체의 정상 여부를 확인하고, 실패하면 재시작한다.
+- Readiness는 트래픽 수신 가능 여부를 확인하고, 실패하면 Service 엔드포인트에서 잠시 제외한다.
+- `ingress.yaml`과 `httproute.yaml` 및 관련 values 설정은 사용하지 않도록 제거했다.
+- 조건부 템플릿 바깥에 있던 주석 때문에 조건이 false일 때 빈 YAML 문서가 만들어지던 문제를 수정했다.
+
+### 트러블슈팅 기록
+
+#### 파드가 부하가 크지 않은데 재시작되는 현상
+
+원인은 애플리케이션 장애가 아니라 `/health` Probe의 `timeoutSeconds: 1` 설정이었다. 초기화 중 Redis/MariaDB 연결이 1초를 넘으면 Kubernetes가 실패로 판단해 파드를 재시작할 수 있다. 초기 지연 30초, 타임아웃 5초, 실패 허용 3회로 조정했다.
+
+#### Helm에서 `apiVersion` 누락 오류가 발생하는 현상
+
+조건부 리소스의 바깥에 있던 주석이 조건이 꺼진 경우에도 문서로 렌더링되어, `apiVersion`과 `kind`가 없는 YAML 블록이 생긴 것이 원인이었다. 사용하지 않는 Ingress/HTTPRoute 템플릿을 삭제하고, HPA와 ServiceAccount의 주석을 조건문 내부로 이동했다.
+
+#### `NOTES.txt`에서 `httpRoute.enabled` nil pointer 오류
+
+`httpRoute` values 블록을 삭제한 뒤에도 `NOTES.txt`가 해당 값을 참조하고 있었다. NOTES에서 Ingress/HTTPRoute 분기를 제거해 해결했다.
+
+#### 공연이 생성 후 몇 분 만에 `마감`으로 표시되는 현상
+
+Redis 상태 키가 사라졌을 때 기본값을 `closed`로 처리하던 로직과 이전 공연의 자동 마감 타이머가 원인이었다. 활성 공연이 있으면 `open`으로 복구하고, 새 공연 오픈 시 기존 타이머를 제거하도록 수정했다. 좌석 매진은 `sold_out`으로 유지되므로 취소표 대기열은 계속 사용할 수 있다.
+
+### 배포·확인 시 주의
+
+- 소스 변경은 API 프로세스가 다시 시작되어야 적용된다. 공유 디렉터리에서 실행 중인 `node --watch`가 파일 변경을 감지하지 못하는 환경에서는 담당자가 API 프로세스를 수동 재시작해야 한다.
+- Helm 적용 전에는 `helm template` 또는 `helm install --dry-run --debug`로 렌더링 결과를 확인한다.
+- API와 프론트엔드의 포스터 일정이 일치하려면 새 공연 생성 요청에 `sessions` 배열이 포함되어야 한다.

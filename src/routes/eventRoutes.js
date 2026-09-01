@@ -59,9 +59,9 @@ async function eventRoutes(fastify) {
    * { "eventName": "2026 팬미팅", "totalSeats": 5, "price": 88000 }
    */
   fastify.post('/event/create', async (request, reply) => {
-    const { eventName, eventDate, venue, sections, totalSeats, price, seatingType } = request.body || {};
-    // seatingType: 'arena'(부채꼴, 기본값) | 'standing'(스탠딩 그리드 — 좌표 불필요)
-    const resolvedSeatingType = seatingType === 'standing' ? 'standing' : 'arena';
+    const { eventName, eventDate, venue, sections, totalSeats, price, seatingType, description, cast, agency, runtime, ageRating, notices, sessions } = request.body || {};
+    const VALID_SEATING = new Set(['arena', 'standing', 'theater']);
+    const resolvedSeatingType = VALID_SEATING.has(seatingType) ? seatingType : 'arena';
 
     if (!eventName) {
       return reply.status(400).send({ error: 'eventName은 필수입니다.' });
@@ -125,6 +125,18 @@ async function eventRoutes(fastify) {
       : sectionSummary;
 
     // 이벤트 정보 저장 (활성 이벤트)
+    const extraFields = {};
+    if (description) extraFields.description = description;
+    if (cast) extraFields.cast = cast;
+    if (agency) extraFields.agency = agency;
+    if (runtime) extraFields.runtime = runtime;
+    if (ageRating) extraFields.ageRating = ageRating;
+    if (notices) extraFields.notices = notices;
+    if (sessions) extraFields.sessions = sessions;
+    const hashExtras = {};
+    for (const [k, v] of Object.entries(extraFields)) {
+      hashExtras[k] = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    }
     await redis.hset(EVENT_KEY, {
       eventId,
       eventName,
@@ -135,6 +147,7 @@ async function eventRoutes(fastify) {
       seatingType: resolvedSeatingType,
       status: 'open',
       createdAt: new Date().toISOString(),
+      ...hashExtras,
     });
 
     // MariaDB events 테이블에 영구 저장
@@ -145,9 +158,9 @@ async function eventRoutes(fastify) {
 
     try {
       await pool.query(
-        `INSERT INTO events (event_id, event_name, event_date, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NOW())`,
-        [eventId, eventName, eventDate || '', venue || '', totalSeatCount, resolvedSeatingType, JSON.stringify(sectionsWithGeometry), chosenEmoji, chosenColor],
+        `INSERT INTO events (event_id, event_name, title, event_date, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NOW())`,
+        [eventId, eventName, eventName, eventDate || '', venue || '', totalSeatCount, resolvedSeatingType, JSON.stringify(sectionsWithGeometry), chosenEmoji, chosenColor],
       );
     } catch (dbErr) {
       console.error('[Event] MariaDB 저장 실패:', dbErr.message);
@@ -167,6 +180,7 @@ async function eventRoutes(fastify) {
       color: chosenColor,
       status: 'open',
       createdAt: new Date().toISOString(),
+      ...extraFields,
     });
     await redis.hset(EVENT_LIST_KEY, eventId, eventCard);
 
@@ -200,6 +214,7 @@ async function eventRoutes(fastify) {
       seatingType: info.seatingType || 'arena',
       status: info.status || 'open',
       ticketOpenAt: info.ticketOpenAt || null,
+      ticketCloseAt: info.ticketCloseAt || null,
       createdAt: info.createdAt,
     });
   });
@@ -521,6 +536,48 @@ async function eventRoutes(fastify) {
     });
   });
 
+  // 공연 예매 마감 시간 설정/변경 — ticketCloseAt이 지나면 자동으로 티켓팅이 마감된다.
+  // ticketCloseAt을 null로 보내면 마감 시간 제한이 해제된다(수동 마감으로 전환).
+  fastify.patch('/events/:eventId/close-time', async (request, reply) => {
+    const { eventId } = request.params;
+    const { ticketCloseAt } = request.body || {};
+
+    if (ticketCloseAt !== null && ticketCloseAt !== undefined) {
+      const parsed = new Date(ticketCloseAt);
+      if (Number.isNaN(parsed.getTime())) {
+        return reply.status(400).send({ error: 'ticketCloseAt이 올바른 날짜/시간 형식이 아닙니다.' });
+      }
+    }
+
+    const cardStr = await redis.hget(EVENT_LIST_KEY, eventId);
+    if (!cardStr) {
+      return reply.status(404).send({ message: '해당 이벤트가 없습니다.' });
+    }
+    const card = JSON.parse(cardStr);
+    card.ticketCloseAt = ticketCloseAt || null;
+    await redis.hset(EVENT_LIST_KEY, eventId, JSON.stringify(card));
+
+    const info = await redis.hgetall(EVENT_KEY);
+    if (info && info.eventId === eventId) {
+      if (card.ticketCloseAt) {
+        await redis.hset(EVENT_KEY, 'ticketCloseAt', card.ticketCloseAt);
+        await queueService.scheduleCloseTime(card.ticketCloseAt);
+      } else {
+        await redis.hdel(EVENT_KEY, 'ticketCloseAt');
+        await queueService.cancelCloseSchedule();
+      }
+    }
+
+    return reply.send({
+      success: true,
+      eventId,
+      ticketCloseAt: card.ticketCloseAt,
+      message: card.ticketCloseAt
+        ? `마감 시간이 ${card.ticketCloseAt}로 설정되었습니다.`
+        : '마감 시간 제한이 해제되었습니다 (수동 마감).',
+    });
+  });
+
   // 이벤트 삭제 (목록에서 제거)
   fastify.delete('/events/:eventId', async (request, reply) => {
     const { eventId } = request.params;
@@ -530,6 +587,9 @@ async function eventRoutes(fastify) {
     }
     await seatService.cleanupEventSeats(eventId);
     try {
+      await pool.query(`DELETE FROM wishlists WHERE event_id = ?`, [eventId]);
+      await pool.query(`DELETE FROM seats WHERE event_id = ?`, [eventId]);
+      await pool.query(`DELETE FROM reservations WHERE event_id = ?`, [eventId]);
       await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
     } catch (dbErr) {
       console.error('[Event] MariaDB 삭제 동기화 실패:', dbErr.message);
@@ -554,7 +614,27 @@ async function eventRoutes(fastify) {
     });
     await pipeline.exec();
 
-    return reply.send({ seeded: dummyEvents.length, message: '더미 이벤트 5개 생성 완료' });
+    // MariaDB에도 저장 (중복 호출 시 기존 레코드 갱신)
+    let dbSaved = 0;
+    let dbError = null;
+    try {
+      for (const e of dummyEvents) {
+        await pool.query(
+          `INSERT INTO events (event_id, event_name, title, event_date, venue, total_seats, seating_type, status, emoji, color, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'arena', 'open', ?, ?, NOW())
+           ON DUPLICATE KEY UPDATE event_name = VALUES(event_name), title = VALUES(title), event_date = VALUES(event_date),
+             venue = VALUES(venue), total_seats = VALUES(total_seats), status = 'open',
+             emoji = VALUES(emoji), color = VALUES(color)`,
+          [e.eventId, e.eventName, e.eventName, e.eventDate, e.venue, e.totalSeats, e.emoji, e.color],
+        );
+        dbSaved++;
+      }
+    } catch (dbErr) {
+      dbError = dbErr.message;
+      console.error('[Event] MariaDB 시드 저장 실패:', dbErr.message);
+    }
+
+    return reply.send({ seeded: dummyEvents.length, dbSaved, dbError, message: '더미 이벤트 5개 생성 완료' });
   });
 }
 

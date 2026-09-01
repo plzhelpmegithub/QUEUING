@@ -19,6 +19,15 @@ async function initUsersTable() {
       );
       console.log('[Auth] 기본 관리자 계정 생성 (admin@queuing.kr / admin1234)');
     }
+    const monitorExisting = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, ['monitor@queuing.kr']);
+    if (monitorExisting.length === 0) {
+      const hashedPw = await bcrypt.hash('monitor1234', 10);
+      await pool.query(
+        `INSERT INTO ${TABLE_NAME} (user_id, password, role, email) VALUES (?, ?, ?, ?)`,
+        ['monitor@queuing.kr', hashedPw, 'monitor', 'monitor@queuing.kr'],
+      );
+      console.log('[Auth] 기본 모니터링 계정 생성 (monitor@queuing.kr / monitor1234)');
+    }
   } catch (err) {
     console.error('[Auth] 관리자 계정 생성 실패:', err.message);
   }

@@ -98,6 +98,7 @@ async function initTable() {
     "event_date VARCHAR(50) DEFAULT ''",
   ]);
   await addColumns('events', [
+    "title VARCHAR(200) NOT NULL DEFAULT ''",
     "event_name VARCHAR(200) NOT NULL DEFAULT ''",
     "event_date VARCHAR(50) DEFAULT ''",
     "venue VARCHAR(200) DEFAULT ''",

@@ -14,8 +14,7 @@ async function authRoutes(fastify) {
     if (password.length < 4) {
       return reply.status(400).send({ error: '비밀번호는 4자 이상이어야 합니다.' });
     }
-    // 일반 사용자는 admin 역할로 등록 불가
-    const userRole = role === 'admin' ? 'user' : (role || 'user');
+    const userRole = (role === 'admin' || role === 'monitor') ? 'user' : (role || 'user');
     const result = await register(userId, password, email, userRole, { name, phone, birthDate });
     const statusCode = result.success ? 201 : 409;
     return reply.status(statusCode).send(result);

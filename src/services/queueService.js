@@ -36,8 +36,15 @@ async function enter(userId) {
   //   sold_out → standby만 진입 가능 (좌석 매진, 취소표 대기만 가능)
   //   closed   → 아무도 진입 불가 (기존 standby는 취소표 대기 유지)
   const ticketingStatus = await redis.get(TICKETING_STATUS_KEY);
-  if (ticketingStatus === 'closed' || (!ticketingStatus)) {
+  if (ticketingStatus === 'closed') {
     return { status: 'closed', message: '현재 티켓팅이 마감되었습니다. 더 이상 대기열에 진입할 수 없습니다.' };
+  }
+  if (!ticketingStatus) {
+    const eventInfo = await redis.hgetall('event:info');
+    if (!eventInfo || !eventInfo.eventId) {
+      return { status: 'closed', message: '등록된 공연이 없습니다.' };
+    }
+    await redis.set(TICKETING_STATUS_KEY, 'open');
   }
 
   // 1) 이미 입장 허용된 사용자
@@ -312,6 +319,8 @@ async function getStats() {
  * - 이 시점부터 사용자가 대기열에 진입 가능
  */
 async function openTicketing() {
+  if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+  if (standbyCloseTimer) { clearTimeout(standbyCloseTimer); standbyCloseTimer = null; }
   await redis.set(TICKETING_STATUS_KEY, 'open');
   const openedAt = new Date().toISOString();
   console.log(`[Ticketing] 오픈 — ${openedAt}`);
@@ -328,14 +337,6 @@ async function closeTicketing() {
   const closedAt = new Date().toISOString();
   console.log(`[Ticketing] 마감 — ${closedAt}`);
   return { status: 'closed', closedAt, message: '티켓팅이 마감되었습니다.' };
-}
-
-/**
- * 티켓팅 상태 조회
- */
-async function getTicketingStatus() {
-  const status = await redis.get(TICKETING_STATUS_KEY) || 'closed';
-  return { status };
 }
 
 /**
@@ -460,7 +461,12 @@ async function getSchedule() {
  * 티켓팅 상태 조회 — 3단계
  */
 async function getTicketingStatus() {
-  const status = await redis.get(TICKETING_STATUS_KEY) || 'closed';
+  let status = await redis.get(TICKETING_STATUS_KEY);
+  if (!status) {
+    const eventInfo = await redis.hgetall('event:info');
+    status = (eventInfo && eventInfo.eventId) ? 'open' : 'closed';
+    if (status === 'open') await redis.set(TICKETING_STATUS_KEY, 'open');
+  }
   const descriptions = {
     open: '예매 가능 (eligible + standby 진입 가능)',
     sold_out: '전석 매진 (취소표 대기만 가능)',
@@ -510,4 +516,48 @@ async function scheduleStandbyClose(closeAt) {
   };
 }
 
-module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule, scheduleStandbyClose };
+/**
+ * 티켓팅 마감 시간 예약 (관리자가 직접 마감 시각을 지정)
+ * - "12월 25일 자정에 마감" 같은 설정
+ * - 해당 시간이 되면 자동으로 closed 상태로 전환
+ *
+ * @param {string} closeAt - 마감 시간 (ISO 8601)
+ */
+async function scheduleCloseTime(closeAt) {
+  const closeTime = new Date(closeAt).getTime();
+  const now = Date.now();
+  const delayMs = closeTime - now;
+
+  if (delayMs <= 0) {
+    await closeTicketing();
+    return { success: true, immediate: true, message: '마감 시간이 이미 지났으므로 즉시 마감 처리되었습니다.' };
+  }
+
+  if (closeTimer) clearTimeout(closeTimer);
+
+  closeTimer = setTimeout(async () => {
+    await closeTicketing();
+    console.log(`[Schedule] 예약 마감 시간 도달 — 티켓팅 자동 마감`);
+  }, delayMs);
+
+  const delayMinutes = Math.floor(delayMs / 60000);
+  const delayHours = Math.floor(delayMinutes / 60);
+  const remainMin = delayMinutes % 60;
+
+  return {
+    success: true,
+    ticketCloseAt: closeAt,
+    closesIn: `${delayHours}시간 ${remainMin}분 후`,
+    message: `${closeAt}에 티켓팅이 자동 마감됩니다.`,
+  };
+}
+
+/**
+ * 마감 예약 취소
+ */
+async function cancelCloseSchedule() {
+  if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+  return { success: true, message: '마감 예약이 취소되었습니다.' };
+}
+
+module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule, scheduleStandbyClose, scheduleCloseTime, cancelCloseSchedule };
