@@ -7,6 +7,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "redis-api-chart.fullname" . }}
+  namespace: queuing-a
   labels:
     {{- include "redis-api-chart.labels" . | nindent 4 }}
 spec:
