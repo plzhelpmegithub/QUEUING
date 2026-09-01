@@ -18,7 +18,7 @@ import { showSoldOutModal } from '../components/soldOutModal.js';
 import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { connectSeats } from '../services/realtimeIntegration.js';
-import { generateEventSessions } from '../data/concerts.js';
+import { generateEventSessions, formatStoredSessions } from '../data/concerts.js';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
@@ -63,6 +63,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
   let holdTimer = null;
   let seatMapApiRef = null;
   let seatConn = null;
+  let wsReconnectTimer = null;
   // Tracks every seat currently held-but-unpaid on the backend (up to
   // MAX_SEATS), so the page-unmount cleanup below can release all of them if
   // the user navigates away without completing payment. Cleared right before
@@ -84,7 +85,45 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const allSeats = seatsData.seats || [];
       const layout = (c.sections || []).length ? c.sections : [{ name: 'A', seats: c.totalSeats, price: c.price }];
       let session = getSelectedSession(c.eventId);
-      const eventSessions = generateEventSessions(c.eventDate);
+      const eventSessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
+
+      const myBookings = getState().bookings.filter(
+        (b) => b.concertId === c.eventId && (b.status === 'confirmed' || b.status === 'unpaid')
+      );
+      const bookedDates = new Set(myBookings.map((b) => b.session?.date).filter(Boolean));
+      const MAX_BOOKINGS_PER_CONCERT = 2;
+
+      if (myBookings.length >= MAX_BOOKINGS_PER_CONCERT) {
+        container.innerHTML = `
+          <div class="container" style="padding:60px 0;text-align:center;">
+            <div class="soldout-panel">
+              <div class="soldout-title">예매 한도 초과</div>
+              <div class="soldout-desc">이 공연은 1인당 최대 ${MAX_BOOKINGS_PER_CONCERT}매까지 예매 가능합니다.<br/>이미 ${myBookings.length}매를 예매하셨습니다.</div>
+              <button class="btn btn-primary mt-24" onclick="location.hash='#/mypage'">마이페이지로 이동</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const availableSessions = eventSessions.filter((s) => !bookedDates.has(s.date));
+      if (availableSessions.length === 0) {
+        container.innerHTML = `
+          <div class="container" style="padding:60px 0;text-align:center;">
+            <div class="soldout-panel">
+              <div class="soldout-title">예매 가능한 날짜 없음</div>
+              <div class="soldout-desc">모든 공연일의 예매가 완료되었습니다.</div>
+              <button class="btn btn-primary mt-24" onclick="location.hash='#/mypage'">마이페이지로 이동</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (session && bookedDates.has(session.date)) {
+        session = { date: availableSessions[0].date, time: availableSessions[0].time };
+        setSelectedSession(c.eventId, session);
+      }
 
       // 구역(zone) 하나 = mountSeatMap의 section 하나. 전체 구역의 좌석을 한 번에
       // 넘겨서 지도 전체가 곧 좌석 선택 화면이 되게 함.
@@ -110,22 +149,20 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         totalAvailable += available.length;
         const color = zoneColor(z, i);
         zoneMeta[z.name] = { label: `${z.name}구역`, price: Number(available[0]?.price || z.price || c.price) || 0, color };
-        if (available.length === 0) return;
-        sections.push({ id: z.name, label: `${z.name}구역`, grade: z.name, zone: c.eventName, cols: available.length, color });
-        available.forEach((s, idx) => {
-          // seatId는 "evt-171...:VIP-001"처럼 이벤트 ID가 접두사로 붙어있을 수
-          // 있음(공연 간 좌석 ID 충돌 방지) — 뒤쪽 "구역-번호" 부분만 파싱
+        if (zoneSeats.length === 0) return;
+        sections.push({ id: z.name, label: `${z.name}구역`, grade: z.name, zone: c.eventName, cols: zoneSeats.length, color });
+        zoneSeats.forEach((s, idx) => {
           const bareId = s.seatId.includes(':') ? s.seatId.split(':').pop() : s.seatId;
+          let status = 'available';
+          if (s.status === 'sold' || s.status === 'RESERVED') status = 'sold';
+          else if (s.status === 'held' || s.status === 'LOCKED') status = 'holding';
           flatSeats.push({
             id: s.seatId,
             section: s.section,
             row: bareId.split('-')[0],
             seatNum: parseInt(bareId.split('-')[1], 10) || idx + 1,
             grade: z.name,
-            status: 'available',
-            // 백엔드가 DECIMAL 컬럼을 문자열로 내려줄 때가 있어서(예: "126000") 여기서
-            // 미리 숫자로 못 박아둠 — 안 그러면 나중에 여러 좌석 가격을 합산할 때
-            // "+"가 숫자 덧셈이 아니라 문자열 이어붙이기로 동작해 총액이 깨짐.
+            status,
             price: Number(s.price || z.price || c.price) || 0,
           });
         });
@@ -170,11 +207,14 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         </div>
         <div class="container" style="padding-top:12px;padding-bottom:0;">
           <div class="chip-row" data-session-tabs style="gap:8px;flex-wrap:wrap;">
-            ${eventSessions.map((s, i) => `
-              <button type="button" class="chip-btn ${session?.date === s.date && session?.time === s.time ? 'active' : ''}" data-session-tab="${i}" style="flex:1;min-width:calc(50% - 6px);justify-content:center;padding:10px 12px;font-size:13px;">
-                ${s.shortLabel} ${s.round}회 ${s.time}
-              </button>
-            `).join('')}
+            ${eventSessions.map((s, i) => {
+              const isBooked = bookedDates.has(s.date);
+              const isActive = !isBooked && session?.date === s.date && session?.time === s.time;
+              return `
+              <button type="button" class="chip-btn ${isActive ? 'active' : ''}" data-session-tab="${i}" ${isBooked ? 'disabled' : ''} style="flex:1;min-width:calc(50% - 6px);justify-content:center;padding:10px 12px;font-size:13px;${isBooked ? 'opacity:0.4;text-decoration:line-through;' : ''}">
+                ${s.shortLabel} ${s.round}회 ${s.time}${isBooked ? ' (예매완료)' : ''}
+              </button>`;
+            }).join('')}
           </div>
         </div>
         <div class="container" data-body>
@@ -214,6 +254,10 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           const idx = parseInt(btn.dataset.sessionTab);
           const s = eventSessions[idx];
           if (!s || (session?.date === s.date && session?.time === s.time)) return;
+          if (bookedDates.has(s.date)) {
+            showToast({ title: '이미 예매한 날짜입니다', body: `${s.shortLabel} 공연은 이미 예매가 완료되었습니다.` });
+            return;
+          }
           if (mySeats.length) {
             clearHold();
             const userId = getState().user?.email;
@@ -392,13 +436,25 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           });
       }
 
-      const seatMapApi = mountSeatMap(seatMapHost, { sections, seats: flatSeats, onSeatClick: handleSeatClick });
+      const seatMapApi = mountSeatMap(seatMapHost, { sections, seats: flatSeats, onSeatClick: handleSeatClick, seatingType: c.seatingType, venue: c.venue });
       seatMapApiRef = seatMapApi;
       if (focusZoneId) seatMapApi.scrollToZone(focusZoneId);
 
       // C파트 WebSocket — 다른 유저의 좌석 선점/해제를 실시간 수신
+      // WS 연결 성공 시 폴링 중지, 끊기면 폴링 fallback + 자동 재연결
       const SEAT_EVENT_MAP = { 'seat.held': 'holding', 'seat.sold': 'sold', 'seat.released': 'available', 'seat.cancelled': 'available' };
-      {
+      let wsConnected = false;
+
+      function startPolling() {
+        if (pollTimer) return;
+        pollTimer = setInterval(pollSeats, POLL_MS);
+      }
+      function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      }
+
+      function openSeatWs() {
+        if (destroyed) return;
         const u = getState().user;
         seatConn = connectSeats(c.eventId, u?.email || 'anonymous', u?.name || '게스트', {
           onMessage: (msg) => {
@@ -407,7 +463,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             const seat = flatSeats.find((s) => s.id === msg.seatId);
             if (!seat) return;
             const next = SEAT_EVENT_MAP[msg.type];
-            if (next) {
+            if (next && seat.status !== next) {
               seat.status = next;
               seatMapApi.updateStatuses(flatSeats);
               const remainEl = container.querySelector('[data-remaining]');
@@ -417,10 +473,22 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
               }
             }
           },
-          onOpen: () => console.log('[Seats WS] 연결 성공'),
-          onClose: () => console.log('[Seats WS] 연결 종료'),
+          onOpen: () => {
+            console.log('[Seats WS] 연결 성공 — 폴링 중지');
+            wsConnected = true;
+            stopPolling();
+          },
+          onClose: () => {
+            console.log('[Seats WS] 연결 종료 — 폴링 fallback 시작');
+            wsConnected = false;
+            startPolling();
+            if (!destroyed) {
+              wsReconnectTimer = setTimeout(openSeatWs, 3000);
+            }
+          },
         });
       }
+      openSeatWs();
 
       function renderRailSelected() {
         const total = mySeats.reduce((sum, s) => sum + Number(s.price || 0), 0);
@@ -502,27 +570,50 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       }
 
 
-      // 실제 판매 현황을 주기적으로 반영 (전체 잔여석 숫자만 — 개별 좌석 점/색은
-      // 최초 스냅샷 기준. 다른 사용자가 실시간으로 사는 걸 완전히 반영하려면
-      // SSE 연동이 필요한데, 이건 별도 작업 범위라 우선 폴링으로 총 잔여석만 갱신)
+      // HTTP 폴링 — WS 연결 실패 시 fallback으로 사용
+      const seatIndex = new Map(flatSeats.map((s) => [s.id, s]));
+      const mySeatIds = new Set();
       let allSoldOutShown = false;
-      pollTimer = setInterval(() => {
+      function pollSeats() {
         fetch('/seats')
           .then((r) => r.json())
           .then((data) => {
             const seats2 = data.seats || [];
             const zoneNames = layout.map((z) => z.name);
+            let changed = false;
+            mySeats.forEach((s) => mySeatIds.add(s.id));
+            const serverStatus = new Map();
+            for (const serverSeat of seats2) {
+              if (!belongsToThisEvent(serverSeat)) continue;
+              serverStatus.set(serverSeat.seatId, serverSeat.status);
+              const local = seatIndex.get(serverSeat.seatId);
+              if (!local || mySeatIds.has(local.id)) continue;
+              let next = 'available';
+              if (serverSeat.status === 'sold' || serverSeat.status === 'RESERVED') next = 'sold';
+              else if (serverSeat.status === 'held' || serverSeat.status === 'LOCKED') next = 'holding';
+              if (local.status !== next) { local.status = next; changed = true; }
+            }
+            for (const local of flatSeats) {
+              if (mySeatIds.has(local.id)) continue;
+              if (local.status !== 'available' && !serverStatus.has(local.id)) {
+                local.status = 'available'; changed = true;
+              }
+            }
+            mySeatIds.clear();
+            if (changed) seatMapApi.updateStatuses(flatSeats);
             const remain = seats2.filter((s) => zoneNames.includes(s.section) && belongsToThisEvent(s) && s.status === 'available').length;
             const remainEl = container.querySelector('[data-remaining]');
             if (remainEl) remainEl.textContent = `${formatNumber(remain)}석`;
             if (!allSoldOutShown && remain === 0) {
               allSoldOutShown = true;
-              clearInterval(pollTimer);
+              stopPolling();
               showSoldOutModal(c.eventId);
             }
           })
           .catch(() => {});
-      }, POLL_MS);
+      }
+      // WS가 아직 연결 안 됐으면 폴링으로 시작
+      if (!wsConnected) startPolling();
     })
     .catch(() => {
       if (!destroyed) {
@@ -534,6 +625,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
     destroyed = true;
     if (pollTimer) clearInterval(pollTimer);
     if (holdTimer) clearInterval(holdTimer);
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
     if (seatConn) seatConn.close();
     activeHolds.forEach((h) => releaseHeldSeat(h));
     seatMapApiRef?.destroy();

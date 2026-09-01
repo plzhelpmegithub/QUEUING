@@ -180,6 +180,7 @@ export const seatSelectPage = {
         sections,
         seats,
         onSeatClick: handleSeatClick,
+        venue: c.venue,
       });
       if (sim) sim.stop();
       sim = createSeatSimulator(seats, {

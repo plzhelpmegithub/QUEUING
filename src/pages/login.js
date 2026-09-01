@@ -106,9 +106,18 @@ export const loginPage = {
             submitBtn.disabled = false;
             return;
           }
-          login({ name: result.name || email.split('@')[0] || '게스트', email: result.email || email, isAdmin: result.role === 'admin', userId: result.userId || email });
+          login({
+            name: result.name || email.split('@')[0] || '게스트',
+            email: result.email || email,
+            isAdmin: result.role === 'admin',
+            isMonitor: result.role === 'monitor',
+            role: result.role === 'admin' ? 'ADMIN' : result.role === 'monitor' ? 'MONITOR' : 'USER',
+            userId: result.userId || email,
+          });
           const back = popReturnTo();
-          navigate(back || '');
+          if (result.role === 'admin') navigate(back || 'admin');
+          else if (result.role === 'monitor') navigate('monitoring');
+          else navigate(back || '');
         })
         .catch(() => {
           formErr.textContent = '로그인 처리 중 오류가 발생했습니다.';

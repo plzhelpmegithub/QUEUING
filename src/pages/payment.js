@@ -97,28 +97,24 @@ export const paymentPage = {
           <div class="eyebrow">${type === 'cancel' ? '취소표 결제' : 'PAYMENT · STEP 5'}</div>
           <h2 class="section-title">${type === 'cancel' ? '취소표 결제' : '결제 정보 확인'}</h2>
 
+          ${type === 'cancel' ? `
           <div class="payment-deadline-box mt-24">
             <div>
-              <div class="payment-deadline-box__label">${type === 'cancel' ? '남은 결제시간' : '좌석 선택 제한시간'}</div>
+              <div class="payment-deadline-box__label">남은 결제시간</div>
               <div class="payment-deadline-box__time num-mono" data-deadline></div>
             </div>
             <span class="badge badge-red">결제 대기</span>
           </div>
-
           <div class="notice-box mt-16">
-            ${
-              type === 'cancel'
-                ? `
               <p>취소표를 확보한 시점부터 <strong>24시간 이내</strong> 결제를 완료해야 합니다.</p>
               <p>24시간 이내 결제하지 않으면 티켓은 <strong>자동 취소</strong>됩니다.</p>
               <p>취소된 티켓은 다시 취소표 Pool로 돌아가며 다음 대기자에게 배부됩니다.</p>
-            `
-                : `
-              <p>좌석 선택 제한시간 내에 <strong>결제하기 버튼을 눌러야</strong> 예매가 확정됩니다.</p>
-              <p>제한시간이 지나면 좌석이 자동 해제됩니다 — 이는 환불이 아닌 "예약 시간 만료"입니다.</p>
-            `
-            }
+          </div>` : `
+          <div class="notice-box mt-16">
+              <p>우측 상단의 <strong>제한시간 내에 결제하기 버튼을 눌러야</strong> 예매가 확정됩니다.</p>
+              <p>제한시간이 지나면 좌석이 자동 해제됩니다.</p>
           </div>
+          <div style="display:none;"><span data-deadline></span></div>`}
 
           <div class="detail-info-card mt-24">
             <h3>구매자 정보</h3>
@@ -264,6 +260,18 @@ export const paymentPage = {
 
     payBtn.addEventListener('click', () => {
       if (payBtn.disabled || expired) return;
+
+      const sessionDate = order.session?.date;
+      if (sessionDate) {
+        const alreadyBooked = getState().bookings.some(
+          (b) => b.concertId === c.eventId && b.session?.date === sessionDate && (b.status === 'confirmed' || b.status === 'unpaid')
+        );
+        if (alreadyBooked) {
+          showToast({ title: '이미 예매한 날짜입니다', body: `${sessionDate} 공연은 이미 예매가 완료되었습니다. 다른 날짜를 선택해주세요.` });
+          return;
+        }
+      }
+
       const buyerName = container.querySelector('[data-buyer-name]').value.trim();
       const buyerPhone = container.querySelector('[data-buyer-phone]').value.trim();
       const buyerEmail = container.querySelector('[data-buyer-email]').value.trim();

@@ -1,45 +1,29 @@
-// Interactive venue seat map — fan-shaped arc layout with zoom/pan controls,
-// uniform spacing, and hover tooltips.
+// Interactive venue seat map — Canvas 2D rendering with grid layout.
+// Rectangular grid layout with zoom/pan, spatial-indexed hit-testing, and hover tooltips.
 
-// Seat size/spacing — deliberately generous: seats sitting this close together
-// at the DOM level made adjacent seats easy to mis-click, especially once
-// scaled down to fit a large venue in the viewport. What actually determines
-// the visible gap-to-seat ratio on screen (independent of overall zoom) is the
-// SEAT_STEP:SEAT_D ratio, since fit-to-view scales both by the same factor —
-// so SEAT_STEP is kept much larger than SEAT_D on purpose, to leave a clearly
-// visible empty gap between adjacent dots rather than just touching circles.
 const SEAT_D = 14;
-const SEAT_STEP = 42;
-const GRADE_GAP = 60;
-const ARC_HALF = 76;
-const STAGE_W = 240;
+const SEAT_STEP = 20;
+const GRADE_GAP = 30;
+const STAGE_W = 280;
 const STAGE_H = 36;
-const CX = 520;
 const STAGE_TOP = 18;
-const ORIGIN_Y = STAGE_TOP + STAGE_H + 28;
-const START_R = 150;
+const SEATS_START_Y = STAGE_TOP + STAGE_H + 40;
 
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 5;
+// LOD 기준: 이 배율보다 작으면 개별 좌석을 렌더링하거나 클릭 판정하지 않습니다.
+// 배경/구역 블록만 보여 주고, 기준 배율 이상에서만 좌석을 표시합니다.
+const SEAT_LOD_ZOOM_THRESHOLD = 0.4;
 const WHEEL_K = 0.0012;
 const ZOOM_STEP = 1.25;
-const MAX_RENDER = 700;
 const DRAG_THRESHOLD = 4;
+const HIT_RADIUS = SEAT_D / 2 + 8;
+const GRID_CELL = 50;
 
 const SEAT_FILL = '#7C4DFF';
 const SEAT_BORDER = '#5E35D8';
 const BAND_COLOR = '#9E9E9E';
 
-function darken(hex) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const k = 0.6;
-  return `rgb(${Math.round(r * k)},${Math.round(g * k)},${Math.round(b * k)})`;
-}
-
-// 등급 대표색을 옅은 pastel 톤으로 — 미선택 좌석의 안쪽 채우기에 사용
-// (겉 테두리는 등급 색상 그대로, 안쪽만 옅게 해서 "선택 가능" 느낌을 줌)
 function hexToRgba(hex, alpha) {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
@@ -47,74 +31,7 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function seatXY(r, angleDeg) {
-  const rad = (angleDeg * Math.PI) / 180;
-  return {
-    x: CX + r * Math.sin(rad),
-    y: ORIGIN_Y + r * (0.65 + 0.35 * Math.cos(rad)),
-  };
-}
-
-// Compute N angles along the arc at radius r so that the visual (screen)
-// distance between consecutive seats is uniform — compensates for the
-// y-compression that otherwise squishes seats near the arc edges.
-// `halfSpan` defaults to the full arc width (ARC_HALF on each side); a ring
-// that doesn't have enough seats to fill its natural capacity is passed a
-// smaller halfSpan (see computeLayout) so those seats keep the same spacing
-// as a full ring instead of being stretched thin across the whole arc.
-function evenArcAngles(r, n, halfSpan = ARC_HALF) {
-  if (n <= 1) return [0];
-  const S = 200;
-  const dists = [0];
-  for (let i = 1; i <= S; i++) {
-    const a0 = -halfSpan + ((i - 1) / S) * 2 * halfSpan;
-    const a1 = -halfSpan + (i / S) * 2 * halfSpan;
-    const p0 = seatXY(r, a0);
-    const p1 = seatXY(r, a1);
-    dists.push(dists[i - 1] + Math.sqrt((p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2));
-  }
-  const total = dists[S];
-  const angles = [];
-  for (let i = 0; i < n; i++) {
-    const target = (i / (n - 1)) * total;
-    let lo = 0;
-    while (lo < S && dists[lo + 1] < target) lo++;
-    const frac =
-      dists[lo + 1] > dists[lo] ? (target - dists[lo]) / (dists[lo + 1] - dists[lo]) : 0;
-    angles.push(-halfSpan + ((lo + frac) / S) * 2 * halfSpan);
-  }
-  return angles;
-}
-
-function arcPoints(r, nPts) {
-  const pts = [];
-  for (let i = 0; i <= nPts; i++) {
-    const a = -ARC_HALF + ((2 * ARC_HALF) * i) / nPts;
-    pts.push(seatXY(r, a));
-  }
-  return pts;
-}
-
-function bandPath(r1, r2) {
-  const N = 48;
-  const outer = arcPoints(r2 + SEAT_D * 0.7, N);
-  const inner = arcPoints(r1 - SEAT_D * 0.7, N).reverse();
-  const all = [...outer, ...inner];
-  return 'M ' + all.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ') + ' Z';
-}
-
-// ── Layout ──────────────────────────────────────────────────────────
-function subsample(arr, target) {
-  if (arr.length <= target) return arr;
-  const step = arr.length / target;
-  const out = [];
-  for (let i = 0; i < target; i++) out.push(arr[Math.floor(i * step)]);
-  return out;
-}
-
-// Ring order (stage-out) is always VIP → R → S → A → anything else, regardless
-// of what order the event's sections happened to be created in — grades not in
-// this list keep their original relative order, appended after the known ones.
+// ── Layout (rectangular grid) ──────────────────────────────────────
 const GRADE_PRIORITY = { VIP: 0, R: 1, S: 2, A: 3 };
 
 function computeLayout(sections, seats) {
@@ -140,130 +57,67 @@ function computeLayout(sections, seats) {
     if (byGrade[s.grade]) byGrade[s.grade].push(s);
   });
 
-  const total = seats.length;
-  const needsSample = total > MAX_RENDER;
+  const maxPerRow = Math.max(40, Math.ceil(Math.sqrt(seats.length) * 1.6));
+  const totalW = maxPerRow * SEAT_STEP;
+  const cx = totalW / 2;
 
-  let radius = START_R;
+  let curY = SEATS_START_Y;
   const positioned = [];
   const zones = [];
 
-  gradeOrder.forEach((grade, gi) => {
-    const allGradeSeats = byGrade[grade];
-    if (!allGradeSeats.length) return;
+  gradeOrder.forEach((grade) => {
+    const gs = byGrade[grade];
+    if (!gs.length) return;
     const sec = secByGrade[grade];
-
-    const proportion = allGradeSeats.length / total;
-    const budget = needsSample
-      ? Math.max(12, Math.round(MAX_RENDER * proportion))
-      : allGradeSeats.length;
-    const gs = subsample(allGradeSeats, budget);
-
-    const bandStart = radius;
+    const yStart = curY;
     let idx = 0;
 
     while (idx < gs.length) {
-      const arcLen = ((2 * ARC_HALF) / 360) * 2 * Math.PI * radius;
-      // Capacity = how many seats fit this ring at the target spacing (SEAT_STEP),
-      // not a fixed count — a grade with more seats than one ring holds just
-      // spills into the next (larger) ring automatically as radius grows.
-      const capacity = Math.max(3, Math.floor(arcLen / SEAT_STEP));
-      const n = Math.min(capacity, gs.length - idx);
-      // A ring that doesn't have enough remaining seats to fill its capacity
-      // (typically the last, partial ring of a grade) gets a proportionally
-      // narrower angular span instead of always spanning the full arc — otherwise
-      // evenArcAngles would spread a handful of seats thin across the whole
-      // width, stretching their spacing far beyond SEAT_STEP. The span has to
-      // scale by segment count (n-1)/(capacity-1), not by seat count (n/capacity):
-      // a full ring's SEAT_STEP spacing comes from (capacity-1) segments spanning
-      // the full arc, so n seats need (n-1) segments at that same size, i.e.
-      // (n-1)/(capacity-1) of the full span — using n/capacity instead visibly
-      // overshoots for small n (e.g. n=2 would get ~2x the intended gap).
-      const halfSpan = n < capacity ? ARC_HALF * ((n - 1) / Math.max(1, capacity - 1)) : ARC_HALF;
-      const angles = evenArcAngles(radius, n, halfSpan);
-      for (let c = 0; c < n && idx < gs.length; c++) {
-        const pos = seatXY(radius, angles[c]);
-        gs[idx]._x = pos.x;
-        gs[idx]._y = pos.y;
-        // Left-to-right (facing the stage), continuous across every ring in this
-        // grade — the leftmost seat of the grade's first ring is 1, incrementing
-        // rightward and continuing (not resetting) into each subsequent ring.
+      const rowCount = Math.min(maxPerRow, gs.length - idx);
+      const rowW = rowCount * SEAT_STEP;
+      const startX = cx - rowW / 2 + SEAT_STEP / 2;
+      for (let c = 0; c < rowCount; c++) {
+        gs[idx]._x = startX + c * SEAT_STEP;
+        gs[idx]._y = curY;
         gs[idx]._displayNum = idx + 1;
         positioned.push(gs[idx]);
         idx++;
       }
-      radius += SEAT_STEP;
+      curY += SEAT_STEP;
     }
 
-    zones.push({
-      grade,
-      label: sec.label || grade,
-      rStart: bandStart,
-      rEnd: radius - SEAT_STEP,
-    });
-
-    radius += GRADE_GAP;
+    zones.push({ grade, label: sec.label || grade, yStart, yEnd: curY - SEAT_STEP });
+    curY += GRADE_GAP;
   });
 
-  let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
-  positioned.forEach((s) => {
-    if (s._x < minX) minX = s._x;
-    if (s._x > maxX) maxX = s._x;
-    if (s._y > maxY) maxY = s._y;
-  });
-
-  // Seat x/y so far are in the CX-centered coordinate system (CX=520), which
-  // only happens to line up with a [0, canvasW] canvas when the whole layout
-  // is narrower than CX*2. Wider spacing (bigger SEAT_STEP/START_R) pushes the
-  // arc's edges past x=0 on the left — those seats end up at a negative left,
-  // i.e. physically outside the canvas div's own [0, canvasW] box, which is
-  // exactly the range pan-clamping keeps on screen. Since dragging can never
-  // move the canvas further right than tx=0, that negative-x range was
-  // permanently unreachable — the stage-left seats got clipped and un-pannable.
-  // Fix: shift every coordinate so the leftmost content sits at PAD, making the
-  // canvas's own [0, canvasW] box actually contain everything drawn in it.
-  const PAD = 60;
-  const offsetX = PAD - minX;
-  positioned.forEach((s) => {
-    s._x += offsetX;
-  });
-
+  const PAD = 40;
   return {
     seats: positioned,
     zones,
-    canvasW: maxX - minX + PAD * 2,
-    canvasH: maxY + 50,
-    offsetX,
+    canvasW: totalW + PAD * 2,
+    canvasH: curY + PAD,
+    offsetX: PAD,
+    cx: cx + PAD,
   };
 }
 
-// ── SVG background ──────────────────────────────────────────────────
+// ── SVG background (grid) ──────────────────────────────────────────
 function buildBgSvg(layout) {
-  const { zones, canvasW, canvasH, offsetX } = layout;
-  const bands = zones
-    .map(
-      (z) =>
-        `<path d="${bandPath(z.rStart, z.rEnd)}" fill="${BAND_COLOR}" fill-opacity="0.06" stroke="${BAND_COLOR}" stroke-opacity="0.12" stroke-width="1"/>`
-    )
-    .join('');
+  const { zones, canvasW, canvasH, cx } = layout;
+  const bands = zones.map((z) =>
+    `<rect x="20" y="${z.yStart - SEAT_STEP / 2}" width="${canvasW - 40}" height="${z.yEnd - z.yStart + SEAT_STEP}" rx="8" fill="${BAND_COLOR}" fill-opacity="0.06" stroke="${BAND_COLOR}" stroke-opacity="0.12" stroke-width="1"/>`
+  ).join('');
 
-  const labels = zones
-    .map((z) => {
-      const mid = (z.rStart + z.rEnd) / 2;
-      const pos = seatXY(mid, -ARC_HALF - 5);
-      return `<text x="${pos.x - 10}" y="${pos.y}" font-size="13" font-weight="800" fill="#666" text-anchor="end" dominant-baseline="middle" opacity="0.7">${z.label}</text>`;
-    })
-    .join('');
+  const labels = zones.map((z) => {
+    const midY = (z.yStart + z.yEnd) / 2;
+    return `<text x="14" y="${midY + 4}" font-size="13" font-weight="800" fill="#666" text-anchor="start" opacity="0.7">${z.label}</text>`;
+  }).join('');
 
-  // Everything above is drawn in the raw CX-centered coordinate system — shift
-  // the whole group by offsetX so it lines up with the seats (which are
-  // already stored shifted) inside the canvas's own [0, canvasW] box.
-  return `<svg class="vm-bg" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}" xmlns="http://www.w3.org/2000/svg">
     <defs><linearGradient id="stg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#444"/><stop offset="100%" stop-color="#181818"/></linearGradient></defs>
-    <g transform="translate(${offsetX},0)">
-      <rect x="${CX - STAGE_W / 2}" y="${STAGE_TOP}" width="${STAGE_W}" height="${STAGE_H}" rx="8" fill="url(#stg)"/>
-      <text x="${CX}" y="${STAGE_TOP + STAGE_H / 2 + 5}" text-anchor="middle" fill="#fff" font-size="13" font-weight="800" letter-spacing="4">S T A G E</text>
-      ${bands}${labels}
-    </g>
+    <rect x="${cx - STAGE_W / 2}" y="${STAGE_TOP}" width="${STAGE_W}" height="${STAGE_H}" rx="8" fill="url(#stg)"/>
+    <text x="${cx}" y="${STAGE_TOP + STAGE_H / 2 + 5}" text-anchor="middle" fill="#fff" font-size="13" font-weight="800" letter-spacing="4">S T A G E</text>
+    ${bands}${labels}
   </svg>`;
 }
 
@@ -285,17 +139,13 @@ function clampPan(state, layout, viewport) {
   }
 }
 
-function applyTransform(canvasEl, state) {
-  canvasEl.style.transform = `translate(${state.tx}px,${state.ty}px) scale(${state.scale})`;
-}
-
-function fitView(state, layout, viewport) {
+function fitView(state, layout, viewport, minZoom) {
   const vw = viewport.clientWidth;
   const vh = viewport.clientHeight;
   const sx = vw / layout.canvasW;
   const sy = vh / layout.canvasH;
   state.scale = Math.min(sx, sy) * 0.92;
-  state.scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, state.scale));
+  state.scale = Math.max(minZoom || 0.005, Math.min(ZOOM_MAX, state.scale));
   clampPan(state, layout, viewport);
 }
 
@@ -308,8 +158,9 @@ function showTooltip(tooltipEl, e, seat, secLabel) {
     available: '선택 가능',
   };
   const grade = secLabel || seat.label || seat.grade;
+  const block = seat._block ? ` (${seat._block})` : '';
   const loc = `${seat._displayNum || seat.seatNum}번`;
-  tooltipEl.innerHTML = `<strong>${grade}</strong><br>${loc}<br><span style="opacity:0.7">${statusText[seat.status] || '선택 가능'}</span>`;
+  tooltipEl.innerHTML = `<strong>${grade}${block}</strong><br>${loc}<br><span style="opacity:0.7">${statusText[seat.status] || '선택 가능'}</span>`;
   tooltipEl.classList.add('show');
   tooltipEl.style.left = `${e.clientX + 14}px`;
   tooltipEl.style.top = `${e.clientY - 10}px`;
@@ -319,12 +170,287 @@ function hideTooltip(tooltipEl) {
   tooltipEl.classList.remove('show');
 }
 
-// ── Mount ───────────────────────────────────────────────────────────
-export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = false, readOnly = false }) {
-  const layout = computeLayout(sections, seats);
-  const idToEl = new Map();
+// ── Olympic Hall layout (image-based) ─────────────────────────────
+// Canvas size matches the venue image (1991×1537 px).
+// Each block defines x, y (top-left), w, h (pixel extent) — measured from image.
+// cols/rows are computed from w/h to fill the area. Step sizes are per-block.
+const OH_W = 1991;
+const OH_H = 1537;
+const OH_SEAT_RATIO = 0.7;
+
+// Each block: { id, grade, x, y, w, h, cols, rows }
+// Coordinates measured from actual seat-colored regions in 올림픽홀.jpg.
+const OH_BLOCKS = [
+  { id: 'Floor',  grade: 'VIP', x: 525,  y: 255,  w: 635, h: 285, cols: 38, rows: 20 },
+  { id: 'A1',     grade: 'R',   x: 171,  y: 270,  w: 178, h: 125, cols: 13, rows: 10 },
+  { id: 'A2',     grade: 'R',   x: 171,  y: 430,  w: 178, h: 135, cols: 13, rows: 10 },
+  { id: 'E1',     grade: 'R',   x: 1643, y: 270,  w: 178, h: 125, cols: 13, rows: 10 },
+  { id: 'E2',     grade: 'R',   x: 1643, y: 430,  w: 178, h: 135, cols: 13, rows: 10 },
+  { id: 'G',      grade: 'R',   x: 250,  y: 225,  w: 271, h: 95,  cols: 20, rows: 6 },
+  { id: 'H',      grade: 'R',   x: 1520, y: 225,  w: 152, h: 105, cols: 12, rows: 7 },
+  { id: 'B1',     grade: 'S',   x: 270,  y: 310,  w: 270, h: 380, cols: 20, rows: 26 },
+  { id: 'D1',     grade: 'S',   x: 1380, y: 310,  w: 280, h: 380, cols: 21, rows: 26 },
+  { id: 'F1',     grade: 'S',   x: 435,  y: 535,  w: 150, h: 285, cols: 10, rows: 19 },
+  { id: 'F2',     grade: 'S',   x: 600,  y: 585,  w: 575, h: 230, cols: 30, rows: 16 },
+  { id: 'F3',     grade: 'S',   x: 1388, y: 535,  w: 72,  h: 285, cols: 5,  rows: 19 },
+  { id: 'A3',     grade: 'A',   x: 171,  y: 605,  w: 178, h: 145, cols: 13, rows: 11 },
+  { id: 'A4',     grade: 'A',   x: 171,  y: 780,  w: 178, h: 135, cols: 13, rows: 10 },
+  { id: 'E3',     grade: 'A',   x: 1643, y: 605,  w: 178, h: 145, cols: 13, rows: 11 },
+  { id: 'E4',     grade: 'A',   x: 1643, y: 780,  w: 178, h: 135, cols: 13, rows: 10 },
+  { id: 'B2',     grade: 'A',   x: 240,  y: 690,  w: 280, h: 275, cols: 21, rows: 19 },
+  { id: 'D2',     grade: 'A',   x: 1388, y: 690,  w: 330, h: 275, cols: 25, rows: 19 },
+  { id: '2F 좌',  grade: 'A',   x: 300,  y: 945,  w: 695, h: 450, cols: 38, rows: 31 },
+  { id: '2F 우',  grade: 'A',   x: 900,  y: 945,  w: 690, h: 450, cols: 38, rows: 31 },
+];
+
+function computeOlympicHallLayout(sections, seats) {
+  const secByGrade = {};
+  sections.forEach((sec) => { secByGrade[sec.grade] = sec; });
+
+  // Group seats by grade
+  const byGrade = {};
+  seats.forEach((s) => {
+    if (!byGrade[s.grade]) byGrade[s.grade] = [];
+    byGrade[s.grade].push(s);
+  });
+
+  // Group blocks by grade (preserving order)
+  const blocksByGrade = {};
+  OH_BLOCKS.forEach((b) => {
+    if (!blocksByGrade[b.grade]) blocksByGrade[b.grade] = [];
+    blocksByGrade[b.grade].push(b);
+  });
+
+  const positioned = [];
+  const zones = [];
+
+  for (const grade of Object.keys(blocksByGrade)) {
+    const gs = byGrade[grade] || [];
+    const blocks = blocksByGrade[grade];
+    const caps = blocks.map((b) => b.cols * b.rows);
+    const totalCap = caps.reduce((s, c) => s + c, 0);
+    const total = gs.length;
+
+    // Proportional allocation: floor, then distribute remainder
+    const alloc = caps.map((c) => Math.min(c, Math.floor(total * c / totalCap)));
+    let rem = total - alloc.reduce((s, c) => s + c, 0);
+    for (let i = 0; i < blocks.length && rem > 0; i++) {
+      if (alloc[i] < caps[i]) { alloc[i]++; rem--; }
+    }
+
+    let idx = 0;
+    blocks.forEach((block, bi) => {
+      const count = Math.min(alloc[bi], gs.length - idx);
+      const stepX = block.w / block.cols;
+      const stepY = block.h / block.rows;
+      for (let i = 0; i < count; i++) {
+        const s = gs[idx + i];
+        s._x = block.x + (i % block.cols) * stepX + stepX / 2;
+        s._y = block.y + Math.floor(i / block.cols) * stepY + stepY / 2;
+        s._sw = Math.max(4, stepX * OH_SEAT_RATIO);
+        s._sh = Math.max(4, stepY * OH_SEAT_RATIO);
+        s._displayNum = idx + i + 1;
+        s._block = block.id;
+        positioned.push(s);
+      }
+      idx += count;
+    });
+
+    const sec = secByGrade[grade];
+    zones.push({ grade, label: sec?.label || grade });
+  }
+
+  return { seats: positioned, zones, canvasW: OH_W, canvasH: OH_H, offsetX: 0, isOlympicHall: true, bgImageUrl: '/images/seatmaps/올림픽홀.jpg' };
+}
+
+// ── Theater layout ─────────────────────────────────────────────────
+const TH_CX = 500;
+const TH_STEP = 22;
+const TH_STAGE_W = 280;
+const TH_STAGE_H = 36;
+const TH_STAGE_TOP = 18;
+
+const TH_BLOCKS = {
+  VIP: [
+    { x: 155, y: 78, maxCols: 16, label: 'A' },
+    { x: 520, y: 78, maxCols: 16, label: 'B' },
+  ],
+  R: [
+    { x: 220, y: 400, maxCols: 10, label: 'C' },
+    { x: 565, y: 400, maxCols: 10, label: 'D' },
+  ],
+  S: [
+    { x: 42, y: 108, maxCols: 2, label: 'A' },
+    { x: 42, y: 220, maxCols: 2, label: 'B' },
+    { x: 42, y: 332, maxCols: 2, label: 'C' },
+    { x: 920, y: 108, maxCols: 2, label: 'G' },
+    { x: 920, y: 220, maxCols: 2, label: 'F' },
+    { x: 920, y: 332, maxCols: 2, label: 'E' },
+  ],
+  A: [
+    { x: 175, y: 655, maxCols: 10, label: 'A' },
+    { x: 385, y: 655, maxCols: 10, label: 'B' },
+    { x: 595, y: 655, maxCols: 10, label: 'C' },
+    { x: 315, y: 775, maxCols: 14, label: '3F' },
+  ],
+};
+
+function computeTheaterLayout(sections, seats) {
+  const gradeOrder = [];
+  const seen = new Set();
+  const secByGrade = {};
+  sections.forEach((sec, i) => {
+    if (!seen.has(sec.grade)) {
+      seen.add(sec.grade);
+      gradeOrder.push(sec.grade);
+      secByGrade[sec.grade] = { ...sec, _idx: i };
+    }
+  });
+  gradeOrder.sort((a, b) => (GRADE_PRIORITY[a] ?? 100) - (GRADE_PRIORITY[b] ?? 100));
+
+  const byGrade = {};
+  gradeOrder.forEach((g) => (byGrade[g] = []));
+  seats.forEach((s) => { if (byGrade[s.grade]) byGrade[s.grade].push(s); });
+
+  const positioned = [];
+  const zones = [];
+
+  gradeOrder.forEach((grade) => {
+    const gs = byGrade[grade];
+    if (!gs.length) return;
+    const blocks = TH_BLOCKS[grade] || [{ x: TH_CX - 100, y: 500, maxCols: 10, label: grade }];
+    const perBlock = Math.ceil(gs.length / blocks.length);
+    let idx = 0;
+
+    blocks.forEach((block) => {
+      const count = Math.min(perBlock, gs.length - idx);
+      for (let i = 0; i < count; i++) {
+        const s = gs[idx + i];
+        s._x = block.x + (i % block.maxCols) * TH_STEP;
+        s._y = block.y + Math.floor(i / block.maxCols) * TH_STEP;
+        s._displayNum = idx + i + 1;
+        positioned.push(s);
+      }
+      idx += count;
+    });
+
+    const sec = secByGrade[grade];
+    zones.push({ grade, label: sec?.label || grade });
+  });
+
+  let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+  positioned.forEach((s) => {
+    if (s._x < minX) minX = s._x;
+    if (s._x > maxX) maxX = s._x;
+    if (s._y > maxY) maxY = s._y;
+  });
+
+  const PAD = 50;
+  const offsetX = PAD - minX;
+  positioned.forEach((s) => { s._x += offsetX; });
+
+  return { seats: positioned, zones, canvasW: maxX - minX + PAD * 2, canvasH: maxY + PAD * 2, offsetX, isTheater: true };
+}
+
+function buildTheaterBgSvg(layout) {
+  const { canvasW, canvasH, offsetX } = layout;
+  let rowNums = '';
+  for (let r = 1; r <= 14; r++) {
+    rowNums += `<text x="${TH_CX}" y="${78 + (r - 1) * TH_STEP + 6}" text-anchor="middle" fill="#666" font-size="10" opacity="0.5">${r}</text>`;
+  }
+  for (let r = 1; r <= 10; r++) {
+    rowNums += `<text x="208" y="${400 + (r - 1) * TH_STEP + 6}" text-anchor="end" fill="#666" font-size="9" opacity="0.4">${r}</text>`;
+  }
+  for (let r = 1; r <= 10; r++) {
+    rowNums += `<text x="776" y="${400 + (r - 1) * TH_STEP + 6}" text-anchor="start" fill="#666" font-size="9" opacity="0.4">${r}</text>`;
+  }
+  return `<svg width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="stg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#444"/><stop offset="100%" stop-color="#181818"/></linearGradient></defs>
+    <g transform="translate(${offsetX},0)">
+      <rect x="${TH_CX - TH_STAGE_W / 2}" y="${TH_STAGE_TOP}" width="${TH_STAGE_W}" height="${TH_STAGE_H}" rx="6" fill="url(#stg)"/>
+      <text x="${TH_CX}" y="${TH_STAGE_TOP + TH_STAGE_H / 2 + 5}" text-anchor="middle" fill="#fff" font-size="13" font-weight="800" letter-spacing="3">STAGE</text>
+
+      <rect x="130" y="60" width="740" height="555" rx="14" fill="none" stroke="#444" stroke-opacity="0.18"/>
+
+      <text x="320" y="68" text-anchor="middle" fill="#888" font-size="16" font-weight="700">A</text>
+      <text x="685" y="68" text-anchor="middle" fill="#888" font-size="16" font-weight="700">B</text>
+      <text x="320" y="390" text-anchor="middle" fill="#888" font-size="14" font-weight="700">C</text>
+      <text x="664" y="390" text-anchor="middle" fill="#888" font-size="14" font-weight="700">D</text>
+      ${rowNums}
+
+      <rect x="${TH_CX - 57}" y="487" width="114" height="28" rx="4" fill="#333" fill-opacity="0.3" stroke="#555" stroke-opacity="0.3"/>
+      <text x="${TH_CX}" y="506" text-anchor="middle" fill="#888" font-size="11" font-weight="600">F.O.H</text>
+
+      <text x="${TH_CX}" y="610" text-anchor="middle" fill="#666" font-size="15" font-weight="700" opacity="0.5">1F</text>
+      <line x1="140" y1="618" x2="860" y2="618" stroke="#555" stroke-opacity="0.25" stroke-dasharray="5"/>
+
+      <text x="65" y="88" text-anchor="middle" fill="#666" font-size="14" font-weight="700" opacity="0.5">2F</text>
+      <text x="935" y="88" text-anchor="middle" fill="#666" font-size="14" font-weight="700" opacity="0.5">2F</text>
+      <rect x="30" y="95" width="70" height="310" rx="6" fill="none" stroke="#444" stroke-opacity="0.15"/>
+      <rect x="905" y="95" width="70" height="310" rx="6" fill="none" stroke="#444" stroke-opacity="0.15"/>
+      <text x="65" y="102" text-anchor="middle" fill="#777" font-size="12" font-weight="600">A</text>
+      <text x="65" y="214" text-anchor="middle" fill="#777" font-size="12" font-weight="600">B</text>
+      <text x="65" y="326" text-anchor="middle" fill="#777" font-size="12" font-weight="600">C</text>
+      <text x="935" y="102" text-anchor="middle" fill="#777" font-size="12" font-weight="600">G</text>
+      <text x="935" y="214" text-anchor="middle" fill="#777" font-size="12" font-weight="600">F</text>
+      <text x="935" y="326" text-anchor="middle" fill="#777" font-size="12" font-weight="600">E</text>
+
+      <text x="${TH_CX}" y="640" text-anchor="middle" fill="#666" font-size="15" font-weight="700" opacity="0.5">2F</text>
+      <text x="275" y="647" text-anchor="middle" fill="#777" font-size="13" font-weight="600">A</text>
+      <text x="485" y="647" text-anchor="middle" fill="#777" font-size="13" font-weight="600">B</text>
+      <text x="695" y="647" text-anchor="middle" fill="#777" font-size="13" font-weight="600">C</text>
+
+      <line x1="250" y1="755" x2="750" y2="755" stroke="#555" stroke-opacity="0.15"/>
+      <text x="${TH_CX}" y="768" text-anchor="middle" fill="#666" font-size="15" font-weight="700" opacity="0.5">3F</text>
+    </g>
+  </svg>`;
+}
+
+// ── Spatial grid for Canvas hit-testing ─────────────────────────────
+function buildSpatialGrid(layoutSeats) {
+  const grid = new Map();
+  layoutSeats.forEach((s, i) => {
+    const cx = Math.floor(s._x / GRID_CELL);
+    const cy = Math.floor(s._y / GRID_CELL);
+    const key = (cx << 16) | (cy & 0xFFFF);
+    let bucket = grid.get(key);
+    if (!bucket) { bucket = []; grid.set(key, bucket); }
+    bucket.push(i);
+  });
+  return grid;
+}
+
+function findSeatAtLayout(grid, layoutSeats, lx, ly) {
+  const cx = Math.floor(lx / GRID_CELL);
+  const cy = Math.floor(ly / GRID_CELL);
+  let best = null, bestDist = Infinity;
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const key = ((cx + dx) << 16) | ((cy + dy) & 0xFFFF);
+      const bucket = grid.get(key);
+      if (!bucket) continue;
+      for (let k = 0; k < bucket.length; k++) {
+        const s = layoutSeats[bucket[k]];
+        const d = Math.hypot(s._x - lx, s._y - ly);
+        if (d < bestDist) { bestDist = d; best = s; }
+      }
+    }
+  }
+  return bestDist <= HIT_RADIUS ? best : null;
+}
+
+// ── Mount (Canvas 2D) ──────────────────────────────────────────────
+export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = false, readOnly = false, seatingType, venue }) {
+  const isTheater = seatingType === 'theater';
+  const isOlympicHall = venue === '올림픽홀';
+  const layout = isOlympicHall ? computeOlympicHallLayout(sections, seats)
+    : isTheater ? computeTheaterLayout(sections, seats)
+    : computeLayout(sections, seats);
   const idToSeat = new Map();
   seats.forEach((s) => idToSeat.set(s.id, s));
+
+  const idToLayoutSeat = new Map();
+  layout.seats.forEach((s) => idToLayoutSeat.set(s.id, s));
 
   const scrollParent = el.closest('.seatmap-scroll');
   if (scrollParent) {
@@ -336,9 +462,6 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   }
   el.style.padding = '0';
 
-  // 구역(등급)별 대표색 — order rail의 "구역별 잔여석" 목록(zoneColor()/
-  // GRADE_COLOR)과 완전히 같은 색을 그대로 써서 잔여석 안내와 실제 좌석
-  // 배치도의 색이 어긋나지 않도록 함.
   const gradeColorMap = Object.fromEntries(sections.map((s) => [s.grade, s.color || SEAT_FILL]));
 
   const statusChips = readOnly
@@ -351,9 +474,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   el.innerHTML = `
     <div class="vm-legend">${statusChips}</div>
     <div class="vm-viewport" data-viewport>
-      <div class="vm-canvas" data-canvas style="width:${layout.canvasW}px;height:${layout.canvasH}px;">
-        ${buildBgSvg(layout)}
-      </div>
+      <canvas data-seat-canvas style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
       <div class="vm-zoom-controls">
         <button type="button" class="vm-zoom-btn" data-zoom-in aria-label="확대">+</button>
         <button type="button" class="vm-zoom-btn" data-zoom-out aria-label="축소">−</button>
@@ -364,48 +485,380 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     <div class="vm-zoom-hint" data-hint>마우스 스크롤로 확대/축소 · 드래그로 이동</div>
   `;
 
-  const canvasEl = el.querySelector('[data-canvas]');
+  const cvs = el.querySelector('[data-seat-canvas]');
   const viewport = el.querySelector('[data-viewport]');
   const tooltipEl = el.querySelector('[data-tooltip]');
   const hintEl = el.querySelector('[data-hint]');
+  const ctx = cvs.getContext('2d');
 
-  // Render seat circles — 등급별 색상(겉 테두리는 진하게, 안쪽은 pastel톤)을
-  // CSS 커스텀 프로퍼티로 심어두고 실제 색칠은 .vm-seat 클래스가 담당(paintSeat).
-  layout.seats.forEach((s) => {
-    const dot = document.createElement('div');
-    dot.className = 'vm-seat';
-    dot.dataset.id = s.id;
-    dot.style.left = `${s._x}px`;
-    dot.style.top = `${s._y}px`;
-    const gradeColor = gradeColorMap[s.grade] || SEAT_FILL;
-    dot.style.setProperty('--seat-color', gradeColor);
-    dot.style.setProperty('--seat-color-light', hexToRgba(gradeColor, 0.18));
-    canvasEl.appendChild(dot);
-    idToEl.set(s.id, dot);
-  });
+  // Load background image (venue JPG or SVG)
+  const bgImg = new Image();
+  let bgReady = false;
+  bgImg.onload = () => { bgReady = true; paint(); };
+  if (layout.bgImageUrl) {
+    bgImg.src = layout.bgImageUrl;
+  } else {
+    const svgStr = isTheater ? buildTheaterBgSvg(layout) : buildBgSvg(layout);
+    bgImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+  }
 
-  // State
+  // Spatial grid
+  const grid = buildSpatialGrid(layout.seats);
+
+  function viewportToLayout(vx, vy) {
+    return { x: (vx - state.tx) / state.scale, y: (vy - state.ty) / state.scale };
+  }
+
+  // ── State ──
   const state = { scale: 1, tx: 0, ty: 0 };
-  fitView(state, layout, viewport);
-  applyTransform(canvasEl, state);
+  let hoveredSeat = null;
+  let holdingPhase = 0;
+  let animRunning = false;
+  let destroyed = false;
 
-  // 뷰포트 크기가 바뀌면(창 크기 변경, 사이드바 레이아웃 재배치 등) 기존 tx/ty가
-  // 더 이상 유효한 범위가 아닐 수 있어 다시 클램프 — 이게 없으면 리사이즈 직후
-  // 좌석 배치도가 뷰포트 경계 밖으로 밀려나 보일 수 있었음.
+  const zoomMin = Math.min(ZOOM_MIN, Math.min(
+    viewport.clientWidth / layout.canvasW,
+    viewport.clientHeight / layout.canvasH,
+  ) * 0.85);
+
+  fitView(state, layout, viewport, zoomMin);
+
+  // ── Canvas resize ──
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const vw = viewport.clientWidth;
+    const vh = viewport.clientHeight;
+    if (cvs.width !== vw * dpr || cvs.height !== vh * dpr) {
+      cvs.width = vw * dpr;
+      cvs.height = vh * dpr;
+    }
+  }
+
+  // ── Paint ──
+  function paint() {
+    if (destroyed) return;
+    const dpr = window.devicePixelRatio || 1;
+    const vw = viewport.clientWidth;
+    const vh = viewport.clientHeight;
+    resizeCanvas();
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, vw, vh);
+
+    ctx.save();
+    ctx.translate(state.tx, state.ty);
+    ctx.scale(state.scale, state.scale);
+
+    if (bgReady) ctx.drawImage(bgImg, 0, 0, layout.canvasW, layout.canvasH);
+
+    const r = SEAT_D / 2;
+
+    // LOD: 모든 공연장 레이아웃에서 기준 배율 미만이면 개별 좌석을 완전히 숨깁니다.
+    // 선택 상태는 seat 객체에 계속 보존되므로 다시 확대하면 선택 좌석도 유지됩니다.
+    const showSeats = state.scale >= SEAT_LOD_ZOOM_THRESHOLD;
+    const seatAlphaBase = showSeats ? 1 : 0;
+
+    // Zoom hint overlay when seats are hidden
+    if (layout.bgImageUrl && !showSeats) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      const bw = 340, bh = 46;
+      const bx = layout.canvasW / 2 - bw / 2, by = layout.canvasH - 100;
+      const rr = 12;
+      ctx.beginPath();
+      ctx.moveTo(bx + rr, by);
+      ctx.lineTo(bx + bw - rr, by);
+      ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + rr);
+      ctx.lineTo(bx + bw, by + bh - rr);
+      ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - rr, by + bh);
+      ctx.lineTo(bx + rr, by + bh);
+      ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - rr);
+      ctx.lineTo(bx, by + rr);
+      ctx.quadraticCurveTo(bx, by, bx + rr, by);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('스크롤하여 확대하면 좌석이 나타납니다', layout.canvasW / 2, by + bh / 2);
+      ctx.restore();
+    }
+
+    // Classify seats by visual state
+    const isOH = !!layout.bgImageUrl;
+    const availArr = [];
+    const soldArr = [];
+    const holdArr = [];
+    const mineArr = [];
+    // byColor only used for non-OH mode
+    const byColor = {};
+
+    for (let i = 0; i < layout.seats.length; i++) {
+      const ls = layout.seats[i];
+      const seat = idToSeat.get(ls.id);
+      const status = seat ? seat.status : 'available';
+      if (status === 'sold') { soldArr.push(ls); continue; }
+      if (status === 'holding') { holdArr.push(ls); continue; }
+      if (status === 'mine') { mineArr.push(ls); continue; }
+      if (isOH) {
+        availArr.push(ls);
+      } else {
+        const color = gradeColorMap[ls.grade] || SEAT_FILL;
+        if (!byColor[color]) byColor[color] = [];
+        byColor[color].push(ls);
+      }
+    }
+
+    if (showSeats) {
+
+    if (isOH) {
+      // ── Olympic Hall: uniform purple rectangles (per-seat size) ──
+      // Available
+      ctx.fillStyle = hexToRgba(SEAT_FILL, 0.28);
+      ctx.strokeStyle = SEAT_FILL;
+      ctx.lineWidth = 0.8;
+      for (let i = 0; i < availArr.length; i++) {
+        const s = availArr[i];
+        const sw2 = s._sw || 10, sh2 = s._sh || 10;
+        ctx.fillRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+        ctx.strokeRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+      }
+
+      // Sold
+      if (soldArr.length) {
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = '#BCBCBC';
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 0.8;
+        for (let i = 0; i < soldArr.length; i++) {
+          const s = soldArr[i];
+          const sw2 = s._sw || 10, sh2 = s._sh || 10;
+          ctx.fillRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+          ctx.strokeRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // Holding (pulse)
+      if (holdArr.length) {
+        ctx.globalAlpha = 0.55 + 0.45 * Math.abs(Math.sin(holdingPhase));
+        ctx.fillStyle = '#F0A030';
+        ctx.strokeStyle = '#C88010';
+        ctx.lineWidth = 0.8;
+        for (let i = 0; i < holdArr.length; i++) {
+          const s = holdArr[i];
+          const sw2 = s._sw || 10, sh2 = s._sh || 10;
+          ctx.fillRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+          ctx.strokeRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // Mine — larger rect with glow + checkmark
+      for (let i = 0; i < mineArr.length; i++) {
+        const s = mineArr[i];
+        const sw2 = s._sw || 10, sh2 = s._sh || 10;
+        const mw = sw2 * 1.7, mh = sh2 * 1.7;
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.3)';
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(s._x - mw / 2 - 2, s._y - mh / 2 - 2, mw + 4, mh + 4);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = SEAT_FILL;
+        ctx.fillRect(s._x - mw / 2, s._y - mh / 2, mw, mh);
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(s._x - mw / 2, s._y - mh / 2, mw, mh);
+        const cs = mh * 0.3;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.8;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(s._x - cs * 0.5, s._y);
+        ctx.lineTo(s._x - cs * 0.1, s._y + cs * 0.5);
+        ctx.lineTo(s._x + cs * 0.6, s._y - cs * 0.4);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+    } else {
+      // ── Standard mode: circles batched by grade color ────────────
+      // Available seats
+      for (const color in byColor) {
+        const group = byColor[color];
+        ctx.fillStyle = hexToRgba(color, 0.18);
+        ctx.beginPath();
+        for (let i = 0; i < group.length; i++) {
+          const s = group[i];
+          ctx.moveTo(s._x + r, s._y);
+          ctx.arc(s._x, s._y, r, 0, 6.2832);
+        }
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Sold
+      if (soldArr.length) {
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = '#BCBCBC';
+        ctx.beginPath();
+        for (let i = 0; i < soldArr.length; i++) {
+          const s = soldArr[i];
+          ctx.moveTo(s._x + r, s._y);
+          ctx.arc(s._x, s._y, r, 0, 6.2832);
+        }
+        ctx.fill();
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
+      // Holding (pulse)
+      if (holdArr.length) {
+        ctx.globalAlpha = 0.55 + 0.45 * Math.abs(Math.sin(holdingPhase));
+        ctx.fillStyle = '#F0A030';
+        ctx.beginPath();
+        for (let i = 0; i < holdArr.length; i++) {
+          const s = holdArr[i];
+          ctx.moveTo(s._x + r, s._y);
+          ctx.arc(s._x, s._y, r, 0, 6.2832);
+        }
+        ctx.fill();
+        ctx.strokeStyle = '#C88010';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
+      // Mine — enlarged circle with checkmark
+      for (let i = 0; i < mineArr.length; i++) {
+        const s = mineArr[i];
+        const color = gradeColorMap[s.grade] || SEAT_FILL;
+        const mr = r * 1.7;
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.25)';
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(s._x, s._y, mr + 3, 0, 6.2832);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(s._x, s._y, mr, 0, 6.2832);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        const cs = mr * 0.55;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2.2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(s._x - cs * 0.35, s._y + cs * 0.05);
+        ctx.lineTo(s._x - cs * 0.05, s._y + cs * 0.35);
+        ctx.lineTo(s._x + cs * 0.4, s._y - cs * 0.3);
+        ctx.stroke();
+        ctx.restore();
+      }
+    } // end isOH branch
+
+    ctx.globalAlpha = 1;
+    } // end showSeats
+
+    // Hover highlight
+    if (showSeats && hoveredSeat) {
+      const seat = idToSeat.get(hoveredSeat.id);
+      const st = seat ? seat.status : 'available';
+      if (st !== 'sold' && st !== 'holding' && st !== 'mine') {
+        ctx.save();
+        if (isOH) {
+          const hw = (hoveredSeat._sw || 10) + 2, hh = (hoveredSeat._sh || 10) + 2;
+          ctx.shadowColor = 'rgba(0,0,0,0.2)';
+          ctx.shadowBlur = 6;
+          ctx.fillStyle = hexToRgba(SEAT_FILL, 0.5);
+          ctx.fillRect(hoveredSeat._x - hw / 2, hoveredSeat._y - hh / 2, hw, hh);
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = hexToRgba(SEAT_FILL, 0.9);
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(hoveredSeat._x - hw / 2 - 1, hoveredSeat._y - hh / 2 - 1, hw + 2, hh + 2);
+        } else {
+          const color = gradeColorMap[hoveredSeat.grade] || SEAT_FILL;
+          ctx.shadowColor = 'rgba(0,0,0,0.2)';
+          ctx.shadowBlur = 8;
+          ctx.fillStyle = hexToRgba(color, 0.35);
+          ctx.beginPath();
+          ctx.arc(hoveredSeat._x, hoveredSeat._y, r + 1, 0, 6.2832);
+          ctx.fill();
+          ctx.shadowColor = 'transparent';
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = hexToRgba(color, 0.6);
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(hoveredSeat._x, hoveredSeat._y, r + 3, 0, 6.2832);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
+    ctx.restore();
+    ctx.restore();
+  }
+
+  // ── Animation loop (holding pulse) ──
+  function startAnimation() {
+    if (animRunning || destroyed) return;
+    animRunning = true;
+    function loop() {
+      if (!animRunning || destroyed) return;
+      holdingPhase += 0.06;
+      paint();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  }
+  function stopAnimation() { animRunning = false; }
+
+  // Check if holding seats exist and start animation
+  function checkHolding() {
+    let has = false;
+    for (let i = 0; i < layout.seats.length; i++) {
+      const seat = idToSeat.get(layout.seats[i].id);
+      if (seat && seat.status === 'holding') { has = true; break; }
+    }
+    if (has && !animRunning) startAnimation();
+    if (!has && animRunning) stopAnimation();
+  }
+
+  // Initial paint
+  resizeCanvas();
+  paint();
+  checkHolding();
+
+  // ── Resize ──
   const resizeObserver = new ResizeObserver(() => {
     clampPan(state, layout, viewport);
-    applyTransform(canvasEl, state);
+    paint();
   });
   resizeObserver.observe(viewport);
 
-  // ── Zoom controls (+/-/reset) ── 미니맵 대신 우측 하단에 배치
+  // ── Zoom controls ──
   function zoomAround(mx, my, newScale) {
-    newScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newScale));
+    newScale = Math.max(zoomMin, Math.min(ZOOM_MAX, newScale));
     state.tx = mx - ((mx - state.tx) * newScale) / state.scale;
     state.ty = my - ((my - state.ty) * newScale) / state.scale;
     state.scale = newScale;
     clampPan(state, layout, viewport);
-    applyTransform(canvasEl, state);
+    paint();
   }
   el.querySelector('[data-zoom-in]').addEventListener('click', () => {
     zoomAround(viewport.clientWidth / 2, viewport.clientHeight / 2, state.scale * ZOOM_STEP);
@@ -414,8 +867,8 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     zoomAround(viewport.clientWidth / 2, viewport.clientHeight / 2, state.scale / ZOOM_STEP);
   });
   el.querySelector('[data-zoom-reset]').addEventListener('click', () => {
-    fitView(state, layout, viewport);
-    applyTransform(canvasEl, state);
+    fitView(state, layout, viewport, zoomMin);
+    paint();
   });
 
   // ── Wheel zoom ──
@@ -428,7 +881,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
       const my = e.clientY - rect.top;
       const delta = -e.deltaY * WHEEL_K;
       zoomAround(mx, my, state.scale * (1 + delta));
-      if (hintEl) hintEl.remove();
+      if (hintEl && hintEl.parentElement) hintEl.remove();
     },
     { passive: false }
   );
@@ -438,29 +891,57 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   let dragMoved = false;
   let dragX = 0, dragY = 0;
   let dragStartX = 0, dragStartY = 0;
-  let downDot = null;
+  let downSeat = null;
 
   viewport.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    // 확대/축소/리셋 버튼도 .vm-viewport 안에 떠 있는 오버레이라, 여기서 걸러주지
-    // 않으면 버튼 클릭도 드래그 시작으로 처리되고 setPointerCapture가 클릭 이벤트를
-    // viewport로 가로채버려서 버튼 자신의 click 리스너가 아예 안 불림.
     if (e.target.closest('.vm-zoom-controls')) return;
     dragging = true;
     dragMoved = false;
-    downDot = e.target.closest ? e.target.closest('.vm-seat') : null;
+
+    const rect = viewport.getBoundingClientRect();
+    const lp = viewportToLayout(e.clientX - rect.left, e.clientY - rect.top);
+    // 축소 상태에서는 좌석 hit-test 자체를 하지 않아 클릭 선택을 차단합니다.
+    downSeat = state.scale >= SEAT_LOD_ZOOM_THRESHOLD
+      ? findSeatAtLayout(grid, layout.seats, lp.x, lp.y)
+      : null;
+
     dragX = e.clientX;
     dragY = e.clientY;
     dragStartX = e.clientX;
     dragStartY = e.clientY;
     viewport.classList.add('dragging');
-    // setPointerCapture retargets all subsequent pointer/mouse/click events to
-    // viewport, so a plain 'click' listener on canvasEl never sees the seat
-    // dot as e.target — seat selection is decided here on pointerup instead.
     viewport.setPointerCapture(e.pointerId);
   });
+
   viewport.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
+    if (!dragging) {
+      // Hover detection — only when seats are visible
+      const seatsVis = state.scale >= SEAT_LOD_ZOOM_THRESHOLD;
+      const rect = viewport.getBoundingClientRect();
+      const lp = viewportToLayout(e.clientX - rect.left, e.clientY - rect.top);
+      const hit = seatsVis ? findSeatAtLayout(grid, layout.seats, lp.x, lp.y) : null;
+
+      if (hit !== hoveredSeat) {
+        hoveredSeat = hit;
+        if (hit) {
+          const seatData = idToSeat.get(hit.id);
+          const sec = sections.find((s) => s.grade === (seatData?.grade || hit.grade));
+          showTooltip(tooltipEl, e, { ...hit, ...seatData }, sec?.label);
+          const st = seatData?.status;
+          viewport.style.cursor = st === 'sold' ? 'not-allowed' : st === 'holding' ? 'wait' : 'pointer';
+        } else {
+          hideTooltip(tooltipEl);
+          viewport.style.cursor = 'grab';
+        }
+        if (!animRunning) paint();
+      } else if (tooltipEl.classList.contains('show')) {
+        tooltipEl.style.left = `${e.clientX + 14}px`;
+        tooltipEl.style.top = `${e.clientY - 10}px`;
+      }
+      return;
+    }
+
     const dx = e.clientX - dragStartX;
     const dy = e.clientY - dragStartY;
     if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) dragMoved = true;
@@ -469,21 +950,20 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     dragX = e.clientX;
     dragY = e.clientY;
     clampPan(state, layout, viewport);
-    applyTransform(canvasEl, state);
+    paint();
   });
+
   const endDrag = () => {
-    if (
-      !readOnly &&
-      dragging &&
-      !dragMoved &&
-      downDot &&
-      !downDot.classList.contains('vm-seat--sold') &&
-      !downDot.classList.contains('vm-seat--holding')
-    ) {
-      onSeatClick(downDot.dataset.id);
+    const seatsVisible = state.scale >= SEAT_LOD_ZOOM_THRESHOLD;
+    if (!readOnly && dragging && !dragMoved && downSeat && seatsVisible) {
+      const seatData = idToSeat.get(downSeat.id);
+      const st = seatData ? seatData.status : 'available';
+      if (st !== 'sold' && st !== 'holding') {
+        onSeatClick(downSeat.id);
+      }
     }
     dragging = false;
-    downDot = null;
+    downSeat = null;
     viewport.classList.remove('dragging');
   };
   viewport.addEventListener('pointerup', endDrag);
@@ -511,42 +991,9 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     },
     { passive: false }
   );
-  viewport.addEventListener('touchend', () => {
-    lastPinchDist = 0;
-  });
+  viewport.addEventListener('touchend', () => { lastPinchDist = 0; });
 
-  // ── Hover tooltip ──
-  canvasEl.addEventListener('mouseover', (e) => {
-    const dot = e.target.closest('.vm-seat');
-    if (!dot) return;
-    const seat = idToSeat.get(dot.dataset.id);
-    if (!seat) return;
-    const sec = sections.find((s) => s.grade === seat.grade);
-    showTooltip(tooltipEl, e, seat, sec?.label);
-  });
-  canvasEl.addEventListener('mousemove', (e) => {
-    if (tooltipEl.classList.contains('show')) {
-      tooltipEl.style.left = `${e.clientX + 14}px`;
-      tooltipEl.style.top = `${e.clientY - 10}px`;
-    }
-  });
-  canvasEl.addEventListener('mouseout', (e) => {
-    if (e.target.closest('.vm-seat')) hideTooltip(tooltipEl);
-  });
-
-  // Paint seat status — 색상은 전부 CSS(.vm-seat--sold/--holding/--mine)가
-  // 담당하고, 여기선 상태에 맞는 클래스만 토글한다(등급 색상은 --seat-color
-  // 커스텀 프로퍼티에 이미 심어져 있어 기본 상태에서 자동으로 적용됨).
-  function paintSeat(seat) {
-    const node = idToEl.get(seat.id);
-    if (!node) return;
-    node.classList.toggle('vm-seat--sold', seat.status === 'sold');
-    node.classList.toggle('vm-seat--holding', seat.status === 'holding');
-    node.classList.toggle('vm-seat--mine', seat.status === 'mine');
-  }
-  seats.forEach(paintSeat);
-
-  // Dismiss hint after a few seconds
+  // Dismiss hint
   setTimeout(() => {
     if (hintEl && hintEl.parentElement) {
       hintEl.style.opacity = '0';
@@ -556,31 +1003,59 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
 
   return {
     updateStatuses(updatedSeats) {
-      updatedSeats.forEach(paintSeat);
+      updatedSeats.forEach((s) => {
+        const existing = idToSeat.get(s.id);
+        if (existing) existing.status = s.status;
+      });
+      paint();
+      checkHolding();
     },
     flashSold(id) {
-      const node = idToEl.get(id);
-      if (node) {
-        node.classList.add('shake');
-        setTimeout(() => node.classList.remove('shake'), 400);
+      const ls = idToLayoutSeat.get(id);
+      if (!ls) return;
+      let frame = 0;
+      const total = 8;
+      function step() {
+        if (frame >= total || destroyed) return;
+        frame++;
+        paint();
+        const shake = Math.sin(frame * Math.PI * 0.5) * 3;
+        const dpr = window.devicePixelRatio || 1;
+        ctx.save();
+        ctx.scale(dpr, dpr);
+        ctx.translate(state.tx, state.ty);
+        ctx.scale(state.scale, state.scale);
+        ctx.translate(ls._x + shake, ls._y);
+        ctx.fillStyle = '#ff4444';
+        ctx.globalAlpha = 1 - frame / total;
+        ctx.beginPath();
+        ctx.arc(0, 0, SEAT_D / 2 + 4, 0, 6.2832);
+        ctx.fill();
+        ctx.restore();
+        requestAnimationFrame(step);
       }
+      requestAnimationFrame(step);
     },
     scrollToZone(zoneId) {
-      const zone = layout.zones.find((z) => z.grade === zoneId);
-      if (!zone) return;
-      const midR = (zone.rStart + zone.rEnd) / 2;
-      const pos = seatXY(midR, 0);
-      pos.x += layout.offsetX; // seatXY is in the raw CX-centered system; shift to match the canvas
+      const zoneSeats = layout.seats.filter((s) => s.grade === zoneId);
+      if (!zoneSeats.length) return;
+      let sumX = 0, sumY = 0;
+      zoneSeats.forEach((s) => { sumX += s._x; sumY += s._y; });
+      const cx = sumX / zoneSeats.length;
+      const cy = sumY / zoneSeats.length;
       const vw = viewport.clientWidth;
       const vh = viewport.clientHeight;
       state.scale = Math.max(1.2, state.scale);
-      state.tx = vw / 2 - pos.x * state.scale;
-      state.ty = vh / 2 - pos.y * state.scale;
+      state.tx = vw / 2 - cx * state.scale;
+      state.ty = vh / 2 - cy * state.scale;
       clampPan(state, layout, viewport);
-      applyTransform(canvasEl, state);
+      paint();
     },
     destroy() {
+      destroyed = true;
+      animRunning = false;
       resizeObserver.disconnect();
+      hoveredSeat = null;
     },
   };
 }

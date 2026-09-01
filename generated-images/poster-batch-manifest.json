@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "bts",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Midnight purple to black gradient background with a galaxy of stars and nebula. Seven silhouetted figures standing on a massive illuminated stage facing a stadium crowd. Gold serif typography. Text: 'BTS' (very large), '2027 WORLD TOUR' and '[BEYOND THE SCENE : ETERNAL]' below, 'SEOUL · OLYMPIC MAIN STADIUM', '2027.03.01 (SAT) 6PM | 2027.03.02 (SUN) 5PM'. Seven stars forming an arc constellation above. Epic, cinematic atmosphere.",
+      "out": "generated-images/posters/poster-bts.png"
+    },
+    {
+      "id": "blackpink",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Hot pink neon light and matte black contrast background with shattered glass fragments floating. Four female silhouettes in powerful poses on stage. Chrome metallic sans-serif typography. Text: 'BLACKPINK' (very large), '2027 WORLD TOUR' and '[PINK VENOM : THE FINALE]', 'SEOUL · OLYMPIC MAIN STADIUM', '2027.01.17 (SAT) 6PM | 2027.01.18 (SUN) 5PM'. Edgy, glamorous, high-fashion atmosphere.",
+      "out": "generated-images/posters/poster-blackpink.png"
+    },
+    {
+      "id": "seventeen",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Ivory to champagne gold tones with diamond prism light refraction effects. Thirteen members in elegant formation on a grand stage. Modern serif white and gold typography. Text: 'SEVENTEEN' (very large), '2026 WORLD TOUR' and '[DIAMOND EDGE : REBORN]', 'SEOUL · KSPO DOME', '2026.12.19 (SAT) 6PM | 2026.12.20 (SUN) 5PM'. Elegant and brilliant atmosphere with crystal light effects.",
+      "out": "generated-images/posters/poster-seventeen.png"
+    },
+    {
+      "id": "newjeans",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Pastel sky blue to lavender gradient with 90s retro TV noise texture and pixel elements. Five young female figures in trendy Y2K fashion. Bubble round sans-serif typography. Text: 'NewJeans' (large, playful), '2027 FAN CONCERT' and '[OMG : SUMMER DREAMING]', 'SEOUL · KSPO DOME', '2027.01.10 (SAT) 6PM | 2027.01.11 (SUN) 5PM'. Bunny and daisy sticker decorations. Y2K kitsch, fresh and cute aesthetic.",
+      "out": "generated-images/posters/poster-newjeans.png"
+    },
+    {
+      "id": "ive",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Royal burgundy to deep navy background with velvet texture. Six female figures in regal poses wearing elegant outfits. Classic serif gold typography with crown ornament. Text: 'IVE' (very large), '2026 CONCERT' and '[AFTER LIKE : THE CROWN]', 'SEOUL · KSPO DOME', '2026.11.28 (SAT) 6PM | 2026.11.29 (SUN) 5PM'. Crown and jewel motifs. Luxurious, confident royal mood.",
+      "out": "generated-images/posters/poster-ive.png"
+    },
+    {
+      "id": "aespa",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Cyber blue to electric purple holographic background with digital glitch effects and wireframe sphere. Four female figures in futuristic outfits in a virtual world. Futuristic neon sans-serif typography. Text: 'aespa' (very large), '2027 WORLD TOUR' and '[SUPERNOVA : SYNK HORIZON]', 'SEOUL · GOCHEOK SKY DOME', '2027.02.14 (SAT) 6PM | 2027.02.15 (SUN) 5PM'. Sci-fi metaverse hologram aesthetic.",
+      "out": "generated-images/posters/poster-aespa.png"
+    },
+    {
+      "id": "twice",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Coral pink to peach orange sunset gradient background with warm golden light. Nine female figures in joyful poses on a beautiful stage. Elegant script and sans-serif mixed typography. Text: 'TWICE' (very large), '2027 WORLD TOUR' and '[FEEL SPECIAL : ONCE MORE]', 'SEOUL · OLYMPIC MAIN STADIUM', '2027.04.05 (SAT) 6PM | 2027.04.06 (SUN) 5PM'. Nine heart-shaped stars. Warm, emotional, heartfelt atmosphere.",
+      "out": "generated-images/posters/poster-twice.png"
+    },
+    {
+      "id": "exo",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Deep space black background with red nebula clouds and planet orbit line art. Nine male figures in dark elegant suits standing in cosmic setting. Minimal sans-serif white and red typography. Text: 'EXO' (very large), '2027 CONCERT' and '[EXO PLANET #6 : CHRONICLE]', 'SEOUL · KSPO DOME', '2027.03.22 (SAT) 6PM | 2027.03.23 (SUN) 5PM'. Hexagonal emblem symbol. Cosmic, grand, majestic atmosphere.",
+      "out": "generated-images/posters/poster-exo.png"
+    },
+    {
+      "id": "straykids",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Matte black to crimson red background with lightning bolts and chain fragments. Eight male figures in fierce streetwear on an industrial stage. Bold condensed sans-serif typography. Text: 'Stray Kids' (very large), '2026 WORLD TOUR' and '[THUNDEROUS : UNCHAINED]', 'SEOUL · GOCHEOK SKY DOME', '2026.11.14 (SAT) 6PM | 2026.11.15 (SUN) 5PM'. Broken metal frame elements. Intense, rebellious, powerful energy.",
+      "out": "generated-images/posters/poster-straykids.png"
+    },
+    {
+      "id": "nctdream",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Mint green to lime yellow neon gradient with amusement park silhouette (ferris wheel, roller coaster). Seven young male figures in colorful outfits. Playful round sans-serif typography. Text: 'NCT DREAM' (very large), '2027 CONCERT' and '[THE DREAM SHOW 4 : WONDERLAND]', 'SEOUL · KSPO DOME', '2027.01.31 (SAT) 6PM | 2027.02.01 (SUN) 5PM'. Vibrant, fun, youthful energy.",
+      "out": "generated-images/posters/poster-nctdream.png"
+    },
+    {
+      "id": "gidle",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Royal red to black background with theatrical stage curtain and art deco gold borders. Five female figures in fierce powerful poses. Bold stylized serif typography. Text: '(G)I-DLE' (very large), '2026 WORLD TOUR' and '[SUPER LADY : QUEENDOM]', 'SEOUL · GOCHEOK SKY DOME', '2026.12.05 (SAT) 6PM | 2026.12.06 (SUN) 5PM'. Dramatic queen aesthetic with throne motifs.",
+      "out": "generated-images/posters/poster-gidle.png"
+    },
+    {
+      "id": "lesserafim",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Stark black and white background with orange ember flame accents. Five female figures in minimalist fierce styling. Angular geometric sans-serif typography. Text: 'LE SSERAFIM' (very large), '2027 WORLD TOUR' and '[FEARLESS : FLAME RISES]', 'SEOUL · KSPO DOME', '2027.02.28 (SAT) 6PM | 2027.03.01 (SUN) 5PM'. Flame wisp effects. Minimal, fierce, powerful aesthetic.",
+      "out": "generated-images/posters/poster-lesserafim.png"
+    },
+    {
+      "id": "riize",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Sunrise orange to sky blue gradient with fresh morning light rays. Seven young male figures in bright casual outfits. Clean modern sans-serif typography. Text: 'RIIZE' (very large), '2026 FAN CONCERT' and '[GET A GUITAR : FIRST LIGHT]', 'SEOUL · YES24 LIVE HALL', '2026.11.22 (SAT) 6PM | 2026.11.23 (SUN) 5PM'. Guitar silhouette decoration. Youthful, fresh, sunrise energy.",
+      "out": "generated-images/posters/poster-riize.png"
+    },
+    {
+      "id": "redvelvet",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Deep velvet red to dark teal background with vintage film grain texture. Five female figures in sophisticated retro styling. Classic serif with art nouveau flourishes typography. Text: 'Red Velvet' (very large), '2027 CONCERT' and '[CHILL KILL : THE VELVET NIGHT]', 'SEOUL · KSPO DOME', '2027.04.19 (SAT) 6PM | 2027.04.20 (SUN) 5PM'. Rose petals floating. Sophisticated, vintage, elegant aesthetic.",
+      "out": "generated-images/posters/poster-redvelvet.png"
+    },
+    {
+      "id": "txt",
+      "prompt": "Professional K-pop concert poster, cinematic landscape 16:9. Twilight indigo to rose pink gradient with falling stars and aurora. Five male figures in dreamy fantasy styling. Ethereal serif typography. Text: 'TOMORROW X TOGETHER' (large), '2026 WORLD TOUR' and '[STAR SEEKERS : ACT TWO]', 'SEOUL · KSPO DOME', '2026.12.12 (SAT) 6PM | 2026.12.13 (SUN) 5PM'. Compass and telescope motifs. Dreamy, fantasy, magical atmosphere.",
+      "out": "generated-images/posters/poster-txt.png"
+    },
+    {
+      "id": "iu",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Golden hour warm amber to soft lilac gradient with magical bokeh lights. A solo female singer silhouette holding a microphone on a grand stage. Elegant script typography. Text: 'IU' (very large), '2027 CONCERT' and '[THE GOLDEN HOUR : CURTAIN CALL]', 'SEOUL · OLYMPIC MAIN STADIUM', '2027.03.14 (SAT) 6PM | 2027.03.15 (SUN) 5PM'. Dreamy, intimate, magical golden atmosphere.",
+      "out": "generated-images/posters/poster-iu.png"
+    },
+    {
+      "id": "parkhyoshin",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Deep navy to warm amber gradient with a solo spotlight illuminating an empty grand stage. Grand piano silhouette in background. Elegant Korean and Roman serif typography. Text: '박효신' and 'PARK HYO SHIN' (large), '2027 CONCERT' and '[SOULS AND SONGS]', 'SEOUL · SEJONG CENTER', '2027.01.24 (SAT) 7PM | 2027.01.25 (SUN) 6PM'. Emotional, refined, grand ballad concert atmosphere.",
+      "out": "generated-images/posters/poster-parkhyoshin.png"
+    },
+    {
+      "id": "sungsikyung",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Winter midnight blue background with golden snowflakes falling and warm candlelight bokeh. A male singer figure on a warmly lit stage. Classic Korean serif typography. Text: '성시경' (very large), '2026 연말콘서트' and '[두 사람 : YEAR-END BALLAD NIGHT]', 'SEOUL · KSPO DOME', '2026.12.31 (WED) 8PM'. Cozy, sentimental, winter year-end concert mood.",
+      "out": "generated-images/posters/poster-sungsikyung.png"
+    },
+    {
+      "id": "taeyeon",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Fairy tale forest green to moonlit silver background with floating cherry blossom petals. A solo female singer in an enchanted forest setting. Delicate serif with script accent typography. Text: 'TAEYEON' (very large), '2027 CONCERT' and '[ONCE UPON A TIME]', 'SEOUL · KSPO DOME', '2027.02.07 (SAT) 6PM | 2027.02.08 (SUN) 5PM'. Whimsical, ethereal, fairy tale atmosphere.",
+      "out": "generated-images/posters/poster-taeyeon.png"
+    },
+    {
+      "id": "younha",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Cosmic teal to deep purple background with a comet trail and constellation map. A female musician with guitar silhouette. Modern geometric sans-serif typography. Text: '윤하' and 'YOUNHA' (large), '2026 CONCERT' and '[STARDUST : EVENT HORIZON]', 'SEOUL · OLYMPIC HALL', '2026.11.08 (SAT) 7PM'. Celestial, indie rock, cosmic atmosphere.",
+      "out": "generated-images/posters/poster-younha.png"
+    },
+    {
+      "id": "ailee",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Bold magenta to gold gradient with dramatic stage spotlights and golden sparks. A powerful female vocalist silhouette with flowing dress. Strong sans-serif bold caps typography. Text: 'AILEE' (very large), '2027 CONCERT' and '[I WILL SHOW YOU : THE POWERHOUSE]', 'SEOUL · BLUE SQUARE', '2027.03.08 (SAT) 7PM'. Powerful, diva energy, dramatic lighting.",
+      "out": "generated-images/posters/poster-ailee.png"
+    },
+    {
+      "id": "kimbumsu",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Warm sepia to deep brown background with a classic concert hall interior and orchestral instruments silhouette. A male vocalist in formal attire. Traditional serif Korean and English typography. Text: '김범수' and 'KIM BUM SOO' (large), '2027 CONCERT' and '[보고 싶다 : A VOICE FOR ETERNITY]', 'SEOUL · SEJONG CENTER', '2027.04.12 (SAT) 7PM'. Timeless, classic, refined ballad mood.",
+      "out": "generated-images/posters/poster-kimbumsu.png"
+    },
+    {
+      "id": "leeseungchul",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Platinum silver to midnight blue background with grand chandelier and red curtain drapes. A legendary male vocalist on an opulent stage. Ornate classical serif typography. Text: '이승철' and 'LEE SEUNG CHUL' (large), '2027 CONCERT' and '[LEGEND CONTINUES]', 'SEOUL · SEJONG CENTER', '2027.05.03 (SAT) 7PM | 2027.05.04 (SUN) 6PM'. Legendary elegance, grand classical atmosphere.",
+      "out": "generated-images/posters/poster-leeseungchul.png"
+    },
+    {
+      "id": "heize",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Frosted pale blue to lavender winter palette with snow crystals and warm string lights against a cold backdrop. A female artist in cozy winter styling. Modern rounded sans-serif typography. Text: 'Heize' and '헤이즈' (large), '2026 CONCERT' and '[HAPPEN IN WINTER]', 'SEOUL · OLYMPIC HALL', '2026.12.26 (FRI) 8PM'. Cozy winter night, R&B mood, intimate atmosphere.",
+      "out": "generated-images/posters/poster-heize.png"
+    },
+    {
+      "id": "zico",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Urban gray concrete to neon green background with graffiti texture and spray paint effects. A male rapper in streetwear with confident pose. Heavy bold grunge sans-serif typography. Text: 'ZICO' (very large), '2027 CONCERT' and '[SPOT! : KING OF THE JUNGLE]', 'SEOUL · GOCHEOK SKY DOME', '2027.02.22 (SAT) 7PM'. Crown and chain motifs. Hip-hop swagger, urban street energy.",
+      "out": "generated-images/posters/poster-zico.png"
+    },
+    {
+      "id": "limyoungwoong",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Royal navy to champagne gold background with grand stadium LED screens and pyrotechnics. A charismatic male performer on a massive stadium stage. Elegant bold Korean serif typography. Text: '임영웅' and 'LIM YOUNG WOONG' (very large), '2027 전국투어' and '[IM HERO : LEGEND TOUR]', 'SEOUL · OLYMPIC MAIN STADIUM', '2027.05.10 (SAT) 6PM | 2027.05.11 (SUN) 5PM'. Grand stadium-scale atmosphere.",
+      "out": "generated-images/posters/poster-limyoungwoong.png"
+    },
+    {
+      "id": "songgain",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Cherry blossom pink to traditional Korean red background with hanbok-inspired patterns and peony flowers. A graceful female performer in elegant Korean-inspired outfit. Korean brush calligraphy style typography. Text: '송가인' (very large, calligraphic), '2027 CONCERT' and '[트로트의 여왕 : 꽃길만 걸으세요]', 'SEOUL · KSPO DOME', '2027.04.26 (SAT) 6PM'. Elegant traditional Korean beauty.",
+      "out": "generated-images/posters/poster-songgain.png"
+    },
+    {
+      "id": "youngtak",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Vibrant electric blue to hot red background with dynamic stage pyrotechnics and confetti explosion. An energetic male performer in flashy stage outfit. Bold impact sans-serif typography. Text: '영탁' and 'YOUNG TAK' (very large), '2027 CONCERT' and '[찐이야 : ALL-IN LIVE]', 'SEOUL · GOCHEOK SKY DOME', '2027.03.29 (SAT) 6PM'. High-energy entertainment show atmosphere.",
+      "out": "generated-images/posters/poster-youngtak.png"
+    },
+    {
+      "id": "leechanwon",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Fresh mint green to warm gold gradient with modern meets traditional Korean pattern elements. A young charismatic male performer in sharp modern hanbok-fusion outfit. Clean modern Korean serif typography. Text: '이찬원' and 'LEE CHAN WON' (very large), '2027 CONCERT' and '[진또배기 : YOUNG KING OF TROT]', 'SEOUL · KSPO DOME', '2027.06.07 (SAT) 6PM'. Young, refreshing, modern trot aesthetic.",
+      "out": "generated-images/posters/poster-leechanwon.png"
+    },
+    {
+      "id": "jangyunjeong",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Glamorous rose gold to deep plum background with sparkle and crystal light effects and stage spotlight. A charismatic female diva performer in a glamorous gown. Flowing script Korean typography. Text: '장윤정' (very large, elegant), '2027 CONCERT' and '[어머나! : TIMELESS DIVA]', 'SEOUL · SEJONG CENTER', '2027.05.24 (SAT) 6PM'. Glamorous diva elegance, sparkling stage.",
+      "out": "generated-images/posters/poster-jangyunjeong.png"
+    },
+    {
+      "id": "akmu",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Warm sunset orange to ocean blue gradient with a sailing boat silhouette on calm water. A male-female duo sitting together with acoustic instruments. Hand-drawn sketch style typography. Text: 'AKMU' and '악뮤' (large), '2026 CONCERT' and '[사춘기 : SAILING HOME]', 'SEOUL · OLYMPIC HALL', '2026.11.01 (SAT) 7PM | 2026.11.02 (SUN) 6PM'. Acoustic guitar and ukulele. Warm, indie folk, heartwarming mood.",
+      "out": "generated-images/posters/poster-akmu.png"
+    },
+    {
+      "id": "leejuck",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Dawn sky gradient from deep blue to rose with a single microphone under a solo spotlight. An empty road stretching to the horizon in the lower portion. Refined serif typography. Text: '이적' and 'LEE JUCK' (large), '2027 CONCERT' and '[하늘을 달리다 : VOICE OF A GENERATION]', 'SEOUL · SEJONG CENTER', '2027.01.03 (SAT) 7PM'. Introspective, poetic, deeply emotional atmosphere.",
+      "out": "generated-images/posters/poster-leejuck.png"
+    },
+    {
+      "id": "baekyerin",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Dreamy pastel pink to soft sage green background with film camera grain texture. A young female artist in casual indie styling with headphones. Handwritten style typography. Text: '백예린' and 'Yerin Baek' (large), '2026 CONCERT' and '[Square : INDIE NIGHT]', 'SEOUL · OLYMPIC HALL', '2026.12.25 (THU) 7PM'. Vinyl record and cassette tape decorations. Lo-fi bedroom indie, dreamy aesthetic.",
+      "out": "generated-images/posters/poster-baekyerin.png"
+    },
+    {
+      "id": "sunwoojunga",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Moody dark teal to crimson background with abstract watercolor splashes and broken mirror fragments. A female artist in artistic avant-garde styling. Artistic irregular serif typography. Text: '선우정아' and 'SUNWOOJUNGA' (large), '2027 CONCERT' and '[도망가자 : CATHARSIS]', 'SEOUL · BLUE SQUARE', '2027.06.14 (SAT) 7PM'. Avant-garde, emotional, artistic atmosphere.",
+      "out": "generated-images/posters/poster-sunwoojunga.png"
+    },
+    {
+      "id": "paulkim",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Soft rain blue to warm gray background with rain droplets on a window pane and warm light glowing through. A male singer with acoustic guitar silhouette. Gentle rounded sans-serif typography. Text: '폴킴' and 'Paul Kim' (large), '2027 CONCERT' and '[비 : EVERY DAY EVERY MOMENT]', 'SEOUL · OLYMPIC HALL', '2027.04.05 (SAT) 7PM'. Umbrella silhouette. Warm, cozy, acoustic rainy day mood.",
+      "out": "generated-images/posters/poster-paulkim.png"
+    },
+    {
+      "id": "yb",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Raw crimson red to charcoal black background with electric guitar engulfed in flames. A rock band on stage with dramatic lighting. Distressed grunge serif typography. Text: 'YB' (very large), '2027 CONCERT' and '[나는 나비 : ROCK NEVER DIES]', 'SEOUL · OLYMPIC HALL', '2027.05.17 (SAT) 7PM'. Butterfly silhouette with rock texture overlay. Raw, powerful Korean rock energy.",
+      "out": "generated-images/posters/poster-yb.png"
+    },
+    {
+      "id": "jaurim",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Deep purple to electric violet background with psychedelic swirl patterns and vintage CRT screen glow. A female-fronted rock band in retro alternative styling. Retro display serif typography. Text: '자우림' and 'JAURIM' (large), '2027 CONCERT' and '[스물다섯, 스물하나 : TIMELESS ECHOES]', 'SEOUL · OLYMPIC HALL', '2027.02.15 (SAT) 7PM'. Alternative rock nostalgia, psychedelic retro aesthetic.",
+      "out": "generated-images/posters/poster-jaurim.png"
+    },
+    {
+      "id": "day6",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Warm amber to midnight navy gradient with band instruments silhouette (drums, guitars, keyboard, bass) on a warmly lit stage. Five-member band in youthful styling. Modern clean sans-serif typography. Text: 'DAY6' (very large), '2026 CONCERT' and '[한 페이지가 될 수 있게 : FOREVER YOUNG]', 'SEOUL · KSPO DOME', '2026.11.29 (SAT) 6PM | 2026.11.30 (SUN) 5PM'. Diary paper texture background elements. Youthful band energy.",
+      "out": "generated-images/posters/poster-day6.png"
+    },
+    {
+      "id": "jannabi",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Vintage film sepia to warm amber background with an old movie theater marquee and film strip border. A band in retro 70s styling performing. Retro display typography with vintage marquee letters. Text: '잔나비' and 'JANNABI' (large), '2027 CONCERT' and '[주저하는 연인들을 위해 : MONKEY CINEMA]', 'SEOUL · OLYMPIC HALL', '2027.03.15 (SAT) 7PM'. Cinematic romantic nostalgia, vintage film aesthetic.",
+      "out": "generated-images/posters/poster-jannabi.png"
+    },
+    {
+      "id": "nell",
+      "prompt": "Professional concert poster, cinematic landscape 16:9. Ethereal white to pale blue background with four seasonal trees in a row (spring cherry blossom, summer green, autumn red, winter bare) and soft watercolor wash. A contemplative band in minimal dark clothing. Minimal clean serif typography. Text: 'NELL' (very large), '2027 CONCERT' and '[지구가 태양을 네 번 : FOUR SEASONS]', 'SEOUL · BLUE SQUARE', '2027.06.21 (SAT) 7PM'. Contemplative, beautiful, poetic atmosphere.",
+      "out": "generated-images/posters/poster-nell.png"
+    }
+  ]
+}

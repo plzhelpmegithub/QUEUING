@@ -8,7 +8,7 @@ import { buildCalendarEvents } from '../utils/calendarEvents.js';
 import { navigate } from '../router.js';
 import { isInterested, toggleInterest, subscribe } from '../state/store.js';
 
-const SLIDE_IDS = ['enh-2026-orbit', 'aespa-2026-synk', 'lsf-2026-crazy', 'svt-2026-newz', 'iu-2026-hereg', 'skz-2026-domin'];
+const SLIDE_IDS = ['bts-2027-eternal', 'bp-2027-finale', 'ive-2026-crown', 'aespa-2027-synkhorizon', 'lsf-2027-fearless', 'skz-2026-unchained'];
 const SLIDES = SLIDE_IDS.map((id) => CONCERTS.find((c) => c.id === id)).filter(Boolean);
 
 function statusBadge(status) {

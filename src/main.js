@@ -24,7 +24,8 @@ import { loginPage } from './pages/login.js';
 import { signupPage } from './pages/signup.js';
 import { signupCompletePage } from './pages/signupComplete.js';
 import { adminPage } from './pages/admin.js';
-import { subscribe, isAdmin, clearSeatSelectTimer, clearCurrentOrder, touchSession } from './state/store.js';
+import { monitoringPage } from './pages/monitoring.js';
+import { subscribe, isAdmin, isMonitor, clearSeatSelectTimer, clearCurrentOrder, touchSession } from './state/store.js';
 
 registerRoute(/^$/, homePage);
 registerRoute(/^concerts$/, concertsListPage);
@@ -45,6 +46,7 @@ registerRoute(/^login$/, loginPage);
 registerRoute(/^signup$/, signupPage);
 registerRoute(/^signup-complete$/, signupCompletePage);
 registerRoute(/^admin$/, adminPage);
+registerRoute(/^monitoring$/, monitoringPage);
 
 const BOOKING_GUARD_RE = /^(queue|zones|seats)\//;
 let beforeUnloadBound = false;
@@ -59,8 +61,8 @@ document.addEventListener('DOMContentLoaded', () => {
   mountFooter(document.getElementById('site-footer'));
   mountToastRoot(document.getElementById('toast-root'));
 
-  document.body.classList.toggle('admin-dark', isAdmin());
-  subscribe(() => document.body.classList.toggle('admin-dark', isAdmin()));
+  document.body.classList.toggle('admin-dark', isAdmin() || isMonitor());
+  subscribe(() => document.body.classList.toggle('admin-dark', isAdmin() || isMonitor()));
 
   const rawHash = (location.hash || '#/').replace(/^#\/?/, '');
   if (BOOKING_GUARD_RE.test(rawHash)) {

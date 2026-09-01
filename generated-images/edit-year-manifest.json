@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "enhypen-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-enhypen.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-enhypen.png"
+    },
+    {
+      "id": "seventeen-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-seventeen.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-seventeen.png"
+    },
+    {
+      "id": "iu-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-iu.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-iu.png"
+    },
+    {
+      "id": "straykids-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-straykids.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-straykids.png"
+    },
+    {
+      "id": "aespa-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-aespa.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-aespa.png"
+    },
+    {
+      "id": "twice-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-twice.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-twice.png"
+    },
+    {
+      "id": "ateez-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-ateez.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-ateez.png"
+    },
+    {
+      "id": "lesserafim-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-lesserafim.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-lesserafim.png"
+    },
+    {
+      "id": "newjeans-2026",
+      "mode": "edit",
+      "prompt": "Change all text that says '2024' to '2026'. Keep everything else exactly the same.",
+      "edit_target": "D:/claude_share/nginx/public/images/posters/poster-newjeans.png",
+      "out": "D:/claude_share/nginx/generated-images/poster-newjeans.png"
+    }
+  ]
+}

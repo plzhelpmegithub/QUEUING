@@ -2,6 +2,7 @@
 
 import { navigate } from '../router.js';
 import { isLoggedIn, setReturnTo, setSelectedSession } from '../state/store.js';
+import { generateEventSessions, formatStoredSessions } from '../data/concerts.js';
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 
@@ -30,8 +31,8 @@ export const bookingDateTimePage = {
           return;
         }
 
-        // eventDate 기반으로 세션 생성
-        const sessions = [{ date: c.eventDate, times: ['14:00', '19:00'] }];
+        const flatSessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
+        const uniqueDates = [...new Set(flatSessions.map((s) => s.date))];
         let selectedDate = null;
         let selectedTime = null;
 
@@ -48,9 +49,9 @@ export const bookingDateTimePage = {
             <div class="booking-dt-block">
               <h3>공연 날짜</h3>
               <div class="chip-row" data-dates>
-                ${sessions.map((s) => {
-                  const { label, dow } = formatSessionDate(s.date);
-                  return `<button type="button" class="chip-btn" data-date="${s.date}">${label}<span>(${dow})</span></button>`;
+                ${uniqueDates.map((d) => {
+                  const { label, dow } = formatSessionDate(d);
+                  return `<button type="button" class="chip-btn" data-date="${d}">${label}<span>(${dow})</span></button>`;
                 }).join('')}
               </div>
             </div>
@@ -71,9 +72,9 @@ export const bookingDateTimePage = {
         const nextBtn = container.querySelector('[data-next]');
 
         function renderTimes() {
-          const session = sessions.find((s) => s.date === selectedDate);
-          timesHost.innerHTML = session
-            ? session.times.map((t) => `<button type="button" class="chip-btn" data-time="${t}">${t}</button>`).join('')
+          const timesForDate = flatSessions.filter((s) => s.date === selectedDate);
+          timesHost.innerHTML = timesForDate.length
+            ? timesForDate.map((s) => `<button type="button" class="chip-btn" data-time="${s.time}">${s.round}회 ${s.time}</button>`).join('')
             : '';
           timesHost.querySelectorAll('[data-time]').forEach((btn) => {
             btn.addEventListener('click', () => {

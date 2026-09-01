@@ -71,13 +71,15 @@ export function getState() {
 // Auth is centralized here (not in header.js/login.js) so swapping this mock
 // implementation for real AWS Cognito calls later only touches this module —
 // components only ever see isLoggedIn()/getState().user, never a token directly.
-export function login({ name, email, isAdmin = false, userId }) {
+export function login({ name, email, isAdmin = false, isMonitor = false, role: rawRole, userId }) {
+  const resolvedRole = rawRole || (isAdmin ? 'ADMIN' : isMonitor ? 'MONITOR' : 'USER');
   state.user = {
     name: name || '게스트',
     userId: userId || (email || 'guest').split('@')[0],
     email: email || 'guest@queuing.app',
-    isAdmin,
-    role: isAdmin ? 'ADMIN' : 'USER',
+    isAdmin: isAdmin || resolvedRole === 'ADMIN',
+    isMonitor: isMonitor || resolvedRole === 'MONITOR',
+    role: resolvedRole,
     phone: '',
     marketingOptIn: false,
     joinedAt: Date.now(),
@@ -101,6 +103,10 @@ export function updateProfile(patch) {
 
 export function isAdmin() {
   return !!(state.user && state.user.isAdmin);
+}
+
+export function isMonitor() {
+  return !!(state.user && state.user.isMonitor);
 }
 
 export function logout() {

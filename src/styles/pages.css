@@ -5,23 +5,33 @@
 /* ============ Concert Detail ============ */
 .detail-hero {
   position: relative;
-  height: 420px;
+  height: 460px;
   color: #fff;
   display: flex;
   align-items: flex-end;
+  background-size: cover;
+  background-position: center;
 }
-.detail-hero__overlay { position:absolute; inset:0; background: linear-gradient(180deg, rgba(0,0,0,.1), rgba(0,0,0,.85)); }
-.detail-hero__content { position: relative; z-index:1; padding: 44px 0; width:100%; }
-.detail-hero__artist { font-size: 15px; font-weight: 700; color: #FFC7C9; margin-bottom: 8px; }
-.detail-hero__title { font-size: 40px; font-weight: 900; margin-bottom: 18px; }
-.detail-hero__meta { display: flex; gap: 28px; font-size: 14px; }
+.detail-hero__overlay { position:absolute; inset:0; background: linear-gradient(180deg, rgba(0,0,0,.05) 0%, rgba(0,0,0,.4) 40%, rgba(0,0,0,.88) 100%); }
+.detail-hero__content {
+  position: relative; z-index:1; padding: 44px 0; width:100%;
+  animation: detailFadeUp .6s cubic-bezier(.22,1,.36,1) both;
+}
+@keyframes detailFadeUp { from { opacity:0; transform: translateY(24px); } to { opacity:1; transform: none; } }
+.detail-hero__artist { font-size: 15px; font-weight: 700; color: #FFC7C9; margin-bottom: 8px; letter-spacing: .03em; }
+.detail-hero__title { font-size: 40px; font-weight: 900; margin-bottom: 18px; text-shadow: 0 2px 12px rgba(0,0,0,0.3); }
+.detail-hero__meta { display: flex; gap: 28px; font-size: 14px; flex-wrap: wrap; }
 .detail-hero__meta dt { color: rgba(255,255,255,0.65); margin-bottom: 3px; }
 .detail-hero__meta dd { font-weight: 700; font-size: 15px; }
 
 .detail-body { display: grid; grid-template-columns: 2fr 1fr; gap: 40px; padding: 44px 0 80px; align-items: start; }
 .detail-right-col { display: flex; flex-direction: column; gap: 20px; position: sticky; top: calc(var(--header-h) + 20px); }
 .detail-right-col .booking-panel { position: static; }
-.detail-info-card { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 28px; margin-bottom: 20px; }
+.detail-info-card {
+  border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 28px; margin-bottom: 20px;
+  transition: box-shadow .2s ease;
+}
+.detail-info-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.06); }
 .detail-info-card h3 { font-size: 16px; font-weight: 800; margin-bottom: 14px; }
 .price-row { display:flex; justify-content:space-between; padding: 10px 0; font-size: 14px; border-bottom: 1px dashed var(--color-border); }
 .price-row:last-child { border-bottom: none; }
@@ -30,7 +40,9 @@
   position: sticky; top: calc(var(--header-h) + 20px);
   border: 1px solid var(--color-border); border-radius: var(--radius-lg);
   padding: 28px; text-align: center; box-shadow: var(--shadow-sm);
+  transition: box-shadow .25s ease;
 }
+.booking-panel:hover { box-shadow: var(--shadow-md); }
 .booking-panel__seats-left { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 4px; }
 .booking-panel__seats-num { font-size: 22px; font-weight: 900; color: var(--color-primary); margin-bottom: 20px; }
 
@@ -47,11 +59,12 @@
 .chip-btn {
   height: 52px; padding: 0 20px; border-radius: var(--radius-md); border: 1.5px solid var(--color-border);
   background: var(--color-surface); font-size: 14px; font-weight: 700; color: var(--color-text);
-  display: flex; align-items: center; gap: 5px; transition: border-color .15s, background .15s, color .15s;
+  display: flex; align-items: center; gap: 5px; transition: border-color .2s ease, background .2s ease, color .2s ease, box-shadow .2s ease, transform .15s ease;
 }
+.chip-btn:active:not(:disabled) { transform: scale(0.97); }
 .chip-btn span { font-weight: 500; color: var(--color-text-secondary); font-size: 12.5px; }
 .chip-btn:hover { border-color: var(--color-primary); }
-.chip-btn.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.chip-btn.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; box-shadow: 0 4px 12px rgba(227,27,35,0.25); }
 .chip-btn.active span { color: rgba(255,255,255,0.85); }
 
 /* ============ Queue Page ============ */
@@ -92,7 +105,7 @@
   flex: 1; min-width: 140px; border-radius: var(--radius-md); border: 2px solid transparent;
   background: var(--color-surface); padding: 16px 14px; text-align: left; cursor: pointer;
   box-shadow: inset 4px 0 0 var(--zone-color), var(--shadow-sm);
-  transition: border-color .12s ease, filter .12s ease;
+  transition: border-color .15s ease, filter .15s ease, box-shadow .2s ease;
 }
 /* Hover feedback is color-only (no transform) — a fan/quad block's own transform
    drives its actual position, and any transform declared here would win the
@@ -162,8 +175,8 @@
 
 .seats-left-banner {
   display:flex; align-items:center; justify-content:space-between;
-  background: var(--color-bg-secondary); border: 1px solid #FBDCDD; border-radius: var(--radius-md);
-  padding: 16px 22px; margin: 20px 0; transition: background .3s, border-color .3s;
+  background: var(--color-bg-secondary); border: 1px solid #FBDCDD; border-radius: var(--radius-lg);
+  padding: 18px 24px; margin: 20px 0; transition: background .3s, border-color .3s, box-shadow .3s;
 }
 .seats-left-banner.tension { background: var(--color-primary-light); border-color: var(--color-primary); animation: bannerPulse 1s infinite; }
 @keyframes bannerPulse { 0%,100%{ box-shadow: 0 0 0 rgba(227,27,35,0);} 50%{ box-shadow: 0 0 0 6px rgba(227,27,35,0.08);} }

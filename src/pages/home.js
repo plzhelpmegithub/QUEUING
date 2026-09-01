@@ -5,6 +5,7 @@ import { mountCalendar } from '../components/calendar.js';
 import { buildCalendarEvents } from '../utils/calendarEvents.js';
 import { navigate } from '../router.js';
 import { isInterested, toggleInterest, subscribe } from '../state/store.js';
+import { getConcertImage } from '../data/concerts.js';
 
 function statusBadge(status) {
   if (status === 'sold_out') return `<span class="badge badge-dark-red">SOLD OUT</span>`;
@@ -72,8 +73,13 @@ export const homePage = {
     function paintNow() {
       const e = slides[idx];
       if (!e) return;
-      labelEl.style.background = `linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
+      const imgUrl = getConcertImage(e.eventName || e.eventId);
+      labelEl.style.background = `url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
       artistEl.textContent = e.eventName;
+      const heroEl = container.querySelector('[data-slider]');
+      if (heroEl) {
+        heroEl.style.background = `linear-gradient(90deg, rgba(5,4,4,0.92) 0%, rgba(5,4,4,0.7) 40%, rgba(5,4,4,0.3) 100%), url('${imgUrl}') center/cover no-repeat`;
+      }
       infoEl.innerHTML = `
         <div class="lp-hero__badges">${statusBadge(e.status)}<span class="badge badge-gray" style="background:rgba(255,255,255,0.16);color:#fff;">${formatNumber(e.totalSeats || 0)}석</span></div>
         <div class="lp-hero__title">${e.eventName}</div>
@@ -148,9 +154,11 @@ export const homePage = {
           grid.innerHTML = '<p style="color:#666">등록된 공연이 없습니다.</p>';
           return;
         }
-        grid.innerHTML = events.map((e, i) => `
-          <div class="hot-card" data-id="${e.eventId}">
-            <div class="hot-card__bg" style="background:linear-gradient(135deg,${e.color || '#667eea,#764ba2'})"></div>
+        grid.innerHTML = events.map((e, i) => {
+          const imgUrl = getConcertImage(e.eventName || e.eventId);
+          return `
+          <div class="hot-card" data-id="${e.eventId}" style="animation-delay:${i * 0.07}s">
+            <div class="hot-card__bg" style="background:url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})"></div>
             <div class="hot-card__rank">${i + 1}</div>
             <button type="button" class="badge hot-card__heart" data-heart="${e.eventId}">${isInterested(e.eventId) ? '♥' : '♡'}</button>
             <div class="hot-card__overlay"></div>
@@ -164,8 +172,8 @@ export const homePage = {
               </div>
               ${statusBadge(e.status)}
             </div>
-          </div>
-        `).join('');
+          </div>`;
+        }).join('');
 
         // 카드 클릭 이벤트
         grid.querySelectorAll('.hot-card').forEach((card) => {

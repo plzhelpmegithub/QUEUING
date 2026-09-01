@@ -5,8 +5,13 @@ import { formatPrice, formatNumber, formatDeadline } from '../utils/format.js';
 import { mountRefundSummary } from '../components/refundPolicy.js';
 import { mountLiveChat } from '../components/liveChat.js';
 import { navigate } from '../router.js';
-import { isLoggedIn, setReturnTo, setSelectedSession } from '../state/store.js';
-import { generateEventSessions } from '../data/concerts.js';
+import { isLoggedIn, setReturnTo, setSelectedSession, getState } from '../state/store.js';
+import { generateEventSessions, formatStoredSessions, getConcertImage } from '../data/concerts.js';
+
+const VENUE_SEATMAP = {
+  '올림픽홀': '/images/seatmaps/올림픽홀.jpg',
+  '고척스카이돔': '/images/seatmaps/고척스카이돔.jpg',
+};
 
 export const concertDetailPage = {
   render(container, params) {
@@ -28,19 +33,28 @@ export const concertDetailPage = {
           return;
         }
 
-        const bgColor = `linear-gradient(135deg,${c.color || '#667eea,#764ba2'})`;
-        const sessions = generateEventSessions(c.eventDate);
+        const imgUrl = getConcertImage(c.eventName || c.eventId);
+        const bgStyle = `background: url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${c.color || '#667eea,#764ba2'})`;
+        const sessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
+        const sessionDates = [...new Set(sessions.map((s) => s.date))];
+        const dateRangeText = sessionDates.length > 1
+          ? `${sessionDates[0]} ~ ${sessionDates[sessionDates.length - 1]}`
+          : sessionDates[0] || c.eventDate || '-';
+
+        const descText = c.description || `${c.eventName} 공연입니다.`;
 
         container.innerHTML = `
-          <section class="detail-hero" style="background:${bgColor}">
+          <section class="detail-hero" style="${bgStyle}">
             <div class="detail-hero__overlay"></div>
             <div class="container detail-hero__content">
               <div class="detail-hero__artist">${c.eventName}</div>
-              <div class="detail-hero__title">${c.eventDate || ''}</div>
+              <div class="detail-hero__title">${dateRangeText}</div>
               <dl class="detail-hero__meta">
-                <div><dt>공연일</dt><dd>${c.eventDate || '-'}</dd></div>
+                <div><dt>공연일</dt><dd>${dateRangeText}</dd></div>
                 <div><dt>공연장</dt><dd>${c.venue || '-'}</dd></div>
                 <div><dt>총 좌석</dt><dd>${formatNumber(c.totalSeats)}석</dd></div>
+                ${c.runtime ? `<div><dt>관람 시간</dt><dd>${c.runtime}</dd></div>` : ''}
+                ${c.ageRating ? `<div><dt>관람 등급</dt><dd>${c.ageRating}</dd></div>` : ''}
               </dl>
             </div>
           </section>
@@ -50,8 +64,31 @@ export const concertDetailPage = {
               <div class="detail-info-card">
                 <h3>공연 정보</h3>
                 <p style="font-size:14px;line-height:1.9;color:var(--color-text-secondary);">
-                  ${c.eventName} 공연입니다.
+                  ${descText}
                 </p>
+                <div style="margin-top:16px;padding-top:14px;border-top:1px dashed var(--color-border);">
+                  <img src="${imgUrl}" alt="${c.eventName} 포스터" style="width:100%;border-radius:12px;object-fit:cover;" />
+                </div>
+                ${VENUE_SEATMAP[c.venue] ? `
+                <div style="margin-top:16px;padding-top:14px;border-top:1px dashed var(--color-border);">
+                  <div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:8px;">좌석 배치도 — ${c.venue}</div>
+                  <img src="${VENUE_SEATMAP[c.venue]}" alt="${c.venue} 좌석배치도" style="width:100%;border-radius:12px;object-fit:contain;background:#fff;" />
+                </div>` : ''}
+                ${c.cast ? `
+                <div style="margin-top:16px;padding-top:14px;border-top:1px dashed var(--color-border);">
+                  <div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:6px;">출연진</div>
+                  <div style="font-size:14px;font-weight:600;line-height:1.8;">${c.cast}</div>
+                </div>` : ''}
+                ${c.agency ? `
+                <div style="margin-top:12px;">
+                  <div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:4px;">주최/기획</div>
+                  <div style="font-size:14px;font-weight:600;">${c.agency}</div>
+                </div>` : ''}
+                ${c.runtime || c.ageRating ? `
+                <div style="margin-top:12px;display:flex;gap:24px;">
+                  ${c.runtime ? `<div><div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:4px;">관람 시간</div><div style="font-size:14px;font-weight:600;">${c.runtime}</div></div>` : ''}
+                  ${c.ageRating ? `<div><div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:4px;">관람 등급</div><div style="font-size:14px;font-weight:600;">${c.ageRating}</div></div>` : ''}
+                </div>` : ''}
               </div>
               <div class="detail-info-card">
                 <h3>티켓 가격</h3>
@@ -92,6 +129,11 @@ export const concertDetailPage = {
         let selectedSessionIdx = null;
         let bookingOpen = true;
         const validDates = new Set(sessions.map((s) => s.date));
+        const myBookings = getState().bookings.filter(
+          (b) => b.concertId === c.eventId && (b.status === 'confirmed' || b.status === 'unpaid')
+        );
+        const bookedDates = new Set(myBookings.map((b) => b.session?.date).filter(Boolean));
+        const maxReached = myBookings.length >= 2;
 
         function renderBookingCal(calHost) {
           const first = new Date(sessions[0].date);
@@ -106,10 +148,11 @@ export const concertDetailPage = {
             for (let i = 0; i < startDay; i++) cells += `<div class="bcal-day bcal-day--empty"></div>`;
             for (let d = 1; d <= daysInMonth; d++) {
               const ds = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-              const isValid = validDates.has(ds);
+              const isValid = validDates.has(ds) && !bookedDates.has(ds);
+              const isBooked = validDates.has(ds) && bookedDates.has(ds);
               const isSel = ds === selectedDate;
-              const cls = ['bcal-day', isValid ? 'bcal-day--valid' : 'bcal-day--disabled', isSel ? 'bcal-day--selected' : ''].join(' ');
-              cells += `<div class="${cls}" ${isValid ? `data-cal-date="${ds}"` : ''}>${d}</div>`;
+              const cls = ['bcal-day', isBooked ? 'bcal-day--disabled' : isValid ? 'bcal-day--valid' : 'bcal-day--disabled', isSel ? 'bcal-day--selected' : ''].join(' ');
+              cells += `<div class="${cls}" ${isValid ? `data-cal-date="${ds}"` : ''}>${d}${isBooked ? '<span style="display:block;font-size:10px;color:var(--color-red);">예매완료</span>' : ''}</div>`;
             }
 
             const timesForDate = selectedDate ? sessions.filter((s) => s.date === selectedDate) : [];
@@ -192,6 +235,12 @@ export const concertDetailPage = {
           if (!isLoggedIn()) {
             setReturnTo(`concert/${c.eventId}`);
             navigate('login');
+            return;
+          }
+          if (maxReached) {
+            import('../components/toast.js').then(({ showToast }) => {
+              showToast({ title: '예매 한도 초과', body: '이 공연은 1인당 최대 2매까지 예매 가능합니다.' });
+            });
             return;
           }
           if (selectedSessionIdx == null) return;

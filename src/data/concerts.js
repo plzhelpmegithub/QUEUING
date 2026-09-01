@@ -1,5 +1,5 @@
 // Mock concert catalogue for QUEUING
-// Poster art is represented with CSS gradients (no external image dependency).
+// Poster art uses CSS gradients + mapped concert images for rich visual presentation.
 
 function addDays(base, days) {
   const d = new Date(base);
@@ -26,60 +26,160 @@ export const GRADIENTS = {
   wine: 'linear-gradient(155deg,#2b0406 0%, #7a0e14 55%, #E31B23 110%)',
   scarlet: 'linear-gradient(155deg,#E31B23 0%, #101010 100%)',
   garnet: 'linear-gradient(155deg,#4d0b0e 0%, #E31B23 60%, #101010 100%)',
-  // Mood-matched (not photo-copied) gradients for specific real-world tour concepts
-  iceChrome: 'linear-gradient(155deg,#0a1420 0%, #2c4a63 45%, #a9c3d4 100%)', // aespa — cold metallic sci-fi
-  flameMono: 'linear-gradient(160deg,#050505 0%, #1c1c1c 45%, #8a2f22 100%)', // LE SSERAFIM — stark B&W + ember
-  stoneWarm: 'linear-gradient(155deg,#382f22 0%, #8f7a5c 55%, #e6d9c2 100%)', // SEVENTEEN — sand-stone arches
-  neonNight: 'linear-gradient(155deg,#14001c 0%, #6a1f72 45%, #2451c9 100%)', // IU — magenta/blue city night
-  editorialRB: 'linear-gradient(160deg,#050505 0%, #050505 55%, #c81e2c 120%)', // Stray Kids — mono + red typography
+  iceChrome: 'linear-gradient(155deg,#0a1420 0%, #2c4a63 45%, #a9c3d4 100%)',
+  flameMono: 'linear-gradient(160deg,#050505 0%, #1c1c1c 45%, #8a2f22 100%)',
+  stoneWarm: 'linear-gradient(155deg,#382f22 0%, #8f7a5c 55%, #e6d9c2 100%)',
+  neonNight: 'linear-gradient(155deg,#14001c 0%, #6a1f72 45%, #2451c9 100%)',
+  editorialRB: 'linear-gradient(160deg,#050505 0%, #050505 55%, #c81e2c 120%)',
+  galaxyPurple: 'linear-gradient(155deg,#0a0515 0%, #2d1854 45%, #6b3fa0 100%)',
+  pinkNoir: 'linear-gradient(155deg,#120010 0%, #4a0033 55%, #ff1493 100%)',
+  royalNavy: 'linear-gradient(155deg,#0a1628 0%, #1a3a5c 50%, #c9a84c 100%)',
+  amberNight: 'linear-gradient(155deg,#1a0f00 0%, #8b5e3c 50%, #0a1932 100%)',
+  burgundyGold: 'linear-gradient(155deg,#2d0a14 0%, #7a0e28 50%, #c9a84c 100%)',
 };
+
+const ARTIST_POSTERS = {
+  'BTS': '/images/posters/poster-bts.png',
+  'BLACKPINK': '/images/posters/poster-blackpink.png',
+  'SEVENTEEN': '/images/posters/poster-seventeen.png',
+  'NewJeans': '/images/posters/poster-newjeans.png',
+  'IVE': '/images/posters/poster-ive.png',
+  'aespa': '/images/posters/poster-aespa.png',
+  'TWICE': '/images/posters/poster-twice.png',
+  'EXO': '/images/posters/poster-exo.png',
+  'Stray Kids': '/images/posters/poster-straykids.png',
+  'NCT DREAM': '/images/posters/poster-nctdream.png',
+  '(G)I-DLE': '/images/posters/poster-gidle.png',
+  'LE SSERAFIM': '/images/posters/poster-lesserafim.png',
+  'RIIZE': '/images/posters/poster-riize.png',
+  'Red Velvet': '/images/posters/poster-redvelvet.png',
+  'TXT': '/images/posters/poster-txt.png',
+  'IU': '/images/posters/poster-iu.png',
+  '박효신': '/images/posters/poster-parkhyoshin.png',
+  '성시경': '/images/posters/poster-sungsikyung.png',
+  'TAEYEON': '/images/posters/poster-taeyeon.png',
+  '윤하': '/images/posters/poster-younha.png',
+  'AILEE': '/images/posters/poster-ailee.png',
+  '김범수': '/images/posters/poster-kimbumsu.png',
+  '이승철': '/images/posters/poster-leeseungchul.png',
+  'Heize': '/images/posters/poster-heize.png',
+  'ZICO': '/images/posters/poster-zico.png',
+  '임영웅': '/images/posters/poster-limyoungwoong.png',
+  '송가인': '/images/posters/poster-songgain.png',
+  '영탁': '/images/posters/poster-youngtak.png',
+  '이찬원': '/images/posters/poster-leechanwon.png',
+  '장윤정': '/images/posters/poster-jangyunjeong.png',
+  'AKMU': '/images/posters/poster-akmu.png',
+  '이적': '/images/posters/poster-leejuck.png',
+  '백예린': '/images/posters/poster-baekyerin.png',
+  '선우정아': '/images/posters/poster-sunwoojunga.png',
+  '폴킴': '/images/posters/poster-paulkim.png',
+  'YB': '/images/posters/poster-yb.png',
+  '자우림': '/images/posters/poster-jaurim.png',
+  'DAY6': '/images/posters/poster-day6.png',
+  '잔나비': '/images/posters/poster-jannabi.png',
+  'NELL': '/images/posters/poster-nell.png',
+};
+
+const CONCERT_IMAGES = [
+  '/images/posters/poster-bts.png',
+  '/images/posters/poster-blackpink.png',
+  '/images/posters/poster-seventeen.png',
+  '/images/posters/poster-newjeans.png',
+  '/images/posters/poster-ive.png',
+  '/images/posters/poster-aespa.png',
+  '/images/posters/poster-twice.png',
+  '/images/posters/poster-exo.png',
+  '/images/posters/poster-straykids.png',
+  '/images/posters/poster-nctdream.png',
+  '/images/posters/poster-gidle.png',
+  '/images/posters/poster-lesserafim.png',
+  '/images/posters/poster-riize.png',
+  '/images/posters/poster-redvelvet.png',
+  '/images/posters/poster-txt.png',
+  '/images/posters/poster-iu.png',
+  '/images/posters/poster-parkhyoshin.png',
+  '/images/posters/poster-sungsikyung.png',
+  '/images/posters/poster-taeyeon.png',
+  '/images/posters/poster-younha.png',
+  '/images/posters/poster-ailee.png',
+  '/images/posters/poster-kimbumsu.png',
+  '/images/posters/poster-leeseungchul.png',
+  '/images/posters/poster-heize.png',
+  '/images/posters/poster-zico.png',
+  '/images/posters/poster-limyoungwoong.png',
+  '/images/posters/poster-songgain.png',
+  '/images/posters/poster-youngtak.png',
+  '/images/posters/poster-leechanwon.png',
+  '/images/posters/poster-jangyunjeong.png',
+  '/images/posters/poster-akmu.png',
+  '/images/posters/poster-leejuck.png',
+  '/images/posters/poster-baekyerin.png',
+  '/images/posters/poster-sunwoojunga.png',
+  '/images/posters/poster-paulkim.png',
+  '/images/posters/poster-yb.png',
+  '/images/posters/poster-jaurim.png',
+  '/images/posters/poster-day6.png',
+  '/images/posters/poster-jannabi.png',
+  '/images/posters/poster-nell.png',
+];
+
+export function getConcertImage(nameOrId) {
+  if (!nameOrId) return CONCERT_IMAGES[0];
+  const str = String(nameOrId);
+  for (const [artist, url] of Object.entries(ARTIST_POSTERS)) {
+    if (str.includes(artist) || str.toLowerCase().includes(artist.toLowerCase())) return url;
+  }
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  return CONCERT_IMAGES[Math.abs(hash) % CONCERT_IMAGES.length];
+}
 
 export const CONCERTS = [
   {
-    id: 'svt-2026-newz',
-    artist: 'SEVENTEEN',
-    title: '2026 TOUR [NEW_] ENCORE',
+    id: 'bts-2027-eternal',
+    artist: 'BTS',
+    title: '2027 WORLD TOUR [BEYOND THE SCENE : ETERNAL]',
     dateStart: iso(addDays(NOW, 9)),
-    dateEnd: iso(addDays(NOW, 11)),
-    venue: 'KSPO DOME',
-    totalSeats: 30000,
-    grad: GRADIENTS.stoneWarm,
-    // Flagship demo: booking opens ~40s after app load so the countdown → live flow is easy to see.
+    dateEnd: iso(addDays(NOW, 10)),
+    venue: '올림픽주경기장',
+    totalSeats: 40000,
+    grad: GRADIENTS.galaxyPurple,
     bookingOpenAt: iso(new Date(Date.now() + 40 * 1000)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 198000 },
-      { key: 'R', name: 'R석', price: 158000 },
-      { key: 'S', name: 'S석', price: 128000 },
-      { key: 'A', name: 'A석', price: 89000 },
+      { key: 'VIP', name: 'VIP석', price: 220000 },
+      { key: 'R', name: 'R석', price: 176000 },
+      { key: 'S', name: 'S석', price: 143000 },
+      { key: 'A', name: 'A석', price: 99000 },
     ],
-    desc: '13인조 보이그룹 SEVENTEEN의 2026년 신규 월드투어 앙코르 공연. 전세계 캐럿들과 함께하는 대규모 스타디움 투어.',
+    desc: '방탄소년단 BTS의 2027년 월드투어 서울 공연. 7명의 멤버가 함께하는 역대급 스타디움 투어.',
     hot: true,
-    views: 184213,
+    views: 312504,
   },
   {
-    id: 'iu-2026-hereg',
+    id: 'iu-2027-goldenhour',
     artist: 'IU',
-    title: '2026 CONCERT [HEREDITY]',
+    title: '2027 CONCERT [THE GOLDEN HOUR : CURTAIN CALL]',
     dateStart: iso(addDays(NOW, -2)),
-    dateEnd: iso(addDays(NOW, -2)),
-    venue: '잠실 종합운동장 주경기장',
-    totalSeats: 24000,
+    dateEnd: iso(addDays(NOW, -1)),
+    venue: '올림픽주경기장',
+    totalSeats: 30000,
     grad: GRADIENTS.neonNight,
     bookingOpenAt: iso(addDays(NOW, -10)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 176000 },
-      { key: 'R', name: 'R석', price: 143000 },
-      { key: 'S', name: 'S석', price: 110000 },
-      { key: 'A', name: 'A석', price: 78000 },
+      { key: 'VIP', name: 'VIP석', price: 198000 },
+      { key: 'R', name: 'R석', price: 154000 },
+      { key: 'S', name: 'S석', price: 121000 },
+      { key: 'A', name: 'A석', price: 88000 },
     ],
-    desc: '솔로 아티스트 IU의 정규 앨범 발매 기념 단독 콘서트.',
+    desc: '솔로 아티스트 IU의 단독 콘서트. 황금빛 조명 아래 펼쳐지는 감동적인 무대.',
     hot: true,
-    views: 221904,
+    views: 267891,
   },
   {
-    id: 'skz-2026-domin',
+    id: 'skz-2026-unchained',
     artist: 'Stray Kids',
-    title: '2026 WORLD TOUR [DOMINATE]',
+    title: '2026 WORLD TOUR [THUNDEROUS : UNCHAINED]',
     dateStart: iso(addDays(NOW, 3)),
     dateEnd: iso(addDays(NOW, 4)),
     venue: '고척스카이돔',
@@ -97,93 +197,92 @@ export const CONCERTS = [
     views: 197532,
   },
   {
-    id: 'aespa-2026-synk',
+    id: 'aespa-2027-synkhorizon',
     artist: 'aespa',
-    title: '2026 TOUR [SYNK : PARALLEL LINE]',
+    title: '2027 WORLD TOUR [SUPERNOVA : SYNK HORIZON]',
     dateStart: iso(addDays(NOW, 21)),
     dateEnd: iso(addDays(NOW, 22)),
-    venue: 'KSPO DOME',
+    venue: '고척스카이돔',
     totalSeats: 20000,
     grad: GRADIENTS.iceChrome,
-    bookingOpenAt: iso(addDays(NOW, 6, 0)),
+    bookingOpenAt: iso(addDays(NOW, 6)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 169000 },
-      { key: 'R', name: 'R석', price: 138000 },
-      { key: 'S', name: 'S석', price: 108000 },
-      { key: 'A', name: 'A석', price: 76000 },
+      { key: 'VIP', name: 'VIP석', price: 176000 },
+      { key: 'R', name: 'R석', price: 143000 },
+      { key: 'S', name: 'S석', price: 110000 },
+      { key: 'A', name: 'A석', price: 77000 },
     ],
-    desc: 'aespa의 새로운 세계관을 담은 신규 투어. MY & 아이-공동체와 함께.',
+    desc: 'aespa의 SYNK HORIZON 투어. 메타버스 세계관을 담은 미래형 무대.',
     hot: true,
-    views: 165410,
+    views: 178423,
     seatingType: 'archall',
   },
   {
-    id: 'twc-2026-thisis',
+    id: 'twice-2027-oncemore',
     artist: 'TWICE',
-    title: '2026 WORLD TOUR [THIS IS FOR]',
+    title: '2027 WORLD TOUR [FEEL SPECIAL : ONCE MORE]',
     dateStart: iso(addDays(NOW, 30)),
     dateEnd: iso(addDays(NOW, 31)),
-    venue: '잠실 종합운동장 주경기장',
-    totalSeats: 26000,
-    grad: GRADIENTS.ink,
+    venue: '올림픽주경기장',
+    totalSeats: 30000,
+    grad: GRADIENTS.rose,
     bookingOpenAt: iso(addDays(NOW, 12)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 179000 },
-      { key: 'R', name: 'R석', price: 148000 },
-      { key: 'S', name: 'S석', price: 118000 },
-      { key: 'A', name: 'A석', price: 83000 },
+      { key: 'VIP', name: 'VIP석', price: 187000 },
+      { key: 'R', name: 'R석', price: 154000 },
+      { key: 'S', name: 'S석', price: 121000 },
+      { key: 'A', name: 'A석', price: 88000 },
     ],
-    desc: 'TWICE의 데뷔 10주년 기념 스타디움 투어 서울 공연.',
+    desc: 'TWICE의 ONCE와 함께하는 스페셜 월드투어 서울 공연.',
     hot: true,
-    views: 143207,
+    views: 156730,
   },
   {
-    id: 'ateez-2026-treasure',
-    artist: 'ATEEZ',
-    title: '2026 WORLD TOUR [TREASURE EPILOGUE]',
+    id: 'bp-2027-finale',
+    artist: 'BLACKPINK',
+    title: '2027 WORLD TOUR [PINK VENOM : THE FINALE]',
     dateStart: iso(addDays(NOW, 15)),
-    dateEnd: iso(addDays(NOW, 15)),
-    venue: '인스파이어 아레나',
-    totalSeats: 15000,
-    grad: GRADIENTS.wine,
+    dateEnd: iso(addDays(NOW, 16)),
+    venue: '올림픽주경기장',
+    totalSeats: 35000,
+    grad: GRADIENTS.pinkNoir,
     bookingOpenAt: iso(addDays(NOW, -1)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 165000 },
-      { key: 'R', name: 'R석', price: 132000 },
-      { key: 'S', name: 'S석', price: 99000 },
-      { key: 'A', name: 'A석', price: 69000 },
+      { key: 'VIP', name: 'VIP석', price: 210000 },
+      { key: 'R', name: 'R석', price: 165000 },
+      { key: 'S', name: 'S석', price: 132000 },
+      { key: 'A', name: 'A석', price: 95000 },
     ],
-    desc: 'ATEEZ의 트레저 시리즈를 마무리하는 에필로그 공연.',
-    hot: false,
-    views: 88123,
-    seatingType: 'standing',
+    desc: 'BLACKPINK의 FINALE 월드투어. 4인 4색 퍼포먼스와 히트곡 총집합.',
+    hot: true,
+    views: 298104,
   },
   {
-    id: 'lsf-2026-crazy',
+    id: 'lsf-2027-fearless',
     artist: 'LE SSERAFIM',
-    title: '2026 TOUR [CRAZY]',
+    title: '2027 WORLD TOUR [FEARLESS : FLAME RISES]',
     dateStart: iso(addDays(NOW, -1)),
     dateEnd: iso(addDays(NOW, -1)),
-    venue: 'YES24 라이브홀',
+    venue: 'KSPO DOME',
     totalSeats: 6000,
     grad: GRADIENTS.flameMono,
     bookingOpenAt: iso(addDays(NOW, -20)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 154000 },
-      { key: 'R', name: 'R석', price: 121000 },
-      { key: 'S', name: 'S석', price: 92000 },
-      { key: 'A', name: 'A석', price: 65000 },
+      { key: 'VIP', name: 'VIP석', price: 165000 },
+      { key: 'R', name: 'R석', price: 132000 },
+      { key: 'S', name: 'S석', price: 99000 },
+      { key: 'A', name: 'A석', price: 66000 },
     ],
-    desc: 'LE SSERAFIM의 소규모 스페셜 단독 공연. 이미 전석 매진되어 취소표 대기열이 운영중입니다.',
+    desc: 'LE SSERAFIM의 소규모 스페셜 단독 공연. 전석 매진으로 취소표 대기열 운영 중.',
     hot: true,
     forceSoldOut: true,
     views: 209981,
     seatingType: 'standing',
   },
   {
-    id: 'nj-2026-bunny',
+    id: 'nj-2027-dreaming',
     artist: 'NewJeans',
-    title: '2026 FAN CONCERT [BUNNY BUNNY]',
+    title: '2027 FAN CONCERT [OMG : SUMMER DREAMING]',
     dateStart: iso(addDays(NOW, 45)),
     dateEnd: iso(addDays(NOW, 46)),
     venue: 'KSPO DOME',
@@ -191,39 +290,95 @@ export const CONCERTS = [
     grad: GRADIENTS.crimson,
     bookingOpenAt: iso(addDays(NOW, 25)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 159000 },
-      { key: 'R', name: 'R석', price: 128000 },
-      { key: 'S', name: 'S석', price: 98000 },
-      { key: 'A', name: 'A석', price: 69000 },
+      { key: 'VIP', name: 'VIP석', price: 165000 },
+      { key: 'R', name: 'R석', price: 132000 },
+      { key: 'S', name: 'S석', price: 99000 },
+      { key: 'A', name: 'A석', price: 71500 },
     ],
-    desc: 'NewJeans의 팬미팅 콘서트. 팬들과 더 가까이 만나는 특별한 무대.',
+    desc: 'NewJeans의 팬콘서트. 버니들과 함께하는 특별한 여름 무대.',
     hot: false,
-    views: 76552,
+    views: 89210,
   },
   {
-    id: 'enh-2026-orbit',
-    artist: 'ENHYPEN',
-    title: '2026 WORLD TOUR [ORBIT]',
+    id: 'svt-2026-diamond',
+    artist: 'SEVENTEEN',
+    title: '2026 WORLD TOUR [DIAMOND EDGE : REBORN]',
     dateStart: iso(addDays(NOW, 14)),
     dateEnd: iso(addDays(NOW, 15)),
-    venue: '고양종합운동장 주경기장',
+    venue: 'KSPO DOME',
     totalSeats: 28000,
-    grad: GRADIENTS.ink,
-    // Test scenario: booking opens ~2 minutes after app load — enough time to watch the
-    // countdown, then walk through queue → seat select → payment → complete end to end.
+    grad: GRADIENTS.stoneWarm,
     bookingOpenAt: iso(new Date(Date.now() + 2 * 60 * 1000)),
     grades: [
-      { key: 'VIP', name: 'VIP석', price: 182000 },
-      { key: 'R', name: 'R석', price: 149000 },
-      { key: 'S', name: 'S석', price: 115000 },
-      { key: 'A', name: 'A석', price: 81000 },
+      { key: 'VIP', name: 'VIP석', price: 198000 },
+      { key: 'R', name: 'R석', price: 154000 },
+      { key: 'S', name: 'S석', price: 121000 },
+      { key: 'A', name: 'A석', price: 85000 },
     ],
-    desc: 'ENHYPEN의 2026년 신규 월드투어. 팬들과 함께 만드는 궤도 위의 무대.',
+    desc: 'SEVENTEEN의 DIAMOND EDGE : REBORN 월드투어. 13인조 퍼포먼스의 정점.',
     hot: true,
-    views: 156301,
-    // Tiny seat pool (every zone starts at 1 seat) so this E2E test show sells
-    // out within roughly a minute of browsing — enough to see the full 매진 flow.
+    views: 187302,
     zoneScaleOverride: 0.001,
+  },
+  {
+    id: 'lyw-2027-legend',
+    artist: '임영웅',
+    title: '2027 전국투어 [IM HERO : LEGEND TOUR]',
+    dateStart: iso(addDays(NOW, 50)),
+    dateEnd: iso(addDays(NOW, 51)),
+    venue: '올림픽주경기장',
+    totalSeats: 35000,
+    grad: GRADIENTS.royalNavy,
+    bookingOpenAt: iso(addDays(NOW, 20)),
+    grades: [
+      { key: 'VIP', name: 'VIP석', price: 176000 },
+      { key: 'R', name: 'R석', price: 143000 },
+      { key: 'S', name: 'S석', price: 110000 },
+      { key: 'A', name: 'A석', price: 77000 },
+    ],
+    desc: '임영웅의 전국투어 서울 공연. 대한민국을 대표하는 히어로의 감동 무대.',
+    hot: true,
+    views: 245109,
+  },
+  {
+    id: 'day6-2026-forever',
+    artist: 'DAY6',
+    title: '2026 CONCERT [한 페이지가 될 수 있게 : FOREVER YOUNG]',
+    dateStart: iso(addDays(NOW, 7)),
+    dateEnd: iso(addDays(NOW, 8)),
+    venue: 'KSPO DOME',
+    totalSeats: 15000,
+    grad: GRADIENTS.amberNight,
+    bookingOpenAt: iso(addDays(NOW, -3)),
+    grades: [
+      { key: 'VIP', name: 'VIP석', price: 143000 },
+      { key: 'R', name: 'R석', price: 110000 },
+      { key: 'S', name: 'S석', price: 88000 },
+      { key: 'A', name: 'A석', price: 66000 },
+    ],
+    desc: 'DAY6의 감성 콘서트. 밴드 사운드와 함께하는 잊을 수 없는 페이지.',
+    hot: false,
+    views: 92143,
+  },
+  {
+    id: 'ive-2026-crown',
+    artist: 'IVE',
+    title: '2026 CONCERT [AFTER LIKE : THE CROWN]',
+    dateStart: iso(addDays(NOW, 18)),
+    dateEnd: iso(addDays(NOW, 19)),
+    venue: 'KSPO DOME',
+    totalSeats: 20000,
+    grad: GRADIENTS.burgundyGold,
+    bookingOpenAt: iso(addDays(NOW, 4)),
+    grades: [
+      { key: 'VIP', name: 'VIP석', price: 176000 },
+      { key: 'R', name: 'R석', price: 143000 },
+      { key: 'S', name: 'S석', price: 110000 },
+      { key: 'A', name: 'A석', price: 77000 },
+    ],
+    desc: 'IVE의 THE CROWN 콘서트. 자신감 넘치는 퍼포먼스와 화려한 왕관 컨셉.',
+    hot: true,
+    views: 167432,
   },
 ];
 
@@ -260,22 +415,21 @@ export function getSessions(c) {
   return sessions;
 }
 
+export function formatStoredSessions(storedSessions) {
+  if (!Array.isArray(storedSessions) || storedSessions.length === 0) return null;
+  return storedSessions.map((s) => {
+    const dt = new Date(s.date + 'T00:00:00');
+    const dw = WEEKDAYS_KR[dt.getDay()];
+    const shortLabel = `${dt.getMonth() + 1}.${String(dt.getDate()).padStart(2, '0')} (${dw})`;
+    return { date: s.date, time: s.time, label: `${shortLabel} 1회 ${s.time}`, shortLabel, round: 1 };
+  });
+}
+
 export function generateEventSessions(eventDate) {
   if (!eventDate) return [];
   const base = eventDate.includes('T') ? eventDate.split('T')[0] : eventDate;
   const [y, m, d] = base.split('-').map(Number);
   const baseDate = new Date(y, m - 1, d);
-  const dow = baseDate.getDay();
-
-  let sat;
-  if (dow === 0) {
-    sat = new Date(y, m - 1, d - 1);
-  } else {
-    const off = (6 - dow + 7) % 7;
-    sat = new Date(y, m - 1, d + off);
-  }
-  const sun = new Date(sat);
-  sun.setDate(sun.getDate() + 1);
 
   function fmt(dt) {
     return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
@@ -284,12 +438,23 @@ export function generateEventSessions(eventDate) {
     const dw = WEEKDAYS_KR[dt.getDay()];
     return `${dt.getMonth() + 1}.${String(dt.getDate()).padStart(2, '0')} (${dw})`;
   }
-  return [
-    { date: fmt(sat), time: '14:00', label: `${lbl(sat)} 14:00`, shortLabel: lbl(sat), round: 1 },
-    { date: fmt(sat), time: '19:00', label: `${lbl(sat)} 19:00`, shortLabel: lbl(sat), round: 2 },
-    { date: fmt(sun), time: '14:00', label: `${lbl(sun)} 14:00`, shortLabel: lbl(sun), round: 1 },
-    { date: fmt(sun), time: '19:00', label: `${lbl(sun)} 19:00`, shortLabel: lbl(sun), round: 2 },
-  ];
+
+  const hash = (y * 10000 + m * 100 + d) % 3;
+  const dayCount = 2 + hash;
+  const timeOptions = ['14:00', '17:00', '19:00'];
+  const sessions = [];
+
+  for (let i = 0; i < dayCount; i++) {
+    const dt = new Date(baseDate);
+    dt.setDate(dt.getDate() + i);
+    const dateStr = fmt(dt);
+    const dateLabel = lbl(dt);
+    const time = timeOptions[(d + i) % timeOptions.length];
+    sessions.push(
+      { date: dateStr, time, label: `${dateLabel} 1회 ${time}`, shortLabel: dateLabel, round: 1 },
+    );
+  }
+  return sessions;
 }
 
 // Zone layouts come in two venue shapes so different concerts don't all look
@@ -309,8 +474,6 @@ const ARENA_ANGLE_SPAN = 168; // degrees, centered on straight-down from the sta
 
 function arenaZoneLayout(c) {
   const gradeOf = (key) => c.grades.find((g) => g.key === key) || c.grades[c.grades.length - 1];
-  // zoneScaleOverride lets a concert opt into a tiny, fast-draining seat pool
-  // (used by the ENHYPEN E2E test show) instead of the usual totalSeats-based scale.
   const scale = c.zoneScaleOverride ?? Math.max(0.5, Math.min(2.2, c.totalSeats / 22000));
   const seedFloor = c.zoneScaleOverride != null ? 1 : 20;
   const zones = [];
@@ -397,8 +560,36 @@ function standingZoneLayout(c) {
   }));
 }
 
+export function theaterZoneLayout(c) {
+  const gradeOf = (key) => c.grades.find((g) => g.key === key) || c.grades[c.grades.length - 1];
+  // 극장 배치도 기준 고정 좌석수 (총 778석)
+  // 1F A·B(VIP, 14행×16석), C·D(R, 10행×10석), 2F 측면(S), 2F 후면+하단(A)
+  const THEATER_BLOCKS = [
+    { grade: 'VIP', count: 2, seedPerBlock: 224, labels: ['A', 'B'] },
+    { grade: 'R', count: 2, seedPerBlock: 100, labels: ['C', 'D'] },
+    { grade: 'S', count: 6, seedPerBlock: 5, labels: ['A', 'B', 'C', 'G', 'F', 'E'] },
+    { grade: 'A', count: 4, seedPerBlock: 25, labels: ['A', 'B', 'C', '3F'] },
+  ];
+  const zones = [];
+  THEATER_BLOCKS.forEach((block) => {
+    for (let i = 0; i < block.count; i++) {
+      zones.push({
+        id: `${block.grade}-${block.labels[i]}`,
+        grade: block.grade,
+        label: `${block.grade} ${block.labels[i]}구역`,
+        short: block.labels[i],
+        price: gradeOf(block.grade).price,
+        seed: block.seedPerBlock,
+        venueType: 'theater',
+      });
+    }
+  });
+  return zones;
+}
+
 export function getVenueZoneLayout(c) {
   if (c.seatingType === 'standing') return standingZoneLayout(c);
   if (c.seatingType === 'archall') return archallZoneLayout(c);
+  if (c.seatingType === 'theater') return theaterZoneLayout(c);
   return arenaZoneLayout(c);
 }

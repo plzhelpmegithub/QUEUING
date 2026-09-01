@@ -2,6 +2,7 @@
 
 import { navigate } from '../router.js';
 import { isInterested, toggleInterest, subscribe } from '../state/store.js';
+import { getConcertImage } from '../data/concerts.js';
 
 function statusBadge(status) {
   if (status === 'sold_out') return `<span class="badge badge-dark-red">SOLD OUT</span>`;
@@ -9,11 +10,12 @@ function statusBadge(status) {
   return `<span class="badge badge-red">예매중</span>`;
 }
 
-function cardHtml(e) {
-  const grad = `linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
+function cardHtml(e, i) {
+  const imgUrl = getConcertImage(e.eventName || e.eventId);
+  const bgStyle = `url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
   return `
-    <div class="card fade-in" style="overflow:hidden;">
-      <div style="height:180px;background:${grad};position:relative;cursor:pointer;" data-open="${e.eventId}">
+    <div class="card fade-in" style="overflow:hidden;animation-delay:${(i || 0) * 0.05}s;">
+      <div style="height:180px;background:${bgStyle};position:relative;cursor:pointer;transition:transform .4s ease;" data-open="${e.eventId}" onmouseenter="this.style.transform='scale(1.04)'" onmouseleave="this.style.transform='none'">
         <div style="position:absolute;top:10px;left:10px;">${statusBadge(e.status)}</div>
         <button type="button" class="badge" data-heart="${e.eventId}" style="position:absolute;top:10px;right:10px;border:none;background:rgba(0,0,0,0.35);color:#fff;cursor:pointer;">
           ${isInterested(e.eventId) ? '♥' : '♡'}

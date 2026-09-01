@@ -1,10 +1,6 @@
-// 관리자 모니터링 대시보드 — 실시간 대기열 현황, 좌석 판매 통계, 채팅 메시지,
-// 취소표 풀 현황을 라인 차트와 테이블로 시각화. 관리자 계정에서만 접근 가능.
-
 import { CONCERTS } from '../data/concerts.js';
-import { isAdmin, isLoggedIn, getChatRoom, ensureCancelPool } from '../state/store.js';
+import { isAdmin, isLoggedIn } from '../state/store.js';
 import { navigate } from '../router.js';
-import { mountLineChart, renderBarChart } from '../components/miniChart.js';
 import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { formatDeadline } from '../utils/format.js';
@@ -36,11 +32,173 @@ function createEvent(payload) {
   }).then((res) => res.json());
 }
 
-// "랜덤 생성" 버튼용 — data/concerts.js 목업 카탈로그와 같은 아티스트/장소 풀에서
-// 무작위로 뽑아 조합. 좌석수/가격은 GRADE_DEFAULTS를 기준으로 ±로 흔들어 다양성만 줌.
-const RANDOM_ARTISTS = ['SEVENTEEN', 'IU', 'Stray Kids', 'aespa', 'TWICE', 'ATEEZ', 'LE SSERAFIM', 'NewJeans', 'ENHYPEN'];
-const RANDOM_TOUR_NAMES = ['WORLD TOUR', 'CONCERT', 'FAN CONCERT', 'ENCORE', 'ANNIVERSARY SHOW'];
-const RANDOM_VENUES = ['KSPO DOME', '잠실 종합운동장 주경기장', '고척스카이돔', '인스파이어 아레나', 'YES24 라이브홀', '고양종합운동장 주경기장'];
+// "포스터 공연 생성" 버튼용 — 40명 아티스트 포스터 데이터에서
+// 순서대로 순환하며 공연 생성. 좌석수/가격은 GRADE_DEFAULTS를 기준으로 ±로 흔들어 다양성만 줌.
+const RANDOM_ARTISTS = [
+  'BTS', 'BLACKPINK', 'SEVENTEEN', 'NewJeans', 'IVE', 'aespa', 'TWICE', 'EXO',
+  'Stray Kids', 'NCT DREAM', '(G)I-DLE', 'LE SSERAFIM', 'RIIZE', 'Red Velvet', 'TXT',
+  'IU', '박효신', '성시경', 'TAEYEON', '윤하', 'AILEE', '김범수', '이승철', 'Heize', 'ZICO',
+  '임영웅', '송가인', '영탁', '이찬원', '장윤정',
+  'AKMU', '이적', '백예린', '선우정아', '폴킴',
+  'YB', '자우림', 'DAY6', '잔나비', 'NELL',
+];
+
+// 포스터 기반 공연 데이터 — 날짜순 정렬. 포스터 공연 생성 버튼이 순서대로 순환하며 생성.
+const POSTER_CONCERTS = [
+  { artist: 'AKMU', eventName: 'AKMU 2026 CONCERT [사춘기 : SAILING HOME]', eventDate: '2026-11-01', venue: '올림픽홀', sessions: [{ date: '2026-11-01', time: '19:00' }, { date: '2026-11-02', time: '18:00' }] },
+  { artist: '윤하', eventName: '윤하 2026 CONCERT [STARDUST : EVENT HORIZON]', eventDate: '2026-11-08', venue: '올림픽홀', sessions: [{ date: '2026-11-08', time: '19:00' }] },
+  { artist: 'Stray Kids', eventName: 'Stray Kids 2026 WORLD TOUR [THUNDEROUS : UNCHAINED]', eventDate: '2026-11-14', venue: '고척스카이돔', sessions: [{ date: '2026-11-14', time: '18:00' }, { date: '2026-11-15', time: '17:00' }] },
+  { artist: 'RIIZE', eventName: 'RIIZE 2026 FAN CONCERT [GET A GUITAR : FIRST LIGHT]', eventDate: '2026-11-22', venue: 'YES24 LIVE HALL', sessions: [{ date: '2026-11-22', time: '18:00' }, { date: '2026-11-23', time: '17:00' }] },
+  { artist: 'IVE', eventName: 'IVE 2026 CONCERT [AFTER LIKE : THE CROWN]', eventDate: '2026-11-28', venue: 'KSPO DOME', sessions: [{ date: '2026-11-28', time: '18:00' }, { date: '2026-11-29', time: '17:00' }] },
+  { artist: 'DAY6', eventName: 'DAY6 2026 CONCERT [한 페이지가 될 수 있게 : FOREVER YOUNG]', eventDate: '2026-11-29', venue: 'KSPO DOME', sessions: [{ date: '2026-11-29', time: '18:00' }, { date: '2026-11-30', time: '17:00' }] },
+  { artist: '(G)I-DLE', eventName: '(G)I-DLE 2026 WORLD TOUR [SUPER LADY : QUEENDOM]', eventDate: '2026-12-05', venue: '고척스카이돔', sessions: [{ date: '2026-12-05', time: '18:00' }, { date: '2026-12-06', time: '17:00' }] },
+  { artist: 'TXT', eventName: 'TOMORROW X TOGETHER 2026 WORLD TOUR [STAR SEEKERS : ACT TWO]', eventDate: '2026-12-12', venue: 'KSPO DOME', sessions: [{ date: '2026-12-12', time: '18:00' }, { date: '2026-12-13', time: '17:00' }] },
+  { artist: 'SEVENTEEN', eventName: 'SEVENTEEN 2026 WORLD TOUR [DIAMOND EDGE : REBORN]', eventDate: '2026-12-19', venue: 'KSPO DOME', sessions: [{ date: '2026-12-19', time: '18:00' }, { date: '2026-12-20', time: '17:00' }] },
+  { artist: '백예린', eventName: '백예린 2026 CONCERT [Square : INDIE NIGHT]', eventDate: '2026-12-25', venue: '올림픽홀', sessions: [{ date: '2026-12-25', time: '19:00' }] },
+  { artist: 'Heize', eventName: 'Heize 2026 CONCERT [HAPPEN IN WINTER]', eventDate: '2026-12-26', venue: '올림픽홀', sessions: [{ date: '2026-12-26', time: '20:00' }] },
+  { artist: '성시경', eventName: '성시경 2026 연말콘서트 [두 사람 : YEAR-END BALLAD NIGHT]', eventDate: '2026-12-31', venue: 'KSPO DOME', sessions: [{ date: '2026-12-31', time: '20:00' }] },
+  { artist: '이적', eventName: '이적 2027 CONCERT [하늘을 달리다 : VOICE OF A GENERATION]', eventDate: '2027-01-03', venue: '세종문화회관', sessions: [{ date: '2027-01-03', time: '19:00' }] },
+  { artist: 'NewJeans', eventName: 'NewJeans 2027 FAN CONCERT [OMG : SUMMER DREAMING]', eventDate: '2027-01-10', venue: 'KSPO DOME', sessions: [{ date: '2027-01-10', time: '18:00' }, { date: '2027-01-11', time: '17:00' }] },
+  { artist: 'BLACKPINK', eventName: 'BLACKPINK 2027 WORLD TOUR [PINK VENOM : THE FINALE]', eventDate: '2027-01-17', venue: '올림픽주경기장', sessions: [{ date: '2027-01-17', time: '18:00' }, { date: '2027-01-18', time: '17:00' }] },
+  { artist: '박효신', eventName: '박효신 2027 CONCERT [SOULS AND SONGS]', eventDate: '2027-01-24', venue: '세종문화회관', sessions: [{ date: '2027-01-24', time: '19:00' }, { date: '2027-01-25', time: '18:00' }] },
+  { artist: 'NCT DREAM', eventName: 'NCT DREAM 2027 CONCERT [THE DREAM SHOW 4 : WONDERLAND]', eventDate: '2027-01-31', venue: 'KSPO DOME', sessions: [{ date: '2027-01-31', time: '18:00' }, { date: '2027-02-01', time: '17:00' }] },
+  { artist: 'TAEYEON', eventName: 'TAEYEON 2027 CONCERT [ONCE UPON A TIME]', eventDate: '2027-02-07', venue: 'KSPO DOME', sessions: [{ date: '2027-02-07', time: '18:00' }, { date: '2027-02-08', time: '17:00' }] },
+  { artist: 'aespa', eventName: 'aespa 2027 WORLD TOUR [SUPERNOVA : SYNK HORIZON]', eventDate: '2027-02-14', venue: '고척스카이돔', sessions: [{ date: '2027-02-14', time: '18:00' }, { date: '2027-02-15', time: '17:00' }] },
+  { artist: '자우림', eventName: '자우림 2027 CONCERT [스물다섯, 스물하나 : TIMELESS ECHOES]', eventDate: '2027-02-15', venue: '올림픽홀', sessions: [{ date: '2027-02-15', time: '19:00' }] },
+  { artist: 'ZICO', eventName: 'ZICO 2027 CONCERT [SPOT! : KING OF THE JUNGLE]', eventDate: '2027-02-22', venue: '고척스카이돔', sessions: [{ date: '2027-02-22', time: '19:00' }] },
+  { artist: 'LE SSERAFIM', eventName: 'LE SSERAFIM 2027 WORLD TOUR [FEARLESS : FLAME RISES]', eventDate: '2027-02-28', venue: 'KSPO DOME', sessions: [{ date: '2027-02-28', time: '18:00' }, { date: '2027-03-01', time: '17:00' }] },
+  { artist: 'BTS', eventName: 'BTS 2027 WORLD TOUR [BEYOND THE SCENE : ETERNAL]', eventDate: '2027-03-01', venue: '올림픽주경기장', sessions: [{ date: '2027-03-01', time: '18:00' }, { date: '2027-03-02', time: '17:00' }] },
+  { artist: 'AILEE', eventName: 'AILEE 2027 CONCERT [I WILL SHOW YOU : THE POWERHOUSE]', eventDate: '2027-03-08', venue: '블루스퀘어', sessions: [{ date: '2027-03-08', time: '19:00' }] },
+  { artist: 'IU', eventName: 'IU 2027 CONCERT [THE GOLDEN HOUR : CURTAIN CALL]', eventDate: '2027-03-14', venue: '올림픽주경기장', sessions: [{ date: '2027-03-14', time: '18:00' }, { date: '2027-03-15', time: '17:00' }] },
+  { artist: '잔나비', eventName: '잔나비 2027 CONCERT [주저하는 연인들을 위해 : MONKEY CINEMA]', eventDate: '2027-03-15', venue: '올림픽홀', sessions: [{ date: '2027-03-15', time: '19:00' }] },
+  { artist: 'EXO', eventName: 'EXO 2027 CONCERT [EXO PLANET #6 : CHRONICLE]', eventDate: '2027-03-22', venue: 'KSPO DOME', sessions: [{ date: '2027-03-22', time: '18:00' }, { date: '2027-03-23', time: '17:00' }] },
+  { artist: '영탁', eventName: '영탁 2027 CONCERT [찐이야 : ALL-IN LIVE]', eventDate: '2027-03-29', venue: '고척스카이돔', sessions: [{ date: '2027-03-29', time: '18:00' }] },
+  { artist: '폴킴', eventName: '폴킴 2027 CONCERT [비 : EVERY DAY EVERY MOMENT]', eventDate: '2027-04-05', venue: '올림픽홀', sessions: [{ date: '2027-04-05', time: '19:00' }] },
+  { artist: 'TWICE', eventName: 'TWICE 2027 WORLD TOUR [FEEL SPECIAL : ONCE MORE]', eventDate: '2027-04-05', venue: '올림픽주경기장', sessions: [{ date: '2027-04-05', time: '18:00' }, { date: '2027-04-06', time: '17:00' }] },
+  { artist: '김범수', eventName: '김범수 2027 CONCERT [보고 싶다 : A VOICE FOR ETERNITY]', eventDate: '2027-04-12', venue: '세종문화회관', sessions: [{ date: '2027-04-12', time: '19:00' }] },
+  { artist: 'Red Velvet', eventName: 'Red Velvet 2027 CONCERT [CHILL KILL : THE VELVET NIGHT]', eventDate: '2027-04-19', venue: 'KSPO DOME', sessions: [{ date: '2027-04-19', time: '18:00' }, { date: '2027-04-20', time: '17:00' }] },
+  { artist: '송가인', eventName: '송가인 2027 CONCERT [트로트의 여왕 : 꽃길만 걸으세요]', eventDate: '2027-04-26', venue: 'KSPO DOME', sessions: [{ date: '2027-04-26', time: '18:00' }] },
+  { artist: '이승철', eventName: '이승철 2027 CONCERT [LEGEND CONTINUES]', eventDate: '2027-05-03', venue: '세종문화회관', sessions: [{ date: '2027-05-03', time: '19:00' }, { date: '2027-05-04', time: '18:00' }] },
+  { artist: '임영웅', eventName: '임영웅 2027 전국투어 [IM HERO : LEGEND TOUR]', eventDate: '2027-05-10', venue: '올림픽주경기장', sessions: [{ date: '2027-05-10', time: '18:00' }, { date: '2027-05-11', time: '17:00' }] },
+  { artist: 'YB', eventName: 'YB 2027 CONCERT [나는 나비 : ROCK NEVER DIES]', eventDate: '2027-05-17', venue: '올림픽홀', sessions: [{ date: '2027-05-17', time: '19:00' }] },
+  { artist: '장윤정', eventName: '장윤정 2027 CONCERT [어머나! : TIMELESS DIVA]', eventDate: '2027-05-24', venue: '세종문화회관', sessions: [{ date: '2027-05-24', time: '18:00' }] },
+  { artist: '이찬원', eventName: '이찬원 2027 CONCERT [진또배기 : YOUNG KING OF TROT]', eventDate: '2027-06-07', venue: 'KSPO DOME', sessions: [{ date: '2027-06-07', time: '18:00' }] },
+  { artist: '선우정아', eventName: '선우정아 2027 CONCERT [도망가자 : CATHARSIS]', eventDate: '2027-06-14', venue: '블루스퀘어', sessions: [{ date: '2027-06-14', time: '19:00' }] },
+  { artist: 'NELL', eventName: 'NELL 2027 CONCERT [지구가 태양을 네 번 : FOUR SEASONS]', eventDate: '2027-06-21', venue: '블루스퀘어', sessions: [{ date: '2027-06-21', time: '19:00' }] },
+];
+
+const RANDOM_AGENCIES = {
+  'BTS': 'BIGHIT MUSIC / HYBE',
+  'BLACKPINK': 'YG Entertainment',
+  'SEVENTEEN': 'Pledis Entertainment / HYBE',
+  'NewJeans': 'ADOR / HYBE',
+  'IVE': 'Starship Entertainment',
+  'aespa': 'SM Entertainment',
+  'TWICE': 'JYP Entertainment',
+  'EXO': 'SM Entertainment',
+  'Stray Kids': 'JYP Entertainment',
+  'NCT DREAM': 'SM Entertainment',
+  '(G)I-DLE': 'CUBE Entertainment',
+  'LE SSERAFIM': 'SOURCE MUSIC / HYBE',
+  'RIIZE': 'SM Entertainment',
+  'Red Velvet': 'SM Entertainment',
+  'TXT': 'BIGHIT MUSIC / HYBE',
+  'IU': 'EDAM Entertainment',
+  '박효신': 'Glove Entertainment',
+  '성시경': 'JELLYFISH Entertainment',
+  'TAEYEON': 'SM Entertainment',
+  '윤하': 'C9 Entertainment',
+  'AILEE': 'THE L1VE',
+  '김범수': 'Polaris Entertainment',
+  '이승철': 'HOOK Entertainment',
+  'Heize': 'P NATION',
+  'ZICO': 'KOZ Entertainment',
+  '임영웅': 'fish music',
+  '송가인': 'POCKET DOL STUDIO',
+  '영탁': 'TV 조선',
+  '이찬원': 'GREEN FISH',
+  '장윤정': 'K-PERFORMANCE',
+  'AKMU': 'YG Entertainment',
+  '이적': 'Music Farm',
+  '백예린': 'Blue Vinyl',
+  '선우정아': 'Magic Strawberry Sound',
+  '폴킴': 'Neuron Music',
+  'YB': 'Dee Company',
+  '자우림': 'JAUR.M',
+  'DAY6': 'JYP Entertainment',
+  '잔나비': 'Peponi Music',
+  'NELL': 'Space Bohemian',
+};
+
+const RANDOM_RUNTIMES = ['약 120분', '약 130분 (인터미션 포함)', '약 150분 (인터미션 20분 포함)', '약 100분', '약 180분 (인터미션 15분 포함)'];
+const RANDOM_AGE_RATINGS = ['전체 관람가', '만 7세 이상 관람가', '만 12세 이상 관람가'];
+
+const RANDOM_CAST_POOL = {
+  'BTS': 'RM, JIN, SUGA, J-HOPE, JIMIN, V, JUNGKOOK',
+  'BLACKPINK': 'JISOO, JENNIE, ROSÉ, LISA',
+  'SEVENTEEN': 'S.COUPS, JEONGHAN, JOSHUA, JUN, HOSHI, WONWOO, WOOZI, DK, MINGYU, THE8, SEUNGKWAN, VERNON, DINO',
+  'NewJeans': 'MINJI, HANNI, DANIELLE, HAERIN, HYEIN',
+  'IVE': 'YUJIN, GAEUL, REI, WONYOUNG, LIZ, LEESEO',
+  'aespa': 'KARINA, GISELLE, WINTER, NINGNING',
+  'TWICE': 'NAYEON, JEONGYEON, MOMO, SANA, JIHYO, MINA, DAHYUN, CHAEYOUNG, TZUYU',
+  'EXO': 'XIUMIN, SUHO, LAY, BAEKHYUN, CHEN, CHANYEOL, D.O., KAI, SEHUN',
+  'Stray Kids': 'Bang Chan, Lee Know, Changbin, Hyunjin, HAN, Felix, Seungmin, I.N',
+  'NCT DREAM': 'MARK, RENJUN, JENO, HAECHAN, JAEMIN, CHENLE, JISUNG',
+  '(G)I-DLE': 'MIYEON, MINNIE, SOYEON, YUQI, SHUHUA',
+  'LE SSERAFIM': 'SAKURA, KIM CHAEWON, HUH YUNJIN, KAZUHA, HONG EUNCHAE',
+  'RIIZE': 'SHOTARO, EUNSEOK, SUNGCHAN, WONBIN, SEUNGHAN, SOHEE, ANTON',
+  'Red Velvet': 'IRENE, SEULGI, WENDY, JOY, YERI',
+  'TXT': 'SOOBIN, YEONJUN, BEOMGYU, TAEHYUN, HUENINGKAI',
+  'IU': 'IU (이지은)',
+  '박효신': '박효신',
+  '성시경': '성시경',
+  'TAEYEON': 'TAEYEON (태연)',
+  '윤하': '윤하',
+  'AILEE': 'AILEE (에일리)',
+  '김범수': '김범수',
+  '이승철': '이승철',
+  'Heize': 'Heize (헤이즈)',
+  'ZICO': 'ZICO (지코)',
+  '임영웅': '임영웅',
+  '송가인': '송가인',
+  '영탁': '영탁',
+  '이찬원': '이찬원',
+  '장윤정': '장윤정',
+  'AKMU': '이찬혁, 이수현',
+  '이적': '이적',
+  '백예린': '백예린',
+  '선우정아': '선우정아',
+  '폴킴': '폴킴',
+  'YB': '윤도현, 박태희, 허준, 김진원, 스캇 할로웰',
+  '자우림': '김윤아, 이선규, 김지민, 구태훈',
+  'DAY6': 'Jae, Sungjin, Young K, Wonpil, Dowoon',
+  '잔나비': '최정훈, 김도형',
+  'NELL': '김종완, 이재경, 이정재, 정재원',
+};
+
+function generateConcertDescription(artist, tourName, venue) {
+  const templates = [
+    `${artist}의 ${tourName} 서울 공연이 ${venue}에서 개최됩니다. 화려한 무대 연출과 완벽한 라이브 퍼포먼스로 관객들에게 잊을 수 없는 경험을 선사합니다. 아티스트와 팬이 함께 만들어가는 특별한 시간, 놓치지 마세요.`,
+    `${venue}에서 펼쳐지는 ${artist}의 대규모 공연! 히트곡 메들리부터 신곡 최초 무대까지, 오직 이 공연에서만 볼 수 있는 스페셜 세트리스트가 준비되어 있습니다. 최첨단 LED 스크린과 조명 연출이 어우러진 몰입감 넘치는 무대를 경험하세요.`,
+    `${artist}가 팬들과 함께하는 ${tourName}! ${venue}의 넓은 무대를 가득 채울 역대급 스케일의 공연이 찾아옵니다. 앵콜 무대를 포함한 약 2시간의 공연 동안 최고의 퍼포먼스와 감동적인 멘트까지, 팬이라면 반드시 함께해야 할 순간입니다.`,
+    `글로벌 아티스트 ${artist}의 ${tourName}이 드디어 서울에 상륙합니다. ${venue}에서 진행되는 이번 공연은 월드투어의 하이라이트로, 해외에서 먼저 검증된 완성도 높은 세트리스트와 무대 구성이 그대로 재현됩니다. 현장에서만 느낄 수 있는 압도적인 사운드와 비주얼을 직접 체험해보세요.`,
+  ];
+  return templates[Math.floor(Math.random() * templates.length)];
+}
+
+function generateConcertNotices() {
+  return [
+    '본 공연은 지정좌석제로 운영됩니다.',
+    '공연 시작 후 입장이 제한될 수 있습니다.',
+    '촬영(사진/영상) 및 녹음은 금지됩니다.',
+    '티켓 양도 및 교환은 공식 채널을 통해서만 가능합니다.',
+    '공연 당일 본인 확인이 진행됩니다. 신분증을 지참해주세요.',
+  ];
+}
+
+const SEATING_TYPES_CYCLE = ['arena', 'theater'];
+let seatingCycleIdx = 0;
+let posterCycleIdx = 0;
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -52,30 +210,62 @@ function randInt(min, max) {
 // 등급별로 각각 5000 단위로 딱 떨어지는 좌석수를 뽑음(예: VIP 5000, R 15000,
 // S 20000, A 30000처럼) — 총합을 먼저 정하고 비율로 나누면 19800처럼 애매한
 // 숫자가 나와서, 등급별로 독립적으로 반올림된 값을 뽑는 방식으로 바꿈
-const GRADE_SEAT_RANGE = { VIP: [1, 3], R: [2, 4], S: [3, 5], A: [3, 6] }; // step(5000) 배수 범위
+const VENUE_FIXED_SEATS = {
+  '고척스카이돔': { VIP: 2000, R: 4000, S: 4000, A: 4000 },   // 합계 14,000
+  '올림픽홀':     { VIP: 500,  R: 800,  S: 900,  A: 800 },     // 합계 3,000
+};
+
+const MAX_TOTAL_SEATS = 14000;
+const GRADE_SEAT_RANGE = { VIP: [1, 2], R: [2, 4], S: [3, 5], A: [3, 5] }; // step(1000) 배수 범위
+
+// 극장(theater) 좌석 고정값
+const THEATER_FIXED_SEATS = { VIP: 448, R: 200, S: 30, A: 100 }; // 합계 778
 
 function randRoundSeats(step, minMult, maxMult) {
   return step * randInt(minMult, maxMult);
 }
 
 function buildRandomEventPayload() {
-  const artist = pick(RANDOM_ARTISTS);
-  const year = 2026 + randInt(0, 1);
-  const eventDate = new Date(Date.now() + randInt(3, 90) * 86400000).toISOString().slice(0, 10);
+  const posterData = POSTER_CONCERTS[posterCycleIdx % POSTER_CONCERTS.length];
+  posterCycleIdx++;
+  const artist = posterData.artist;
+  const venueFixed = VENUE_FIXED_SEATS[posterData.venue];
+  const seatingType = SEATING_TYPES_CYCLE[seatingCycleIdx++ % SEATING_TYPES_CYCLE.length];
   const sections = GRADE_DEFAULTS.map((g) => {
-    const [minMult, maxMult] = GRADE_SEAT_RANGE[g.key];
+    let seats;
+    if (venueFixed) {
+      seats = venueFixed[g.key];
+    } else if (seatingType === 'theater') {
+      seats = THEATER_FIXED_SEATS[g.key];
+    } else {
+      seats = randRoundSeats(1000, GRADE_SEAT_RANGE[g.key][0], GRADE_SEAT_RANGE[g.key][1]);
+    }
     return {
       name: g.key,
-      seats: randRoundSeats(5000, minMult, maxMult),
+      seats,
       price: Math.round((g.price * (0.85 + Math.random() * 0.3)) / 1000) * 1000,
     };
   });
+  if (!venueFixed && seatingType !== 'theater') {
+    const total = sections.reduce((s, sec) => s + sec.seats, 0);
+    if (total > MAX_TOTAL_SEATS) {
+      const ratio = MAX_TOTAL_SEATS / total;
+      sections.forEach((sec) => { sec.seats = Math.max(100, Math.round(sec.seats * ratio / 100) * 100); });
+    }
+  }
   return {
-    eventName: `${artist} ${year} ${pick(RANDOM_TOUR_NAMES)}`,
-    eventDate,
-    venue: pick(RANDOM_VENUES),
-    seatingType: Math.random() < 0.7 ? 'arena' : 'standing',
+    eventName: posterData.eventName,
+    eventDate: posterData.eventDate,
+    venue: posterData.venue,
+    seatingType,
     sections,
+    sessions: posterData.sessions,
+    runtime: pick(RANDOM_RUNTIMES),
+    ageRating: pick(RANDOM_AGE_RATINGS),
+    cast: RANDOM_CAST_POOL[artist] || artist,
+    agency: RANDOM_AGENCIES[artist] || 'Entertainment Corp.',
+    description: generateConcertDescription(artist, posterData.eventName, posterData.venue),
+    notices: generateConcertNotices(),
   };
 }
 
@@ -92,18 +282,38 @@ function setEventOpenTime(eventId, ticketOpenAt) {
   }).then((res) => res.json());
 }
 
-// 공연 목록 테이블의 "오픈 상태" 셀만 매초 다시 그림 — ticketOpenAt이 지났으면
-// "예매중", 남았으면 "오픈 예정 + 남은시간"으로 자동 전환됨.
+function setEventCloseTime(eventId, ticketCloseAt) {
+  return fetch(`/events/${eventId}/close-time`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticketCloseAt }),
+  }).then((res) => res.json());
+}
+
+// 공연 목록 테이블의 "오픈/마감 상태" 셀만 매초 다시 그림
 function paintOpenStatuses(container) {
   eventsCache.forEach((e) => {
     const cell = container.querySelector(`[data-open-status="${e.eventId}"]`);
     if (!cell) return;
-    const remaining = e.ticketOpenAt ? new Date(e.ticketOpenAt).getTime() - Date.now() : 0;
-    if (!e.ticketOpenAt || remaining <= 0) {
-      cell.innerHTML = `<span class="badge badge-green">예매중</span>`;
+
+    const openRemaining = e.ticketOpenAt ? new Date(e.ticketOpenAt).getTime() - Date.now() : 0;
+    const closeRemaining = e.ticketCloseAt ? new Date(e.ticketCloseAt).getTime() - Date.now() : 0;
+
+    if (e.ticketOpenAt && openRemaining > 0) {
+      cell.innerHTML = `<span class="badge badge-orange">오픈 예정</span><div class="num-mono" style="font-size:12px;margin-top:4px;color:var(--color-text-secondary);">${formatDeadline(openRemaining)}</div>`;
       return;
     }
-    cell.innerHTML = `<span class="badge badge-orange">오픈 예정</span><div class="num-mono" style="font-size:12px;margin-top:4px;color:var(--color-text-secondary);">${formatDeadline(remaining)}</div>`;
+
+    if (e.ticketCloseAt && closeRemaining <= 0) {
+      cell.innerHTML = `<span class="badge badge-outline">마감됨</span>`;
+      return;
+    }
+
+    let html = `<span class="badge badge-green">예매중</span>`;
+    if (e.ticketCloseAt && closeRemaining > 0) {
+      html += `<div class="num-mono" style="font-size:11px;margin-top:4px;color:var(--color-text-secondary);">마감까지 ${formatDeadline(closeRemaining)}</div>`;
+    }
+    cell.innerHTML = html;
   });
 }
 
@@ -115,20 +325,22 @@ function refreshEventsList(container) {
     .then((data) => {
       eventsCache = data.events || [];
       if (eventsCache.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-secondary">생성된 공연이 없습니다.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-secondary">생성된 공연이 없습니다.</td></tr>';
         return;
       }
       tbody.innerHTML = eventsCache
         .map(
-          (e) => `
+          (e, i) => `
         <tr>
+          <td class="num-mono">${i + 1}</td>
           <td>${e.eventName}</td>
           <td>${e.eventDate || '-'}</td>
           <td>${e.venue || '-'}</td>
-          <td>${Number(e.totalSeats || 0).toLocaleString()}석</td>
+          <td class="seat-tip-wrap">${Number(e.totalSeats || 0).toLocaleString()}석${(e.sections || []).length ? `<span class="seat-tip">${(e.sections || []).map(s => `<span>${s.name}: ${s.seats.toLocaleString()}석</span>`).join('')}</span>` : ''}</td>
           <td data-open-status="${e.eventId}"></td>
           <td>
-            <button type="button" class="btn btn-outline btn-sm" data-set-open-time="${e.eventId}">오픈 시간 설정</button>
+            <button type="button" class="btn btn-outline btn-sm" data-set-open-time="${e.eventId}">오픈 시간</button>
+            <button type="button" class="btn btn-outline btn-sm" data-set-close-time="${e.eventId}">마감 시간</button>
             <button type="button" class="btn btn-outline btn-sm" data-delete-event="${e.eventId}">삭제</button>
           </td>
         </tr>`
@@ -141,9 +353,15 @@ function refreshEventsList(container) {
           if (ev) openSetOpenTimeModal(ev, () => refreshEventsList(container));
         });
       });
+      tbody.querySelectorAll('[data-set-close-time]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const ev = eventsCache.find((x) => x.eventId === btn.dataset.setCloseTime);
+          if (ev) openSetCloseTimeModal(ev, () => refreshEventsList(container));
+        });
+      });
       tbody.querySelectorAll('[data-delete-event]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          const name = btn.closest('tr')?.children[0]?.textContent || '';
+          const name = btn.closest('tr')?.children[1]?.textContent || '';
           if (!confirm(`"${name}" 공연을 삭제할까요? (좌석 데이터도 함께 삭제됩니다)`)) return;
           btn.disabled = true;
           fetch(`/events/${btn.dataset.deleteEvent}`, { method: 'DELETE' })
@@ -252,6 +470,79 @@ function openSetOpenTimeModal(event, onSaved) {
   });
 }
 
+function applyCloseTime(eventId, ticketCloseAt, successTitle, onSaved) {
+  setEventCloseTime(eventId, ticketCloseAt)
+    .then((result) => {
+      if (result.error) {
+        showToast({ title: '마감 시간 설정 실패', body: result.error });
+        return;
+      }
+      showToast({ title: successTitle, body: result.message, type: 'success' });
+      closeModal();
+      onSaved?.();
+    })
+    .catch(() => showToast({ title: '마감 시간 설정 중 오류가 발생했습니다' }));
+}
+
+function openSetCloseTimeModal(event, onSaved) {
+  const prefill = event.ticketCloseAt
+    ? toDatetimeLocalValue(new Date(event.ticketCloseAt))
+    : toDatetimeLocalValue(new Date(Date.now() + 60 * 60000));
+
+  openModal({
+    title: `마감 시간 설정 — ${event.eventName}`,
+    bodyHtml: `
+      <div class="field">
+        <label>예매 마감 일시</label>
+        <input type="datetime-local" step="1" data-close-time-input value="${prefill}" />
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>빠른 설정 (테스트용 — 클릭 즉시 저장)</label>
+        <div class="chip-row">
+          <button type="button" class="chip-btn" data-close-preset="5m">5분 후 마감</button>
+          <button type="button" class="chip-btn" data-close-preset="30m">30분 후 마감</button>
+          <button type="button" class="chip-btn" data-close-preset="1h">1시간 후 마감</button>
+          <button type="button" class="chip-btn" data-close-preset="24h">24시간 후 마감</button>
+        </div>
+      </div>
+      ${event.ticketCloseAt ? `<p class="policy-note mt-16">현재 설정: ${new Date(event.ticketCloseAt).toLocaleString('ko-KR')}</p>` : '<p class="policy-note mt-16">현재: 마감 시간 미설정 (수동 마감)</p>'}
+    `,
+    footerHtml: `
+      <button type="button" class="btn btn-outline" data-modal-close>취소</button>
+      <button type="button" class="btn btn-outline" data-clear-close-time>마감 제한 해제</button>
+      <button type="button" class="btn btn-primary" data-save-close-time>저장</button>
+    `,
+  });
+
+  const input = document.querySelector('[data-close-time-input]');
+
+  document.querySelectorAll('[data-close-preset]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const deltaMs = { '5m': 5 * 60000, '30m': 30 * 60000, '1h': 60 * 60000, '24h': 24 * 60 * 60000 }[btn.dataset.closePreset] || 0;
+      const target = new Date(Date.now() + deltaMs);
+      input.value = toDatetimeLocalValue(target);
+      applyCloseTime(event.eventId, target.toISOString(), `마감 시간이 "${btn.textContent}"(으)로 설정되었습니다`, onSaved);
+    });
+  });
+
+  document.querySelector('[data-clear-close-time]').addEventListener('click', () => {
+    applyCloseTime(event.eventId, null, '마감 시간 제한이 해제되었습니다 (수동 마감)', onSaved);
+  });
+
+  document.querySelector('[data-save-close-time]').addEventListener('click', () => {
+    if (!input.value) {
+      showToast({ title: '마감 일시를 입력해주세요' });
+      return;
+    }
+    const target = new Date(input.value);
+    if (Number.isNaN(target.getTime())) {
+      showToast({ title: '올바른 날짜/시간을 입력해주세요' });
+      return;
+    }
+    applyCloseTime(event.eventId, target.toISOString(), '마감 시간이 설정되었습니다', onSaved);
+  });
+}
+
 function openCreateEventModal(onCreated) {
   openModal({
     title: '공연 생성',
@@ -272,8 +563,9 @@ function openCreateEventModal(onCreated) {
         <div class="field">
           <label>좌석 형태</label>
           <select name="seatingType">
-            <option value="arena">아레나 (부채꼴 좌석맵)</option>
+            <option value="arena">아레나 (직사각형 좌석맵)</option>
             <option value="standing">스탠딩 (그리드)</option>
+            <option value="theater">극장 (다층 직사각형)</option>
           </select>
         </div>
         <div class="field">
@@ -314,6 +606,11 @@ function openCreateEventModal(onCreated) {
       return;
     }
 
+    if (eventsCache.some((e) => e.eventName === eventName)) {
+      errEl.textContent = '이미 동일한 이름의 공연이 존재합니다.';
+      return;
+    }
+
     errEl.textContent = '';
     submitBtn.disabled = true;
 
@@ -341,36 +638,6 @@ function openCreateEventModal(onCreated) {
   });
 }
 
-// Validated dark-surface categorical order (see dataviz skill palette.md) — fixed
-// slot order, never cycled, so a series' color always stays tied to its identity.
-const CATEGORICAL_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
-const DASH_CONCERTS = CONCERTS.slice(0, 8);
-const CONCERT_COLOR = Object.fromEntries(DASH_CONCERTS.map((c, i) => [c.id, CATEGORICAL_DARK[i % CATEGORICAL_DARK.length]]));
-
-const POD_ROWS = [
-  { name: 'backend-counter-6b7f7dd8d4-hfbkh', ready: '1/1', status: 'Running' },
-  { name: 'backend-counter-6b7f7dd8d4-qz9pw', ready: '1/1', status: 'Running' },
-  { name: 'redis-counter-master-0', ready: '1/1', status: 'Running' },
-  { name: 'prometheus-kube-prometheus-prometheus-0', ready: '2/2', status: 'Running' },
-  { name: 'prometheus-grafana-7c9d6f9b7-2k5xs', ready: '3/3', status: 'Running' },
-];
-
-function refreshMonitorHealth(container) {
-  const badge = container.querySelector('[data-monitor-badge]');
-  if (!badge) return;
-  fetch('/api/monitor/health')
-    .then((res) => res.json().then((body) => ({ ok: res.ok, body })))
-    .then(({ ok, body }) => {
-      const up = ok && body.status === 'UP';
-      badge.className = `badge ${up ? 'badge-green' : 'badge-red'}`;
-      badge.innerHTML = `<span class="status-dot ${up ? 'status-dot--up' : 'status-dot--down'}"></span>Prometheus ${up ? 'UP' : 'DOWN'}`;
-    })
-    .catch(() => {
-      badge.className = 'badge badge-red';
-      badge.innerHTML = '<span class="status-dot status-dot--down"></span>연결 실패';
-    });
-}
-
 export const adminPage = {
   render(container) {
     if (!isAdmin()) {
@@ -379,21 +646,17 @@ export const adminPage = {
       return;
     }
 
-    DASH_CONCERTS.forEach((c) => getChatRoom(c.id));
-
     container.innerHTML = `
       <div class="container admin-topbar">
         <div>
           <div class="eyebrow">ADMIN CONSOLE</div>
-          <h2 class="section-title">모니터링 대시보드</h2>
-          <p class="section-sub">Prometheus 파이프라인 실시간 지표 패널 — backend-counter /actuator/prometheus 연동</p>
+          <h2 class="section-title">공연 관리</h2>
+          <p class="section-sub">공연 생성 · 오픈 시간 설정 · 삭제</p>
         </div>
         <div class="admin-status">
           <button type="button" class="btn btn-primary btn-sm" data-open-create-event>+ 공연 생성</button>
-          <button type="button" class="btn btn-outline btn-sm" data-random-create-event>🎲 랜덤 생성</button>
+          <button type="button" class="btn btn-outline btn-sm" data-random-create-event>📋 포스터 공연 생성</button>
 
-          <span class="badge badge-gray" data-monitor-badge><span class="status-dot"></span>확인 중...</span>
-          <span class="text-secondary" data-scrape>마지막 스크랩: 방금 전</span>
         </div>
       </div>
 
@@ -401,82 +664,9 @@ export const adminPage = {
         <div class="admin-panel admin-panel--wide">
           <div class="mchart__head"><span class="mchart__title">생성된 공연 목록</span></div>
           <table class="qtable">
-            <thead><tr><th>공연명</th><th>날짜</th><th>장소</th><th>총좌석</th><th>오픈 상태</th><th></th></tr></thead>
-            <tbody data-events-tbody><tr><td colspan="6" class="text-secondary">불러오는 중...</td></tr></tbody>
+            <thead><tr><th>No.</th><th>공연명</th><th>날짜</th><th>장소</th><th>총좌석</th><th>예매 상태</th><th></th></tr></thead>
+            <tbody data-events-tbody><tr><td colspan="7" class="text-secondary">불러오는 중...</td></tr></tbody>
           </table>
-        </div>
-        <div class="admin-panel admin-panel--wide">
-          <div class="mchart__head">
-            <span class="mchart__title">대기열 시뮬레이션</span>
-            <span class="badge badge-gray" data-sim-status>대기</span>
-          </div>
-          <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;">
-            <div class="field" style="margin-bottom:0;flex:1;min-width:150px;">
-              <label style="font-size:12px;">접속자 수</label>
-              <input type="number" data-sim-count value="100000" min="100" max="500000" step="1000" />
-            </div>
-            <div class="field" style="margin-bottom:0;flex:1;min-width:150px;">
-              <label style="font-size:12px;">멤버십 비율 (standby 중)</label>
-              <select data-sim-membership>
-                <option value="0">0% (멤버십 없음)</option>
-                <option value="0.1">10%</option>
-                <option value="0.3" selected>30%</option>
-                <option value="0.5">50%</option>
-                <option value="1">100%</option>
-              </select>
-            </div>
-            <button class="btn btn-primary btn-sm" data-sim-start style="height:42px;padding:0 24px;">시뮬레이션 실행</button>
-            <button class="btn btn-outline btn-sm" data-sim-reset style="height:42px;padding:0 16px;">초기화</button>
-          </div>
-          <div data-sim-result style="display:none;" class="notice-box"></div>
-          <div data-sim-stats></div>
-        </div>
-
-        <div class="admin-panel" data-heap></div>
-        <div class="admin-panel" data-cpu></div>
-        <div class="admin-panel" data-req></div>
-
-        <div class="admin-panel admin-panel--wide" data-viewers></div>
-        <div class="admin-panel admin-panel--wide" data-cancelpool></div>
-
-        <div class="admin-panel admin-panel--wide" style="padding-bottom:0;">
-          <div class="mchart__head">
-            <span class="mchart__title">C파트(realtime-ws) Prometheus 모니터링</span>
-            <a href="http://192.168.0.192:30091" target="_blank" class="btn btn-outline btn-sm" style="font-size:11px;padding:4px 12px;">Grafana 대시보드 열기 ↗</a>
-          </div>
-          <p class="section-sub" style="margin:2px 0 14px;">Prometheus에서 수집한 C파트 지표 (전체 Pod 합산) — 위 JVM 패널(D파트)과는 별개입니다.</p>
-        </div>
-        <div class="admin-panel" data-c-cpu></div>
-        <div class="admin-panel" data-c-mem></div>
-        <div class="admin-panel" data-c-ws></div>
-
-        <div class="admin-panel">
-          <div class="mchart__head"><span class="mchart__title">Kubernetes Pods</span><span class="badge badge-gray">${POD_ROWS.length}/${POD_ROWS.length} Ready</span></div>
-          <table class="pods-table">
-            ${POD_ROWS.map(
-              (p) => `
-              <tr>
-                <td class="pod-name">${p.name}</td>
-                <td><span class="status-dot status-dot--up"></span>${p.status}</td>
-                <td class="text-secondary">${p.ready}</td>
-              </tr>`
-            ).join('')}
-          </table>
-        </div>
-
-        <div class="admin-panel">
-          <div class="mchart__head"><span class="mchart__title">Prometheus Targets</span></div>
-          <div class="target-row">
-            <span class="target-row__name">backend-counter-service<br/><span class="text-secondary">/actuator/prometheus · 15s</span></span>
-            <span><span class="status-dot status-dot--up"></span>UP</span>
-          </div>
-          <div class="target-row">
-            <span class="target-row__name">redis-counter-master<br/><span class="text-secondary">redis_exporter · 15s</span></span>
-            <span><span class="status-dot status-dot--up"></span>UP</span>
-          </div>
-          <div class="notice-box mt-16" style="margin-top:14px;">
-            <p>jvm_memory_used_bytes, http_requests_total 등 Actuator 지표가 정상 스크랩되고 있습니다.</p>
-          </div>
         </div>
       </div>
     `;
@@ -484,266 +674,38 @@ export const adminPage = {
     refreshEventsList(container);
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
 
-    // 대기열 시뮬레이션
-    const simStartBtn = container.querySelector('[data-sim-start]');
-    const simResetBtn = container.querySelector('[data-sim-reset]');
-    const simStatus = container.querySelector('[data-sim-status]');
-    const simResult = container.querySelector('[data-sim-result]');
-    const simStats = container.querySelector('[data-sim-stats]');
-
-    function refreshQueueStats() {
-      fetch('/queue/stats')
-        .then((r) => r.json())
-        .then((s) => {
-          simStats.innerHTML = `
-            <table class="qtable" style="margin-top:8px;">
-              <thead><tr><th>총좌석</th><th>Eligible 대기</th><th>Standby 대기</th><th>입장 허용</th><th>마지막 순번</th></tr></thead>
-              <tbody><tr>
-                <td class="num-mono">${(s.totalSeats || 0).toLocaleString()}</td>
-                <td class="num-mono">${(s.eligible || 0).toLocaleString()}</td>
-                <td class="num-mono text-red">${(s.standby || 0).toLocaleString()}</td>
-                <td class="num-mono">${(s.admitted || 0).toLocaleString()}</td>
-                <td class="num-mono">${(s.lastTicket || 0).toLocaleString()}</td>
-              </tr></tbody>
-            </table>`;
-        })
-        .catch(() => { simStats.innerHTML = '<p class="text-secondary">통계 로딩 실패</p>'; });
-    }
-    refreshQueueStats();
-
-    simStartBtn.addEventListener('click', () => {
-      const count = parseInt(container.querySelector('[data-sim-count]').value, 10) || 100000;
-      const membershipRatio = parseFloat(container.querySelector('[data-sim-membership]').value) || 0;
-      simStartBtn.disabled = true;
-      simStartBtn.textContent = '실행 중...';
-      simStatus.textContent = '실행 중';
-      simStatus.className = 'badge badge-orange';
-      simResult.style.display = 'none';
-
-      fetch('/admin/queue/simulate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count, membershipRatio }),
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success) {
-            simStatus.textContent = '완료';
-            simStatus.className = 'badge badge-green';
-            simResult.style.display = 'block';
-            simResult.innerHTML = `
-              <p><strong>${data.message}</strong></p>
-              <p style="margin-top:6px;font-size:13px;color:var(--color-text-secondary);">
-                좌석 수: ${data.totalSeats.toLocaleString()}석 →
-                eligible(예매 가능): ${data.eligible.toLocaleString()}명,
-                standby(취소표 대기): ${data.standby.toLocaleString()}명,
-                멤버십 회원: ${data.memberships.toLocaleString()}명
-              </p>`;
-            showToast({ title: '시뮬레이션 완료', body: data.message, type: 'success' });
-          } else {
-            simStatus.textContent = '실패';
-            simStatus.className = 'badge badge-red';
-            simResult.style.display = 'block';
-            simResult.innerHTML = `<p class="text-red">${data.error || data.message}</p>`;
-          }
-          refreshQueueStats();
-        })
-        .catch(() => {
-          simStatus.textContent = '오류';
-          simStatus.className = 'badge badge-red';
-          showToast({ title: '시뮬레이션 실행 중 오류 발생' });
-        })
-        .finally(() => {
-          simStartBtn.disabled = false;
-          simStartBtn.textContent = '시뮬레이션 실행';
-        });
-    });
-
-    simResetBtn.addEventListener('click', () => {
-      if (!confirm('대기열 및 시뮬레이션 데이터를 모두 초기화할까요?')) return;
-      simResetBtn.disabled = true;
-      fetch('/admin/queue/reset', { method: 'POST' })
-        .then((r) => r.json())
-        .then((data) => {
-          showToast({ title: '초기화 완료', body: data.message, type: 'success' });
-          simStatus.textContent = '대기';
-          simStatus.className = 'badge badge-gray';
-          simResult.style.display = 'none';
-          refreshQueueStats();
-        })
-        .catch(() => showToast({ title: '초기화 중 오류 발생' }))
-        .finally(() => { simResetBtn.disabled = false; });
-    });
     container.querySelector('[data-open-create-event]').addEventListener('click', () => {
       openCreateEventModal(() => refreshEventsList(container));
     });
     container.querySelector('[data-random-create-event]').addEventListener('click', (e) => {
       const btn = e.currentTarget;
+      const existingNames = new Set(eventsCache.map((ev) => ev.eventName));
+      const remaining = POSTER_CONCERTS.filter((p) => !existingNames.has(p.eventName));
+      if (remaining.length === 0) {
+        showToast({ title: '모든 포스터 공연이 이미 생성되었습니다', body: `${POSTER_CONCERTS.length}개 공연 등록 완료` });
+        return;
+      }
       btn.disabled = true;
+      const saved = posterCycleIdx;
+      posterCycleIdx = POSTER_CONCERTS.indexOf(remaining[0]);
       const payload = buildRandomEventPayload();
+      posterCycleIdx = saved;
       createEvent(payload)
         .then((result) => {
           if (result.error) {
-            showToast({ title: '랜덤 생성 실패', body: result.error });
+            showToast({ title: '생성 실패', body: result.error });
             return;
           }
-          showToast({ title: '공연이 생성되었습니다', body: payload.eventName, type: 'success' });
+          showToast({ title: '공연이 생성되었습니다', body: `${payload.eventName} (남은 포스터: ${remaining.length - 1}개)`, type: 'success' });
           refreshEventsList(container);
         })
-        .catch(() => showToast({ title: '랜덤 생성 중 오류가 발생했습니다' }))
+        .catch(() => showToast({ title: '포스터 공연 생성 중 오류가 발생했습니다' }))
         .finally(() => {
           btn.disabled = false;
         });
     });
 
-    const heapChart = mountLineChart(container.querySelector('[data-heap]'), {
-      title: 'JVM Heap Memory Used (jvm_memory_used_bytes)',
-      unit: ' MB',
-    });
-    const cpuChart = mountLineChart(container.querySelector('[data-cpu]'), {
-      title: 'CPU Usage',
-      unit: '%',
-      formatValue: (v) => v.toFixed(1),
-    });
-    // C파트(realtime-ws) 전용 차트 — D파트 heapChart/cpuChart/reqChart와 별개 변수/DOM
-    const cCpuChart = mountLineChart(container.querySelector('[data-c-cpu]'), {
-      title: 'C파트 CPU Usage (process_cpu_seconds_total)',
-      unit: '%',
-      formatValue: (v) => v.toFixed(1),
-    });
-    const cMemChart = mountLineChart(container.querySelector('[data-c-mem]'), {
-      title: 'C파트 Memory (process_resident_memory_bytes)',
-      unit: ' MB',
-    });
-    const cWsChart = mountLineChart(container.querySelector('[data-c-ws]'), {
-      title: 'WebSocket 활성 연결 수 (ws_active_connections)',
-      unit: '개',
-      formatValue: (v) => v.toFixed(0),
-    });
-    const reqChart = mountLineChart(container.querySelector('[data-req]'), {
-      title: 'HTTP Request Rate',
-      unit: ' req/s',
-      formatValue: (v) => v.toFixed(1),
-    });
-
-    // /actuator/prometheus 평문 파싱 헬퍼
-    function parsePromText(text) {
-      const heap = { val: 0 };
-      const lines = text.split('\n');
-      let totalHttpCount = 0;
-      let prevTotalHttpCount = parsePromText._prevHttpCount || 0;
-      let prevTs = parsePromText._prevTs || Date.now();
-
-      for (const line of lines) {
-        if (line.startsWith('#') || !line.trim()) continue;
-        // heap: area="heap" 라벨 있는 행 합산
-        if (line.startsWith('jvm_memory_used_bytes') && line.includes('area="heap"')) {
-          const m = line.match(/\}\s+([\d.E+-]+)/);
-          if (m) heap.val += parseFloat(m[1]);
-        }
-        // cpu
-        if (line.startsWith('process_cpu_usage ')) {
-          heap.cpu = parseFloat(line.split(' ')[1]) * 100;
-        }
-        // http 요청 카운터 합산 (누적값 — rate는 이전 값과의 차이로 계산)
-        if (line.startsWith('http_server_requests_seconds_count')) {
-          const m = line.match(/\}\s+([\d.E+-]+)/);
-          if (m) totalHttpCount += parseFloat(m[1]);
-        }
-      }
-
-      const nowTs = Date.now();
-      const elapsed = (nowTs - prevTs) / 1000 || 15;
-      const reqRate = Math.max(0, (totalHttpCount - prevTotalHttpCount) / elapsed);
-      parsePromText._prevHttpCount = totalHttpCount;
-      parsePromText._prevTs = nowTs;
-
-      return {
-        heapMb: heap.val / 1024 / 1024,
-        cpuPercent: heap.cpu ?? 0,
-        reqPerSec: reqRate,
-      };
-    }
-
-    function tickMetrics() {
-      fetch('/actuator/prometheus')
-        .then((r) => r.text())
-        .then((text) => {
-          const { heapMb, cpuPercent, reqPerSec } = parsePromText(text);
-          heapChart.push(heapMb);
-          cpuChart.push(cpuPercent);
-          reqChart.push(reqPerSec);
-        })
-        .catch(() => {}); // 실패 시 차트 업데이트 건너뜀
-    }
-    tickMetrics(); // 즉시 첫 번째 호출
-    const metricsTimer = setInterval(tickMetrics, 15000);
-
-    function tickCMetrics() {
-      const queries = [
-        'rate(process_cpu_seconds_total{job="realtime-ws"}[1m])*100',
-        'sum(process_resident_memory_bytes{job="realtime-ws"})',
-        'sum(ws_active_connections{job="realtime-ws"})',
-      ];
-      Promise.all(queries.map((q) => fetch(`/prom-api/api/v1/query?query=${encodeURIComponent(q)}`).then((r) => r.json())))
-        .then(([cpuRes, memRes, wsRes]) => {
-          const cpuVals = cpuRes.data?.result || [];
-          const cpuPercent = cpuVals.reduce((s, r) => s + parseFloat(r.value[1]), 0) / (cpuVals.length || 1);
-          const memBytes = memRes.data?.result?.[0]?.value?.[1] || 0;
-          const wsConns = wsRes.data?.result?.[0]?.value?.[1] || 0;
-          cCpuChart.push(cpuPercent);
-          cMemChart.push(parseFloat(memBytes) / 1024 / 1024);
-          cWsChart.push(parseFloat(wsConns));
-        })
-        .catch(() => {});
-    }
-    tickCMetrics();
-    const cMetricsTimer = setInterval(tickCMetrics, 15000);
-
-    function renderBars() {
-      renderBarChart(container.querySelector('[data-viewers]'), {
-        title: 'Redis Counter — 콘서트별 실시간 시청자수',
-        unit: '명',
-        items: DASH_CONCERTS.map((c) => ({
-          label: c.artist,
-          value: getChatRoom(c.id).viewers,
-          color: CONCERT_COLOR[c.id],
-        })).sort((a, b) => b.value - a.value),
-      });
-
-      const poolItems = DASH_CONCERTS.map((c) => {
-        const p = ensureCancelPool(c.id);
-        return { label: c.artist, value: p.VIP + p.R + p.S, color: CONCERT_COLOR[c.id] };
-      })
-        .filter((it) => it.value > 0)
-        .sort((a, b) => b.value - a.value);
-
-      renderBarChart(container.querySelector('[data-cancelpool]'), {
-        title: '취소표 Pool 현황 (원자적 카운터 합계)',
-        unit: '매',
-        items: poolItems.length ? poolItems : [{ label: '데이터 없음', value: 0, color: 'var(--color-border)' }],
-      });
-    }
-    renderBars();
-    const barTimer = setInterval(renderBars, 3000);
-
-    refreshMonitorHealth(container);
-    const healthTimer = setInterval(() => refreshMonitorHealth(container), 15000);
-
-    let scrapeSeconds = 0;
-    const scrapeEl = container.querySelector('[data-scrape]');
-    const scrapeTimer = setInterval(() => {
-      scrapeSeconds += 1;
-      if (scrapeSeconds >= 15) scrapeSeconds = 0;
-      scrapeEl.textContent = scrapeSeconds === 0 ? '마지막 스크랩: 방금 전' : `마지막 스크랩: ${scrapeSeconds}초 전`;
-    }, 1000);
-
     return () => {
-      clearInterval(metricsTimer);
-      clearInterval(cMetricsTimer);
-      clearInterval(barTimer);
-      clearInterval(healthTimer);
-      clearInterval(scrapeTimer);
       clearInterval(openStatusTimer);
     };
   },
