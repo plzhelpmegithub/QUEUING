@@ -92,7 +92,7 @@ env:
   # --- Redis 연결 (redis.js / timerService.js) ---
   # C파트(지예님)가 realtime 네임스페이스에 배포한 Redis 마스터.
   # 대기열, 좌석 상태, 이벤트 캐시 등 실시간 데이터 저장소.
-  redisHost: "192.168.0.220"
+  redisHost: "192.168.0.192"
   redisPort: "6379"
 
   # --- MariaDB 연결 (mariadb.js) ---
@@ -125,7 +125,7 @@ env:
 # -----------------------------------------------------------------------------
 dbPasswordSecret:
   name: "mariadb-credentials"
-  key: "1"
+  key: "MARIADB_ROOT_PASSWORD"
 
 # -----------------------------------------------------------------------------
 # [리소스 제한] 파드의 CPU/메모리 할당량.
