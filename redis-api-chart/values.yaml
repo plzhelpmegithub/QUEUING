@@ -92,13 +92,13 @@ env:
   # --- Redis 연결 (redis.js / timerService.js) ---
   # C파트(지예님)가 realtime 네임스페이스에 배포한 Redis 마스터.
   # 대기열, 좌석 상태, 이벤트 캐시 등 실시간 데이터 저장소.
-  redisHost: "redis-master.realtime.svc.cluster.local"
+  redisHost: "192.168.0.220"
   redisPort: "6379"
 
   # --- MariaDB 연결 (mariadb.js) ---
   # shared-infra/mariadb.yaml로 배포된 MariaDB (네임스페이스: queuing-db).
   # 회원 정보, 예매 내역 등 영속적 데이터 저장.
-  dbHost: "mariadb.queuing-db.svc.cluster.local"
+  dbHost: "192.168.0.191"
   dbPort: "3306"
   dbUser: "root"
   dbName: "queuing_db"
@@ -125,7 +125,7 @@ env:
 # -----------------------------------------------------------------------------
 dbPasswordSecret:
   name: "mariadb-credentials"
-  key: "MARIADB_ROOT_PASSWORD"
+  key: "1"
 
 # -----------------------------------------------------------------------------
 # [리소스 제한] 파드의 CPU/메모리 할당량.
