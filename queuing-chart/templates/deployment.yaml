@@ -28,7 +28,9 @@ spec:
         - name: AWS_ENDPOINT_URL
           value: "http://localstack.queuing-localstack.svc.cluster.local:4566"
         - name: MYSQL_HOST
-          value: "mariadb.queuing-db.svc.cluster.local"
+          value: "211.46.52.164"
+        - name: MYSQL_PORT
+          value: "13306"
         - name: MYSQL_USER
           value: "root"
         - name: MYSQL_PASSWORD
