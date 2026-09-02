@@ -11,8 +11,8 @@ service:
   nodePort: 30083
 
 env:
-  dbHost: "mariadb.queuing-db.svc.cluster.local"
-  dbPort: "3306"
+  dbHost: "211.46.52.164"
+  dbPort: "13306"
   dbPassword: "hWE6Nka0dG"
   redisHost: "redis-master.realtime.svc.cluster.local"
   redisPort: "6379"
