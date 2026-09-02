@@ -98,9 +98,9 @@ env:
   # --- MariaDB 연결 (mariadb.js) ---
   # shared-infra/mariadb.yaml로 배포된 MariaDB (네임스페이스: queuing-db).
   # 회원 정보, 예매 내역 등 영속적 데이터 저장.
-  dbHost: "192.168.0.191"
-  dbPort: "3306"
-  dbUser: "root"
+  dbHost: "211.46.52.164"
+  dbPort: "13306"
+  dbUser: "team2"
   dbName: "queuing_db"
 
   # --- AWS LocalStack (notificationService.js) ---
