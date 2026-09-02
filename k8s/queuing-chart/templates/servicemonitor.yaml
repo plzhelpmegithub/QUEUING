@@ -4,7 +4,7 @@ metadata:
   name: backend-counter-monitor
   namespace: monitoring
   labels:
-    release: monitoring
+    release: prometheus
 spec:
   selector:
     matchLabels:
@@ -14,5 +14,6 @@ spec:
       - queuing-d
   endpoints:
   - port: http
+    targetPort: 8080
     path: /actuator/prometheus
     interval: 5s
