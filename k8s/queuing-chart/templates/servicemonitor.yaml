@@ -4,7 +4,7 @@ metadata:
   name: backend-counter-monitor
   namespace: monitoring
   labels:
-    release: prometheus
+    release: monitoring   # <-- 이 부분을 다시 'monitoring'으로 변경!
 spec:
   selector:
     matchLabels:
