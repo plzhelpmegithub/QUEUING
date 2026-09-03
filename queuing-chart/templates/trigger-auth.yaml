@@ -1,9 +1,12 @@
-triggers:
-  - type: aws-sqs-queue
-    metadata:
-      queueURL: "http://localstack.queuing-localstack.svc.cluster.local:4566/000000000000/resale-queue"
-      queueLength: "5"
-      awsRegion: "ap-northeast-2"
-      awsEndpoint: "http://localstack.queuing-localstack.svc.cluster.local:4566"
-    authenticationRef:
-      name: keda-aws-credentials
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-aws-credentials
+spec:
+  secretTargetRef:
+    - parameter: awsAccessKeyID
+      name: localstack-aws-secret
+      key: awsAccessKeyID
+    - parameter: awsSecretAccessKey
+      name: localstack-aws-secret
+      key: awsSecretAccessKey
