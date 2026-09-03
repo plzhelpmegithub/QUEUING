@@ -1,11 +1,11 @@
 // 홈 페이지 — 추천·인기 공연 카드, 이달의 콘서트 캘린더, 관심 공연 토글을 표시.
 
-import { formatNumber } from '../utils/format.js';
+import { formatNumber, formatPrice } from '../utils/format.js';
 import { mountCalendar } from '../components/calendar.js';
 import { buildCalendarEvents } from '../utils/calendarEvents.js';
 import { navigate } from '../router.js';
 import { isInterested, toggleInterest, subscribe } from '../state/store.js';
-import { getConcertImage } from '../data/concerts.js';
+import { getConcertImage, getTicketPriceRows } from '../data/concerts.js';
 
 function statusBadge(status) {
   if (status === 'sold_out') return `<span class="badge badge-dark-red">SOLD OUT</span>`;
@@ -156,6 +156,9 @@ export const homePage = {
         }
         grid.innerHTML = events.map((e, i) => {
           const imgUrl = getConcertImage(e.eventName || e.eventId);
+          const ticketPrices = getTicketPriceRows(e)
+            .map(({ grade, price }) => `${grade}석 ${formatPrice(price)}`)
+            .join(' · ') || '-';
           return `
           <div class="hot-card" data-id="${e.eventId}" style="animation-delay:${i * 0.07}s">
             <div class="hot-card__bg" style="background:url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})"></div>
@@ -168,7 +171,7 @@ export const homePage = {
               <div class="hot-card__detail">
                 공연장 &nbsp;${e.venue || '-'}<br/>
                 총 좌석 &nbsp;${e.totalSeats || '-'}석<br/>
-                가격 &nbsp;${e.price ? Number(e.price).toLocaleString() + '원' : '-'}
+                티켓 가격 &nbsp;${ticketPrices}
               </div>
               ${statusBadge(e.status)}
             </div>

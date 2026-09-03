@@ -4,13 +4,14 @@
 import { formatPrice, uid } from '../utils/format.js';
 import { mountCountdown } from '../components/countdown.js';
 import { mountRefundSummary } from '../components/refundPolicy.js';
-import { openModal } from '../components/modal.js';
-import { getState, clearCurrentOrder, addBooking, consumeCancelPool, clearSeatSelectTimer } from '../state/store.js';
+import { openModal, closeModal } from '../components/modal.js';
+import { getState, clearCurrentOrder, addBooking, consumeCancelPool, clearSeatSelectTimer, updateProfileOnServer } from '../state/store.js';
 import { showToast } from '../components/toast.js';
 import { navigate } from '../router.js';
 
 const CANCEL_DEADLINE_MS = 24 * 60 * 60 * 1000;
 const HOLD_MS = 8 * 60 * 1000 + 42 * 1000; // fallback if an order ever arrives without holdDeadline
+const PHONE_RE = /^01[016789]-\d{3,4}-\d{4}$/;
 
 const VBANK_BANKS = ['카카오뱅크', '국민은행', '신한은행', '우리은행', '하나은행', '토스뱅크'];
 function randDigits(n) {
@@ -23,6 +24,22 @@ function generateVirtualAccount(bank) {
     bank: bank || VBANK_BANKS[Math.floor(Math.random() * VBANK_BANKS.length)],
     number: `${randDigits(3)}-${randDigits(2)}-${randDigits(6)}`,
   };
+}
+
+function formatPhone(raw) {
+  const digits = String(raw || '').replace(/\D/g, '').slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  return `${digits.slice(0, 3)}-${digits.slice(3, digits.length === 10 ? 6 : 7)}-${digits.slice(digits.length === 10 ? 6 : 7)}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 export const paymentPage = {
@@ -124,7 +141,7 @@ export const paymentPage = {
             </div>
             <div class="field">
               <label>전화번호</label>
-              <input type="tel" data-buyer-phone placeholder="010-0000-0000" />
+              <input type="tel" data-buyer-phone placeholder="010-1234-5678" value="${formatPhone(getState().user?.phone || '')}" maxlength="13" inputmode="numeric" autocomplete="tel" />
             </div>
             <div class="field" style="margin-bottom:0;">
               <label>이메일</label>
@@ -195,6 +212,15 @@ export const paymentPage = {
     const vbankBox = container.querySelector('[data-vbank-box]');
     const vbankBankField = container.querySelector('[data-vbank-bank-field]');
     const vbankBankSelect = container.querySelector('[data-vbank-bank]');
+    const buyerPhoneInput = container.querySelector('[data-buyer-phone]');
+    buyerPhoneInput?.addEventListener('input', () => {
+      const beforeLength = buyerPhoneInput.value.length;
+      const cursorPosition = buyerPhoneInput.selectionStart ?? beforeLength;
+      buyerPhoneInput.value = formatPhone(buyerPhoneInput.value);
+      const cursorOffset = buyerPhoneInput.value.length - beforeLength;
+      const nextPosition = Math.max(0, Math.min(buyerPhoneInput.value.length, cursorPosition + cursorOffset));
+      buyerPhoneInput.setSelectionRange(nextPosition, nextPosition);
+    });
     function renderVbankBox() {
       const method = container.querySelector('input[name="pay"]:checked')?.value;
       if (method !== 'vbank') {
@@ -279,64 +305,110 @@ export const paymentPage = {
         showToast({ title: '구매자 정보를 입력해주세요', body: '이름, 전화번호, 이메일을 모두 입력해야 결제할 수 있습니다.', type: 'default' });
         return;
       }
+      if (!PHONE_RE.test(buyerPhone)) {
+        showToast({ title: '전화번호 형식을 확인해주세요', body: '010-1234-5678 형식으로 입력해주세요.', type: 'default' });
+        return;
+      }
       const method = container.querySelector('input[name="pay"]:checked')?.value || 'card';
-      const userId = getState().user?.email;
+      const userId = getState().user?.userId || getState().user?.email;
 
       payBtn.disabled = true;
 
-      // Real seats (selected through zoneSelect.js) carry an id like
-      // "evt-...:VIP-001" and were actually held via /seats/hold — confirm each
-      // one against the backend so it lands in MariaDB (one call per seat, since
-      // /seats/confirm only takes a single seatId). Seats from the mock
-      // cancel-ticket pool (cancelSeatSelect.js) aren't backend-tracked, so
-      // there's nothing to confirm there — just keep the existing local flow.
-      const realSeats = seats.filter((s) => typeof s.id === 'string' && s.id.includes(':') && !!userId);
-      const confirmCall = realSeats.length
-        ? Promise.all(
-            realSeats.map((s) =>
-              fetch('/seats/confirm', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId, seatId: s.id }),
-              }).then((r) => r.json().then((data) => ({ ok: r.ok, data })))
-            )
-          ).then((results) => results.find((r) => !r.ok || !r.data.success) || results[0])
-        : Promise.resolve({ ok: true, data: { success: true } });
+      const continueToPayment = () => {
+        // Real seats (selected through zoneSelect.js) carry an id like
+        // "evt-...:VIP-001" and were actually held via /seats/hold — confirm each
+        // one against the backend so it lands in MariaDB (one call per seat, since
+        // /seats/confirm only takes a single seatId). Seats from the mock
+        // cancel-ticket pool (cancelSeatSelect.js) aren't backend-tracked, so
+        // there's nothing to confirm there — just keep the existing local flow.
+        const realSeats = seats.filter((s) => typeof s.id === 'string' && s.id.includes(':') && !!userId);
+        const confirmCall = realSeats.length
+          ? Promise.all(
+              realSeats.map((s) =>
+                fetch('/seats/confirm', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ userId, seatId: s.id }),
+                }).then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+              )
+            ).then((results) => results.find((r) => !r.ok || !r.data.success) || results[0])
+          : Promise.resolve({ ok: true, data: { success: true } });
 
-      confirmCall
-        .then(({ ok, data }) => {
-          if (!ok || !data.success) {
+        confirmCall
+          .then(({ ok, data }) => {
+            if (!ok || !data.success) {
+              payBtn.disabled = false;
+              showToast({ title: '결제를 완료하지 못했습니다', body: data.message || '좌석 선점이 만료되었을 수 있습니다. 다시 선택해주세요.', type: 'default' });
+              return;
+            }
+
+            const bookingId = uid('A');
+            addBooking({
+              bookingId,
+              concertId: c.eventId,
+              session: order.session || null,
+              seats,
+              price: finalPrice,
+              buyer: { name: buyerName, phone: buyerPhone, email: buyerEmail },
+              status: method === 'vbank' ? 'unpaid' : 'confirmed',
+              source: type,
+              paymentMethod: method,
+              virtualAccount: method === 'vbank' ? virtualAccount : null,
+              vbankDeadline: method === 'vbank' ? Date.now() + 24 * 60 * 60 * 1000 : null,
+              paidAt: Date.now(),
+            });
+            if (type === 'cancel') {
+              consumeCancelPool(c.eventId, seats[0].grade);
+            }
+            clearCurrentOrder();
+            clearSeatSelectTimer();
+            navigate(`complete/${bookingId}`);
+          })
+          .catch(() => {
             payBtn.disabled = false;
-            showToast({ title: '결제를 완료하지 못했습니다', body: data.message || '좌석 선점이 만료되었을 수 있습니다. 다시 선택해주세요.', type: 'default' });
+            showToast({ title: '결제 요청에 실패했습니다', body: '네트워크 상태를 확인하고 다시 시도해주세요.', type: 'default' });
+          });
+      };
+
+      const savedPhone = formatPhone(getState().user?.phone || '');
+      if (savedPhone !== buyerPhone) {
+        let confirmed = false;
+        const phoneChangeModal = openModal({
+          title: '전화번호 변경 확인',
+          bodyHtml: `
+            <p style="margin-bottom:14px;">입력한 전화번호가 회원정보와 다릅니다. 이 번호를 회원정보에 저장하고 결제를 진행할까요?</p>
+            <div class="kv-row"><span>기존 전화번호</span><b>${escapeHtml(savedPhone || '미등록')}</b></div>
+            <div class="kv-row"><span>변경할 전화번호</span><b>${escapeHtml(buyerPhone)}</b></div>
+            <p class="text-secondary" style="font-size:12px;margin-top:14px;">이메일 정보는 변경하지 않습니다.</p>
+          `,
+          footerHtml: `
+            <button type="button" class="btn btn-ghost" data-modal-close>다시 입력</button>
+            <button type="button" class="btn btn-primary" data-confirm-phone-change>저장하고 결제하기</button>
+          `,
+          onClose: () => {
+            if (!confirmed) payBtn.disabled = expired || !agreeBox.checked;
+          },
+        });
+
+        phoneChangeModal.el.querySelector('[data-confirm-phone-change]')?.addEventListener('click', async (e) => {
+          const confirmButton = e.currentTarget;
+          confirmButton.disabled = true;
+          confirmButton.textContent = '저장 중...';
+          const result = await updateProfileOnServer({ phone: buyerPhone });
+          if (!result.success) {
+            confirmButton.disabled = false;
+            confirmButton.textContent = '저장하고 결제하기';
+            showToast({ title: '전화번호 저장에 실패했습니다', body: result.message || '잠시 후 다시 시도해주세요.', type: 'default' });
             return;
           }
-
-          const bookingId = uid('A');
-          addBooking({
-            bookingId,
-            concertId: c.eventId,
-            session: order.session || null,
-            seats,
-            price: finalPrice,
-            buyer: { name: buyerName, phone: buyerPhone, email: buyerEmail },
-            status: method === 'vbank' ? 'unpaid' : 'confirmed',
-            source: type,
-            paymentMethod: method,
-            virtualAccount: method === 'vbank' ? virtualAccount : null,
-            vbankDeadline: method === 'vbank' ? Date.now() + 24 * 60 * 60 * 1000 : null,
-            paidAt: Date.now(),
-          });
-          if (type === 'cancel') {
-            consumeCancelPool(c.eventId, seats[0].grade);
-          }
-          clearCurrentOrder();
-          clearSeatSelectTimer();
-          navigate(`complete/${bookingId}`);
-        })
-        .catch(() => {
-          payBtn.disabled = false;
-          showToast({ title: '결제 요청에 실패했습니다', body: '네트워크 상태를 확인하고 다시 시도해주세요.', type: 'default' });
+          confirmed = true;
+          closeModal();
+          continueToPayment();
         });
+        return;
+      }
+
+      continueToPayment();
     });
 
     return cdStop;

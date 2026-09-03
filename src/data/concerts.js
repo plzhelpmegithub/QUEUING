@@ -1,5 +1,6 @@
 // Mock concert catalogue for QUEUING
 // Poster art uses CSS gradients + mapped concert images for rich visual presentation.
+import { OLYMPIC_HALL, OLYMPIC_HALL_FLOOR_SEAT_COUNT, OLYMPIC_HALL_INTERACTIVE_TOTAL_SEATS } from './olympicHallSeats.js';
 
 function addDays(base, days) {
   const d = new Date(base);
@@ -16,6 +17,15 @@ function iso(d) {
 }
 
 const NOW = new Date();
+
+// API로 생성된 포스터 공연은 grades 배열을 저장하지 않고 section별 가격만
+// 저장할 수 있으므로, 올림픽홀 배치 계산에는 이 기본 등급표를 사용한다.
+const OLYMPIC_HALL_DEFAULT_GRADES = [
+  { key: 'VIP', name: 'VIP석', price: 198000 },
+  { key: 'R', name: 'R석', price: 154000 },
+  { key: 'S', name: 'S석', price: 121000 },
+  { key: 'A', name: 'A석', price: 88000 },
+];
 
 export const GRADIENTS = {
   crimson: 'linear-gradient(155deg,#3a0a0d 0%, #E31B23 55%, #7a0e14 100%)',
@@ -380,6 +390,27 @@ export const CONCERTS = [
     hot: true,
     views: 167432,
   },
+  {
+    id: 'aespa-2027-synk',
+    artist: 'aespa',
+    title: '2027 LIVE TOUR [MY WORLD : SYNK]',
+    dateStart: iso(addDays(NOW, 14)),
+    dateEnd: iso(addDays(NOW, 15)),
+    venue: '올림픽홀',
+    // 올림픽홀 CSV 좌석(A1~I3) + Floor석을 포함한 총 좌석 수
+    totalSeats: OLYMPIC_HALL_INTERACTIVE_TOTAL_SEATS,
+    grad: GRADIENTS.neonNight,
+    bookingOpenAt: iso(new Date(Date.now() + 30 * 1000)),
+    grades: [
+      { key: 'VIP', name: 'VIP석', price: 198000 },
+      { key: 'R', name: 'R석', price: 154000 },
+      { key: 'S', name: 'S석', price: 121000 },
+      { key: 'A', name: 'A석', price: 88000 },
+    ],
+    desc: 'aespa의 올림픽홀 단독 콘서트. MY WORLD 세계관의 완결 라이브.',
+    hot: true,
+    views: 198234,
+  },
 ];
 
 export function getConcert(id) {
@@ -560,36 +591,64 @@ function standingZoneLayout(c) {
   }));
 }
 
-export function theaterZoneLayout(c) {
-  const gradeOf = (key) => c.grades.find((g) => g.key === key) || c.grades[c.grades.length - 1];
-  // 극장 배치도 기준 고정 좌석수 (총 778석)
-  // 1F A·B(VIP, 14행×16석), C·D(R, 10행×10석), 2F 측면(S), 2F 후면+하단(A)
-  const THEATER_BLOCKS = [
-    { grade: 'VIP', count: 2, seedPerBlock: 224, labels: ['A', 'B'] },
-    { grade: 'R', count: 2, seedPerBlock: 100, labels: ['C', 'D'] },
-    { grade: 'S', count: 6, seedPerBlock: 5, labels: ['A', 'B', 'C', 'G', 'F', 'E'] },
-    { grade: 'A', count: 4, seedPerBlock: 25, labels: ['A', 'B', 'C', '3F'] },
-  ];
-  const zones = [];
-  THEATER_BLOCKS.forEach((block) => {
-    for (let i = 0; i < block.count; i++) {
-      zones.push({
-        id: `${block.grade}-${block.labels[i]}`,
-        grade: block.grade,
-        label: `${block.grade} ${block.labels[i]}구역`,
-        short: block.labels[i],
-        price: gradeOf(block.grade).price,
-        seed: block.seedPerBlock,
-        venueType: 'theater',
-      });
-    }
-  });
-  return zones;
+function olympicHallZoneLayout(c) {
+  const eventGrades = Array.isArray(c?.grades) && c.grades.length
+    ? c.grades
+    : OLYMPIC_HALL_DEFAULT_GRADES;
+  const gradeOf = (key) => eventGrades.find((g) => g.key === key) || eventGrades[eventGrades.length - 1];
+  return OLYMPIC_HALL.zones.map((z) => ({
+    id: z.id,
+    // zone.grade는 가격 등급으로 유지하고, 실제 좌석 section은 id를 사용한다.
+    // seatSelect/seatMap이 같은 구역의 좌석만 정확히 매칭할 수 있다.
+    grade: z.grade,
+    label: z.name,
+    seed: z.id === 'Floor' ? OLYMPIC_HALL_FLOOR_SEAT_COUNT : z.seats.length,
+    price: gradeOf(z.grade)?.price || c.price || 0,
+    venueType: 'olympichall',
+  }));
 }
 
 export function getVenueZoneLayout(c) {
+  if (c.venue === '올림픽홀') return olympicHallZoneLayout(c);
   if (c.seatingType === 'standing') return standingZoneLayout(c);
   if (c.seatingType === 'archall') return archallZoneLayout(c);
-  if (c.seatingType === 'theater') return theaterZoneLayout(c);
   return arenaZoneLayout(c);
+}
+
+// 공연 정보에 표시할 가격을 좌석 구역명이 아닌 티켓 등급별로 묶는다.
+// 올림픽홀 API 데이터는 실제 구역명(A1, B1...)을 section.name으로 저장하므로,
+// 로컬 좌석 배치의 등급 정보와 연결해 VIP/R/S/A 가격표로 변환한다.
+export function getTicketPriceRows(c) {
+  const sections = Array.isArray(c?.sections) ? c.sections : [];
+  const zoneById = c?.venue === '올림픽홀'
+    ? new Map(getVenueZoneLayout(c).map((zone) => [zone.id, zone]))
+    : new Map();
+  const rows = new Map();
+
+  sections.forEach((section) => {
+    const sectionId = section.id || section.name;
+    const zone = zoneById.get(sectionId);
+    const rawGrade = section.grade || zone?.grade || section.label || section.name;
+    const grade = String(rawGrade || '').replace(/석$/, '').trim();
+    if (!grade || rows.has(grade)) return;
+
+    const price = Number(section.price ?? zone?.price ?? c?.price ?? 0);
+    rows.set(grade, Number.isFinite(price) ? price : 0);
+  });
+
+  if (!rows.size && c?.price != null) {
+    rows.set('일반', Number(c.price) || 0);
+  }
+
+  const gradeOrder = ['VIP', 'R', 'S', 'A'];
+  return [...rows.entries()]
+    .sort(([a], [b]) => {
+      const aIndex = gradeOrder.indexOf(a);
+      const bIndex = gradeOrder.indexOf(b);
+      if (aIndex === -1 && bIndex === -1) return a.localeCompare(b, 'ko');
+      if (aIndex === -1) return 1;
+      if (bIndex === -1) return -1;
+      return aIndex - bIndex;
+    })
+    .map(([grade, price]) => ({ grade, price }));
 }

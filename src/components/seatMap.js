@@ -1,6 +1,8 @@
 // Interactive venue seat map — Canvas 2D rendering with grid layout.
 // Rectangular grid layout with zoom/pan, spatial-indexed hit-testing, and hover tooltips.
 
+import { OLYMPIC_HALL } from '../data/olympicHallSeats.js';
+
 const SEAT_D = 14;
 const SEAT_STEP = 20;
 const GRADE_GAP = 30;
@@ -170,239 +172,300 @@ function hideTooltip(tooltipEl) {
   tooltipEl.classList.remove('show');
 }
 
-// ── Olympic Hall layout (image-based) ─────────────────────────────
-// Canvas size matches the venue image (1991×1537 px).
-// Each block defines x, y (top-left), w, h (pixel extent) — measured from image.
-// cols/rows are computed from w/h to fill the area. Step sizes are per-block.
-const OH_W = 1991;
-const OH_H = 1537;
-const OH_SEAT_RATIO = 0.7;
-
-// Each block: { id, grade, x, y, w, h, cols, rows }
-// Coordinates measured from actual seat-colored regions in 올림픽홀.jpg.
-const OH_BLOCKS = [
-  { id: 'Floor',  grade: 'VIP', x: 525,  y: 255,  w: 635, h: 285, cols: 38, rows: 20 },
-  { id: 'A1',     grade: 'R',   x: 171,  y: 270,  w: 178, h: 125, cols: 13, rows: 10 },
-  { id: 'A2',     grade: 'R',   x: 171,  y: 430,  w: 178, h: 135, cols: 13, rows: 10 },
-  { id: 'E1',     grade: 'R',   x: 1643, y: 270,  w: 178, h: 125, cols: 13, rows: 10 },
-  { id: 'E2',     grade: 'R',   x: 1643, y: 430,  w: 178, h: 135, cols: 13, rows: 10 },
-  { id: 'G',      grade: 'R',   x: 250,  y: 225,  w: 271, h: 95,  cols: 20, rows: 6 },
-  { id: 'H',      grade: 'R',   x: 1520, y: 225,  w: 152, h: 105, cols: 12, rows: 7 },
-  { id: 'B1',     grade: 'S',   x: 270,  y: 310,  w: 270, h: 380, cols: 20, rows: 26 },
-  { id: 'D1',     grade: 'S',   x: 1380, y: 310,  w: 280, h: 380, cols: 21, rows: 26 },
-  { id: 'F1',     grade: 'S',   x: 435,  y: 535,  w: 150, h: 285, cols: 10, rows: 19 },
-  { id: 'F2',     grade: 'S',   x: 600,  y: 585,  w: 575, h: 230, cols: 30, rows: 16 },
-  { id: 'F3',     grade: 'S',   x: 1388, y: 535,  w: 72,  h: 285, cols: 5,  rows: 19 },
-  { id: 'A3',     grade: 'A',   x: 171,  y: 605,  w: 178, h: 145, cols: 13, rows: 11 },
-  { id: 'A4',     grade: 'A',   x: 171,  y: 780,  w: 178, h: 135, cols: 13, rows: 10 },
-  { id: 'E3',     grade: 'A',   x: 1643, y: 605,  w: 178, h: 145, cols: 13, rows: 11 },
-  { id: 'E4',     grade: 'A',   x: 1643, y: 780,  w: 178, h: 135, cols: 13, rows: 10 },
-  { id: 'B2',     grade: 'A',   x: 240,  y: 690,  w: 280, h: 275, cols: 21, rows: 19 },
-  { id: 'D2',     grade: 'A',   x: 1388, y: 690,  w: 330, h: 275, cols: 25, rows: 19 },
-  { id: '2F 좌',  grade: 'A',   x: 300,  y: 945,  w: 695, h: 450, cols: 38, rows: 31 },
-  { id: '2F 우',  grade: 'A',   x: 900,  y: 945,  w: 690, h: 450, cols: 38, rows: 31 },
-];
-
-function computeOlympicHallLayout(sections, seats) {
-  const secByGrade = {};
-  sections.forEach((sec) => { secByGrade[sec.grade] = sec; });
-
-  // Group seats by grade
-  const byGrade = {};
-  seats.forEach((s) => {
-    if (!byGrade[s.grade]) byGrade[s.grade] = [];
-    byGrade[s.grade].push(s);
-  });
-
-  // Group blocks by grade (preserving order)
-  const blocksByGrade = {};
-  OH_BLOCKS.forEach((b) => {
-    if (!blocksByGrade[b.grade]) blocksByGrade[b.grade] = [];
-    blocksByGrade[b.grade].push(b);
-  });
-
-  const positioned = [];
-  const zones = [];
-
-  for (const grade of Object.keys(blocksByGrade)) {
-    const gs = byGrade[grade] || [];
-    const blocks = blocksByGrade[grade];
-    const caps = blocks.map((b) => b.cols * b.rows);
-    const totalCap = caps.reduce((s, c) => s + c, 0);
-    const total = gs.length;
-
-    // Proportional allocation: floor, then distribute remainder
-    const alloc = caps.map((c) => Math.min(c, Math.floor(total * c / totalCap)));
-    let rem = total - alloc.reduce((s, c) => s + c, 0);
-    for (let i = 0; i < blocks.length && rem > 0; i++) {
-      if (alloc[i] < caps[i]) { alloc[i]++; rem--; }
-    }
-
-    let idx = 0;
-    blocks.forEach((block, bi) => {
-      const count = Math.min(alloc[bi], gs.length - idx);
-      const stepX = block.w / block.cols;
-      const stepY = block.h / block.rows;
-      for (let i = 0; i < count; i++) {
-        const s = gs[idx + i];
-        s._x = block.x + (i % block.cols) * stepX + stepX / 2;
-        s._y = block.y + Math.floor(i / block.cols) * stepY + stepY / 2;
-        s._sw = Math.max(4, stepX * OH_SEAT_RATIO);
-        s._sh = Math.max(4, stepY * OH_SEAT_RATIO);
-        s._displayNum = idx + i + 1;
-        s._block = block.id;
-        positioned.push(s);
-      }
-      idx += count;
-    });
-
-    const sec = secByGrade[grade];
-    zones.push({ grade, label: sec?.label || grade });
-  }
-
-  return { seats: positioned, zones, canvasW: OH_W, canvasH: OH_H, offsetX: 0, isOlympicHall: true, bgImageUrl: '/images/seatmaps/올림픽홀.jpg' };
-}
-
-// ── Theater layout ─────────────────────────────────────────────────
-const TH_CX = 500;
-const TH_STEP = 22;
-const TH_STAGE_W = 280;
-const TH_STAGE_H = 36;
-const TH_STAGE_TOP = 18;
-
-const TH_BLOCKS = {
-  VIP: [
-    { x: 155, y: 78, maxCols: 16, label: 'A' },
-    { x: 520, y: 78, maxCols: 16, label: 'B' },
-  ],
-  R: [
-    { x: 220, y: 400, maxCols: 10, label: 'C' },
-    { x: 565, y: 400, maxCols: 10, label: 'D' },
-  ],
-  S: [
-    { x: 42, y: 108, maxCols: 2, label: 'A' },
-    { x: 42, y: 220, maxCols: 2, label: 'B' },
-    { x: 42, y: 332, maxCols: 2, label: 'C' },
-    { x: 920, y: 108, maxCols: 2, label: 'G' },
-    { x: 920, y: 220, maxCols: 2, label: 'F' },
-    { x: 920, y: 332, maxCols: 2, label: 'E' },
-  ],
-  A: [
-    { x: 175, y: 655, maxCols: 10, label: 'A' },
-    { x: 385, y: 655, maxCols: 10, label: 'B' },
-    { x: 595, y: 655, maxCols: 10, label: 'C' },
-    { x: 315, y: 775, maxCols: 14, label: '3F' },
-  ],
+// ── Olympic Hall layout (CSV 1:1 coordinates) ───────────────────
+// CSV 좌표는 0~1000 기준의 좌석 중심점이며, 좌석배치도.png는 1426x1103이다.
+// 아래 변환은 CSV 원본을 현재 배경 이미지 좌표계로 옮기는 고정 변환이다.
+// 등급별로 합쳐서 순서 배치하지 않고, section(A1~I3)별로 CSV 배열과
+// API 좌석을 직접 대응시켜 다른 구역이 섞이거나 초과 좌석이 생기지 않게 한다.
+const OH_IMAGE_W = 1426;
+const OH_IMAGE_H = 1103;
+const OH_X_SCALE = 1.27;
+const OH_X_OFFSET = 70;
+const OH_Y_SCALE = 0.9025;
+const OH_Y_OFFSET = 1057;
+// 중심 좌표는 CSV와 일치시키고, 배경 이미지의 실제 좌석 칸(약 7x8px)을
+// 덮도록 표시 크기도 맞춘다. 같은 중심점에서 그려지므로 좌석이 옆 칸으로
+// 밀리거나 중복되어 보이지 않는다.
+const OH_SEAT_W = 7;
+const OH_SEAT_H = 8;
+const OH_CSV_ZONES = OLYMPIC_HALL.zones.filter((zone) => zone.id !== 'Floor');
+const OH_FLOOR_ZONE = OLYMPIC_HALL.zones.find((zone) => zone.id === 'Floor');
+// 배경 이미지의 초록색 Floor 영역(1426x1103 기준) 안에만 임의 좌석을 배치한다.
+// 37열 x 24행 = 888칸이므로 마지막 칸까지 채워 좌석 간 간격을 일정하게 유지한다.
+const OH_FLOOR_BOX = { x: 560, y: 180, width: 289, height: 195, cols: 37, rows: 24 };
+const OH_FLOOR_SEAT_COUNT = OH_FLOOR_BOX.cols * OH_FLOOR_BOX.rows;
+// CSV 좌석 중심점의 인접 방향을 기준으로 측정한 대각선 구역 방향.
+// Canvas는 y축이 아래로 증가하므로 CSV(y축 위 방향)의 부호를 반전했다.
+const OH_ZONE_ANGLES = {
+  // 왼쪽 B구역은 이미지의 좌석 열 방향에 맞춰 기존 각도보다 조금 완화
+  B1: (48 * Math.PI) / 180,
+  B2: (48 * Math.PI) / 180,
+  // 오른쪽 D구역은 배경 좌석열의 기울기에 맞춰 오른쪽 아래 방향으로 회전
+  D1: (-48 * Math.PI) / 180,
+  D2: (-48 * Math.PI) / 180,
 };
 
-function computeTheaterLayout(sections, seats) {
-  const gradeOrder = [];
-  const seen = new Set();
-  const secByGrade = {};
-  sections.forEach((sec, i) => {
-    if (!seen.has(sec.grade)) {
-      seen.add(sec.grade);
-      gradeOrder.push(sec.grade);
-      secByGrade[sec.grade] = { ...sec, _idx: i };
-    }
-  });
-  gradeOrder.sort((a, b) => (GRADE_PRIORITY[a] ?? 100) - (GRADE_PRIORITY[b] ?? 100));
-
-  const byGrade = {};
-  gradeOrder.forEach((g) => (byGrade[g] = []));
-  seats.forEach((s) => { if (byGrade[s.grade]) byGrade[s.grade].push(s); });
-
-  const positioned = [];
-  const zones = [];
-
-  gradeOrder.forEach((grade) => {
-    const gs = byGrade[grade];
-    if (!gs.length) return;
-    const blocks = TH_BLOCKS[grade] || [{ x: TH_CX - 100, y: 500, maxCols: 10, label: grade }];
-    const perBlock = Math.ceil(gs.length / blocks.length);
-    let idx = 0;
-
-    blocks.forEach((block) => {
-      const count = Math.min(perBlock, gs.length - idx);
-      for (let i = 0; i < count; i++) {
-        const s = gs[idx + i];
-        s._x = block.x + (i % block.maxCols) * TH_STEP;
-        s._y = block.y + Math.floor(i / block.maxCols) * TH_STEP;
-        s._displayNum = idx + i + 1;
-        positioned.push(s);
-      }
-      idx += count;
+// I1/I3는 게이트 옆의 대각선 좌석과 중앙 수평 좌석이 하나의 CSV 구역에
+// 함께 들어 있다. CSV 행 순서는 화면 배치 순서가 아니므로 번호 범위로
+// 자르면 수평 블록 일부까지 회전된다. 좌석 중심점에 가까운 수평 인접 좌석이
+// 없는 점만 대각선 블록으로 판정해 실제 모양을 유지한다.
+function findDiagonalSeatIds(coords) {
+  const diagonalIds = new Set();
+  coords.forEach((coord) => {
+    const hasHorizontalNeighbor = coords.some((other) => {
+      if (other === coord) return false;
+      const dx = Math.abs(other.x - coord.x);
+      const dy = Math.abs(other.y - coord.y);
+      return dx >= 4 && dx <= 11 && dy < 2;
     });
-
-    const sec = secByGrade[grade];
-    zones.push({ grade, label: sec?.label || grade });
+    if (!hasHorizontalNeighbor) diagonalIds.add(coord.id);
   });
-
-  let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
-  positioned.forEach((s) => {
-    if (s._x < minX) minX = s._x;
-    if (s._x > maxX) maxX = s._x;
-    if (s._y > maxY) maxY = s._y;
-  });
-
-  const PAD = 50;
-  const offsetX = PAD - minX;
-  positioned.forEach((s) => { s._x += offsetX; });
-
-  return { seats: positioned, zones, canvasW: maxX - minX + PAD * 2, canvasH: maxY + PAD * 2, offsetX, isTheater: true };
+  return diagonalIds;
 }
 
-function buildTheaterBgSvg(layout) {
-  const { canvasW, canvasH, offsetX } = layout;
-  let rowNums = '';
-  for (let r = 1; r <= 14; r++) {
-    rowNums += `<text x="${TH_CX}" y="${78 + (r - 1) * TH_STEP + 6}" text-anchor="middle" fill="#666" font-size="10" opacity="0.5">${r}</text>`;
+// 같은 좌석열에 속한 좌석 중심점의 미세한 추출 오차를 제거한다.
+// 원본 좌표의 소수점 흔들림만 합치고, 실제 통로 간격은 별도 선으로 유지한다.
+function clusterCoordinateLines(values, tolerance = 1.5) {
+  const sorted = values
+    .map((value, index) => ({ value, index }))
+    .sort((a, b) => a.value - b.value);
+  const groups = [];
+
+  sorted.forEach((point) => {
+    const current = groups[groups.length - 1];
+    if (!current || point.value - current.mean > tolerance) {
+      groups.push({ mean: point.value, points: [point] });
+      return;
+    }
+    current.points.push(point);
+    current.mean = current.points.reduce((sum, item) => sum + item.value, 0) / current.points.length;
+  });
+
+  const snapped = new Array(values.length);
+  groups.forEach((group) => {
+    group.points.forEach((point) => {
+      snapped[point.index] = group.mean;
+    });
+  });
+  return snapped;
+}
+
+function olympicCanvasPoint(coord) {
+  return {
+    x: coord.x * OH_X_SCALE + OH_X_OFFSET,
+    y: OH_Y_OFFSET - coord.y * OH_Y_SCALE,
+  };
+}
+
+function getOlympicSeatAngle(zoneId, coord, diagonalSeatIds) {
+  // I1-76은 I1-65와 같은 대각선 열에 있지만 수평 이웃 좌석 때문에
+  // 자동 판정에서 제외되므로 명시적으로 같은 각도를 적용한다.
+  if (zoneId === 'I1' && (coord.id === 'I1-76' || diagonalSeatIds?.has(coord.id))) {
+    return OH_ZONE_ANGLES.B1;
   }
-  for (let r = 1; r <= 10; r++) {
-    rowNums += `<text x="208" y="${400 + (r - 1) * TH_STEP + 6}" text-anchor="end" fill="#666" font-size="9" opacity="0.4">${r}</text>`;
+  if (zoneId === 'I3' && diagonalSeatIds?.has(coord.id)) return OH_ZONE_ANGLES.D1;
+  return OH_ZONE_ANGLES[zoneId] || 0;
+}
+
+function getEvenFloorPoint(index, count) {
+  const { x, y, width, height, cols, rows } = OH_FLOOR_BOX;
+  const stepX = width / cols;
+  const stepY = height / rows;
+  const baseCols = Math.floor(count / rows);
+  const extraRows = count % rows;
+  let cursor = 0;
+
+  for (let row = 0; row < rows; row++) {
+    const rowCols = Math.min(cols, baseCols + (row < extraRows ? 1 : 0));
+    if (index < cursor + rowCols) {
+      const col = index - cursor;
+      const rowOffset = (cols - rowCols) * stepX / 2;
+      return {
+        x: x + rowOffset + (col + 0.5) * stepX,
+        y: y + (row + 0.5) * stepY,
+      };
+    }
+    cursor += rowCols;
   }
-  for (let r = 1; r <= 10; r++) {
-    rowNums += `<text x="776" y="${400 + (r - 1) * TH_STEP + 6}" text-anchor="start" fill="#666" font-size="9" opacity="0.4">${r}</text>`;
+  return { x: x + width / 2, y: y + height / 2 };
+}
+
+// 구역별 1번 좌석을 기준으로 좌석열을 정렬한다.
+// B/D 및 I1/I3의 대각선 좌석은 먼저 해당 각도의 로컬 좌표로 펼친 뒤
+// 같은 행·열 중심선을 맞추고 다시 원래 방향으로 돌려놓는다.
+function normalizeOlympicZoneCoordinates(csvZone, diagonalSeatIds) {
+  const groups = new Map();
+  csvZone.seats.forEach((coord, index) => {
+    const angle = getOlympicSeatAngle(csvZone.id, coord, diagonalSeatIds);
+    if (!groups.has(angle)) groups.set(angle, []);
+    groups.get(angle).push({ coord, index });
+  });
+
+  const normalized = new Map();
+  groups.forEach((entries, angle) => {
+    const origin = olympicCanvasPoint(entries[0].coord);
+    const c = Math.cos(-angle);
+    const s = Math.sin(-angle);
+    const local = entries.map(({ coord }) => {
+      const point = olympicCanvasPoint(coord);
+      const dx = point.x - origin.x;
+      const dy = point.y - origin.y;
+      return {
+        u: dx * c - dy * s,
+        v: dx * s + dy * c,
+      };
+    });
+    const tol = angle !== 0 ? 3.0 : 1.5;
+    const snappedU = clusterCoordinateLines(local.map((point) => point.u), tol);
+    const snappedV = clusterCoordinateLines(local.map((point) => point.v), tol);
+    const anchorU = snappedU[0];
+    const anchorV = snappedV[0];
+
+    entries.forEach(({ coord }, index) => {
+      const u = snappedU[index] - anchorU;
+      const v = snappedV[index] - anchorV;
+      normalized.set(coord.id, {
+        x: origin.x + u * c + v * s,
+        y: origin.y - u * s + v * c,
+        angle,
+      });
+    });
+  });
+  return normalized;
+}
+
+function computeOlympicHallLayout(sections, seats) {
+  const bySection = {};
+  seats.forEach((seat) => {
+    const sectionId = seat.section || seat.grade;
+    if (!bySection[sectionId]) bySection[sectionId] = [];
+    bySection[sectionId].push(seat);
+  });
+
+  const positioned = [];
+  const zoneLabels = [];
+  const zones = [];
+  let unmatchedSeatCount = 0;
+
+  OH_CSV_ZONES.forEach((csvZone) => {
+    const apiSeats = bySection[csvZone.id] || [];
+    // API 배열 순서가 바뀌거나 좌석 하나가 삭제되어도 이후 좌석이
+    // 한 칸씩 밀리지 않도록 좌석 번호로 좌표를 매칭한다.
+    const coordsByNumber = new Map(
+      csvZone.seats.map((coord) => {
+        const match = coord.id.match(/-(\d+)$/);
+        return [match ? Number(match[1]) : null, coord];
+      }),
+    );
+    const diagonalSeatIds = csvZone.id === 'I1' || csvZone.id === 'I3'
+      ? findDiagonalSeatIds(csvZone.seats)
+      : null;
+    // 좌석 에디터와 동일한 좌표계를 사용한다.
+    // 예전에는 대각선 구역을 다시 회전시켜 행/열을 스냅했지만,
+    // 에디터에서 이미 최종 좌표를 정렬하므로 이 단계에서 재보정하면
+    // B1/B2/D1/D2 및 I1/I3 좌석이 다시 어긋난다.
+    const normalizedCoords = new Map(
+      csvZone.seats.map((coord) => {
+        const point = olympicCanvasPoint(coord);
+        return [coord.id, {
+          x: point.x,
+          y: point.y,
+          angle: getOlympicSeatAngle(csvZone.id, coord, diagonalSeatIds),
+        }];
+      }),
+    );
+    let sx = 0;
+    let sy = 0;
+
+    let positionedCount = 0;
+    for (let i = 0; i < apiSeats.length; i++) {
+      const seat = apiSeats[i];
+      const seatId = String(seat.id || seat.seatId || '');
+      const numberMatch = seatId.match(/-(\d+)$/);
+      const seatNumber = numberMatch ? Number(numberMatch[1]) : i + 1;
+      const coord = coordsByNumber.get(seatNumber);
+      // 좌표 데이터에서 삭제된 좌석은 화면에도 표시하지 않는다.
+      if (!coord) continue;
+      const normalized = normalizedCoords.get(coord.id) || olympicCanvasPoint(coord);
+      seat._x = normalized.x;
+      seat._y = normalized.y;
+      seat._sw = OH_SEAT_W;
+      seat._sh = OH_SEAT_H;
+      seat._angle = normalized.angle ?? getOlympicSeatAngle(csvZone.id, coord, diagonalSeatIds);
+      seat._displayNum = seatNumber;
+      seat._block = csvZone.id;
+      positioned.push(seat);
+      positionedCount += 1;
+      sx += seat._x;
+      sy += seat._y;
+    }
+
+    // 좌석 수가 CSV보다 큰 경우 초과분은 임의 좌표로 만들지 않고 제외한다.
+    // 생성 로직이 CSV 개수와 동일하므로 정상 생성에서는 항상 0이다.
+    unmatchedSeatCount += Math.max(0, apiSeats.length - positionedCount);
+    if (positionedCount > 0) zoneLabels.push({ id: csvZone.id, x: sx / positionedCount, y: sy / positionedCount });
+
+    const section = sections.find((item) => item.id === csvZone.id || item.grade === csvZone.id);
+    zones.push({ id: csvZone.id, grade: csvZone.grade, label: section?.label || csvZone.name });
+  });
+
+  // Floor석은 원본 CSV 좌표 대신 배경 이미지의 초록색 영역 안에 균일한
+  // 격자로 배치한다. API에서 생성된 Floor 좌석 수만큼만 렌더링한다.
+  const floorApiSeats = bySection.Floor || [];
+  const floorLimit = OH_FLOOR_SEAT_COUNT;
+  const floorCount = Math.min(floorApiSeats.length, floorLimit);
+  for (let i = 0; i < floorCount; i++) {
+    const seat = floorApiSeats[i];
+    const point = getEvenFloorPoint(i, floorCount);
+    seat._x = point.x;
+    seat._y = point.y;
+    seat._sw = OH_SEAT_W;
+    seat._sh = OH_SEAT_H;
+    seat._angle = 0;
+    seat._displayNum = i + 1;
+    seat._block = 'Floor';
+    positioned.push(seat);
   }
+  unmatchedSeatCount += Math.max(0, floorApiSeats.length - floorLimit);
+  if (floorCount > 0) {
+    zoneLabels.push({
+      id: 'Floor',
+      x: OH_FLOOR_BOX.x + OH_FLOOR_BOX.width / 2,
+      y: OH_FLOOR_BOX.y + OH_FLOOR_BOX.height / 2,
+    });
+    const floorSection = sections.find((item) => item.id === 'Floor' || item.grade === 'Floor');
+    zones.push({ id: 'Floor', grade: OH_FLOOR_ZONE?.grade || 'VIP', label: floorSection?.label || 'Floor 구역' });
+  }
+
+  // 새 CSV 방식으로 생성된 공연은 아래 수가 0이어야 한다. 이 값은 화면에
+  // 임의 좌석을 추가하기 위한 것이 아니라, 잘못된 예전 데이터 진단용이다.
+  if (unmatchedSeatCount) {
+    console.warn(`[SeatMap] CSV 좌표가 없는 올림픽홀 좌석 ${unmatchedSeatCount}개는 렌더링하지 않습니다.`);
+  }
+
+  return {
+    seats: positioned,
+    zones,
+    canvasW: OH_IMAGE_W,
+    canvasH: OH_IMAGE_H,
+    offsetX: 0,
+    isOlympicHall: true,
+    // 정적 배치도의 보라색 좌석은 숨기고, 인터랙티브 좌석만 표시한다.
+    bgImageUrl: '/images/seatmaps/올림픽홀-interactive-bg.png',
+    zoneLabels,
+  };
+}
+
+function buildOlympicHallBgSvg(layout) {
+  const { canvasW, canvasH, stageX, stageY, stageW, stageH, zoneLabels } = layout;
+  const labels = (zoneLabels || []).map((z) =>
+    `<text x="${z.x}" y="${z.y}" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="800" fill="#555" opacity="0.5">${z.id}</text>`
+  ).join('');
   return `<svg width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}" xmlns="http://www.w3.org/2000/svg">
-    <defs><linearGradient id="stg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#444"/><stop offset="100%" stop-color="#181818"/></linearGradient></defs>
-    <g transform="translate(${offsetX},0)">
-      <rect x="${TH_CX - TH_STAGE_W / 2}" y="${TH_STAGE_TOP}" width="${TH_STAGE_W}" height="${TH_STAGE_H}" rx="6" fill="url(#stg)"/>
-      <text x="${TH_CX}" y="${TH_STAGE_TOP + TH_STAGE_H / 2 + 5}" text-anchor="middle" fill="#fff" font-size="13" font-weight="800" letter-spacing="3">STAGE</text>
-
-      <rect x="130" y="60" width="740" height="555" rx="14" fill="none" stroke="#444" stroke-opacity="0.18"/>
-
-      <text x="320" y="68" text-anchor="middle" fill="#888" font-size="16" font-weight="700">A</text>
-      <text x="685" y="68" text-anchor="middle" fill="#888" font-size="16" font-weight="700">B</text>
-      <text x="320" y="390" text-anchor="middle" fill="#888" font-size="14" font-weight="700">C</text>
-      <text x="664" y="390" text-anchor="middle" fill="#888" font-size="14" font-weight="700">D</text>
-      ${rowNums}
-
-      <rect x="${TH_CX - 57}" y="487" width="114" height="28" rx="4" fill="#333" fill-opacity="0.3" stroke="#555" stroke-opacity="0.3"/>
-      <text x="${TH_CX}" y="506" text-anchor="middle" fill="#888" font-size="11" font-weight="600">F.O.H</text>
-
-      <text x="${TH_CX}" y="610" text-anchor="middle" fill="#666" font-size="15" font-weight="700" opacity="0.5">1F</text>
-      <line x1="140" y1="618" x2="860" y2="618" stroke="#555" stroke-opacity="0.25" stroke-dasharray="5"/>
-
-      <text x="65" y="88" text-anchor="middle" fill="#666" font-size="14" font-weight="700" opacity="0.5">2F</text>
-      <text x="935" y="88" text-anchor="middle" fill="#666" font-size="14" font-weight="700" opacity="0.5">2F</text>
-      <rect x="30" y="95" width="70" height="310" rx="6" fill="none" stroke="#444" stroke-opacity="0.15"/>
-      <rect x="905" y="95" width="70" height="310" rx="6" fill="none" stroke="#444" stroke-opacity="0.15"/>
-      <text x="65" y="102" text-anchor="middle" fill="#777" font-size="12" font-weight="600">A</text>
-      <text x="65" y="214" text-anchor="middle" fill="#777" font-size="12" font-weight="600">B</text>
-      <text x="65" y="326" text-anchor="middle" fill="#777" font-size="12" font-weight="600">C</text>
-      <text x="935" y="102" text-anchor="middle" fill="#777" font-size="12" font-weight="600">G</text>
-      <text x="935" y="214" text-anchor="middle" fill="#777" font-size="12" font-weight="600">F</text>
-      <text x="935" y="326" text-anchor="middle" fill="#777" font-size="12" font-weight="600">E</text>
-
-      <text x="${TH_CX}" y="640" text-anchor="middle" fill="#666" font-size="15" font-weight="700" opacity="0.5">2F</text>
-      <text x="275" y="647" text-anchor="middle" fill="#777" font-size="13" font-weight="600">A</text>
-      <text x="485" y="647" text-anchor="middle" fill="#777" font-size="13" font-weight="600">B</text>
-      <text x="695" y="647" text-anchor="middle" fill="#777" font-size="13" font-weight="600">C</text>
-
-      <line x1="250" y1="755" x2="750" y2="755" stroke="#555" stroke-opacity="0.15"/>
-      <text x="${TH_CX}" y="768" text-anchor="middle" fill="#666" font-size="15" font-weight="700" opacity="0.5">3F</text>
-    </g>
+    <defs><linearGradient id="ohstg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#e74c3c"/><stop offset="100%" stop-color="#c0392b"/></linearGradient></defs>
+    <rect x="${stageX}" y="${stageY}" width="${stageW}" height="${stageH}" rx="8" fill="url(#ohstg)"/>
+    <text x="${stageX + stageW / 2}" y="${stageY + stageH / 2 + 5}" text-anchor="middle" fill="#fff" font-size="20" font-weight="800" letter-spacing="6">S T A G E</text>
+    ${labels}
   </svg>`;
 }
 
@@ -440,12 +503,9 @@ function findSeatAtLayout(grid, layoutSeats, lx, ly) {
 }
 
 // ── Mount (Canvas 2D) ──────────────────────────────────────────────
-export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = false, readOnly = false, seatingType, venue }) {
-  const isTheater = seatingType === 'theater';
+export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = false, readOnly = false, venue }) {
   const isOlympicHall = venue === '올림픽홀';
-  const layout = isOlympicHall ? computeOlympicHallLayout(sections, seats)
-    : isTheater ? computeTheaterLayout(sections, seats)
-    : computeLayout(sections, seats);
+  const layout = isOlympicHall ? computeOlympicHallLayout(sections, seats) : computeLayout(sections, seats);
   const idToSeat = new Map();
   seats.forEach((s) => idToSeat.set(s.id, s));
 
@@ -465,7 +525,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   const gradeColorMap = Object.fromEntries(sections.map((s) => [s.grade, s.color || SEAT_FILL]));
 
   const statusChips = readOnly
-    ? `<span class="vm-legend__item"><span class="vm-legend__dot" style="background:${SEAT_FILL};border-color:${SEAT_BORDER}"></span>보유 좌석</span>`
+    ? `<span class="vm-legend__item"><span class="vm-legend__dot" style="background:${SEAT_FILL};border-color:${SEAT_BORDER}"></span>좌석 배치도</span>`
     : `<span class="vm-legend__item">선택 가능 (구역별 색상은 우측 목록 참고)</span>
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:var(--color-primary);border-color:var(--color-primary-dark)"></span>내 좌석</span>
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:#F0A030;border-color:#C88010"></span>선택중</span>
@@ -498,7 +558,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   if (layout.bgImageUrl) {
     bgImg.src = layout.bgImageUrl;
   } else {
-    const svgStr = isTheater ? buildTheaterBgSvg(layout) : buildBgSvg(layout);
+    const svgStr = isOlympicHall ? buildOlympicHallBgSvg(layout) : buildBgSvg(layout);
     bgImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
   }
 
@@ -515,6 +575,8 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   let holdingPhase = 0;
   let animRunning = false;
   let destroyed = false;
+
+  const seatLodThreshold = layout.isOlympicHall ? 0.12 : SEAT_LOD_ZOOM_THRESHOLD;
 
   const zoomMin = Math.min(ZOOM_MIN, Math.min(
     viewport.clientWidth / layout.canvasW,
@@ -556,11 +618,11 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
 
     // LOD: 모든 공연장 레이아웃에서 기준 배율 미만이면 개별 좌석을 완전히 숨깁니다.
     // 선택 상태는 seat 객체에 계속 보존되므로 다시 확대하면 선택 좌석도 유지됩니다.
-    const showSeats = state.scale >= SEAT_LOD_ZOOM_THRESHOLD;
+    const showSeats = state.scale >= seatLodThreshold;
     const seatAlphaBase = showSeats ? 1 : 0;
 
     // Zoom hint overlay when seats are hidden
-    if (layout.bgImageUrl && !showSeats) {
+    if (layout.isOlympicHall && !showSeats) {
       ctx.save();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       const bw = 340, bh = 46;
@@ -587,7 +649,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     }
 
     // Classify seats by visual state
-    const isOH = !!layout.bgImageUrl;
+    const isOH = !!layout.isOlympicHall;
     const availArr = [];
     const soldArr = [];
     const holdArr = [];
@@ -614,29 +676,35 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     if (showSeats) {
 
     if (isOH) {
-      // ── Olympic Hall: uniform purple rectangles (per-seat size) ──
+      // ── Olympic Hall: uniform purple circles (per-seat size) ──
+      const drawOHCircle = (seat, fill, stroke, lineWidth, size = 1) => {
+        const sw = (seat._sw || OH_SEAT_W) * size;
+        const sh = (seat._sh || OH_SEAT_H) * size;
+        const radius = Math.min(sw, sh) / 2;
+        ctx.save();
+        ctx.translate(seat._x, seat._y);
+        ctx.rotate(seat._angle || 0);
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      };
+
       // Available
-      ctx.fillStyle = hexToRgba(SEAT_FILL, 0.28);
-      ctx.strokeStyle = SEAT_FILL;
-      ctx.lineWidth = 0.8;
       for (let i = 0; i < availArr.length; i++) {
-        const s = availArr[i];
-        const sw2 = s._sw || 10, sh2 = s._sh || 10;
-        ctx.fillRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
-        ctx.strokeRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+        // 보라색 계열은 유지하되, 배경은 연하게 표시한다.
+        drawOHCircle(availArr[i], hexToRgba(SEAT_FILL, 0.2), hexToRgba(SEAT_BORDER, 0.9), 1);
       }
 
       // Sold
       if (soldArr.length) {
         ctx.globalAlpha = 0.5;
-        ctx.fillStyle = '#BCBCBC';
-        ctx.strokeStyle = '#999';
-        ctx.lineWidth = 0.8;
         for (let i = 0; i < soldArr.length; i++) {
-          const s = soldArr[i];
-          const sw2 = s._sw || 10, sh2 = s._sh || 10;
-          ctx.fillRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
-          ctx.strokeRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+          drawOHCircle(soldArr[i], '#BCBCBC', '#999', 2);
         }
         ctx.globalAlpha = 1;
       }
@@ -644,14 +712,8 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
       // Holding (pulse)
       if (holdArr.length) {
         ctx.globalAlpha = 0.55 + 0.45 * Math.abs(Math.sin(holdingPhase));
-        ctx.fillStyle = '#F0A030';
-        ctx.strokeStyle = '#C88010';
-        ctx.lineWidth = 0.8;
         for (let i = 0; i < holdArr.length; i++) {
-          const s = holdArr[i];
-          const sw2 = s._sw || 10, sh2 = s._sh || 10;
-          ctx.fillRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
-          ctx.strokeRect(s._x - sw2 / 2, s._y - sh2 / 2, sw2, sh2);
+          drawOHCircle(holdArr[i], '#F0A030', '#C88010', 2);
         }
         ctx.globalAlpha = 1;
       }
@@ -659,28 +721,34 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
       // Mine — larger rect with glow + checkmark
       for (let i = 0; i < mineArr.length; i++) {
         const s = mineArr[i];
-        const sw2 = s._sw || 10, sh2 = s._sh || 10;
-        const mw = sw2 * 1.7, mh = sh2 * 1.7;
+        const sw2 = s._sw || OH_SEAT_W, sh2 = s._sh || OH_SEAT_H;
+        const md = Math.min(sw2, sh2) * 1.7;
         ctx.save();
+        ctx.translate(s._x, s._y);
+        ctx.rotate(s._angle || 0);
         ctx.shadowColor = 'rgba(0,0,0,0.3)';
         ctx.shadowBlur = 8;
         ctx.fillStyle = '#fff';
-        ctx.fillRect(s._x - mw / 2 - 2, s._y - mh / 2 - 2, mw + 4, mh + 4);
+        ctx.beginPath();
+        ctx.arc(0, 0, md / 2 + 2, 0, Math.PI * 2);
+        ctx.fill();
         ctx.shadowBlur = 0;
         ctx.fillStyle = SEAT_FILL;
-        ctx.fillRect(s._x - mw / 2, s._y - mh / 2, mw, mh);
+        ctx.beginPath();
+        ctx.arc(0, 0, md / 2, 0, Math.PI * 2);
+        ctx.fill();
         ctx.strokeStyle = 'rgba(255,255,255,0.7)';
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(s._x - mw / 2, s._y - mh / 2, mw, mh);
-        const cs = mh * 0.3;
+        ctx.stroke();
+        const cs = md * 0.3;
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1.8;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.beginPath();
-        ctx.moveTo(s._x - cs * 0.5, s._y);
-        ctx.lineTo(s._x - cs * 0.1, s._y + cs * 0.5);
-        ctx.lineTo(s._x + cs * 0.6, s._y - cs * 0.4);
+        ctx.moveTo(-cs * 0.5, 0);
+        ctx.lineTo(-cs * 0.1, cs * 0.5);
+        ctx.lineTo(cs * 0.6, -cs * 0.4);
         ctx.stroke();
         ctx.restore();
       }
@@ -782,14 +850,16 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
         ctx.save();
         if (isOH) {
           const hw = (hoveredSeat._sw || 10) + 2, hh = (hoveredSeat._sh || 10) + 2;
+          ctx.translate(hoveredSeat._x, hoveredSeat._y);
+          ctx.rotate(hoveredSeat._angle || 0);
           ctx.shadowColor = 'rgba(0,0,0,0.2)';
           ctx.shadowBlur = 6;
           ctx.fillStyle = hexToRgba(SEAT_FILL, 0.5);
-          ctx.fillRect(hoveredSeat._x - hw / 2, hoveredSeat._y - hh / 2, hw, hh);
+          ctx.fillRect(-hw / 2, -hh / 2, hw, hh);
           ctx.shadowBlur = 0;
           ctx.strokeStyle = hexToRgba(SEAT_FILL, 0.9);
           ctx.lineWidth = 1.5;
-          ctx.strokeRect(hoveredSeat._x - hw / 2 - 1, hoveredSeat._y - hh / 2 - 1, hw + 2, hh + 2);
+          ctx.strokeRect(-hw / 2 - 1, -hh / 2 - 1, hw + 2, hh + 2);
         } else {
           const color = gradeColorMap[hoveredSeat.grade] || SEAT_FILL;
           ctx.shadowColor = 'rgba(0,0,0,0.2)';
@@ -902,7 +972,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     const rect = viewport.getBoundingClientRect();
     const lp = viewportToLayout(e.clientX - rect.left, e.clientY - rect.top);
     // 축소 상태에서는 좌석 hit-test 자체를 하지 않아 클릭 선택을 차단합니다.
-    downSeat = state.scale >= SEAT_LOD_ZOOM_THRESHOLD
+    downSeat = state.scale >= seatLodThreshold
       ? findSeatAtLayout(grid, layout.seats, lp.x, lp.y)
       : null;
 
@@ -917,7 +987,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   viewport.addEventListener('pointermove', (e) => {
     if (!dragging) {
       // Hover detection — only when seats are visible
-      const seatsVis = state.scale >= SEAT_LOD_ZOOM_THRESHOLD;
+      const seatsVis = state.scale >= seatLodThreshold;
       const rect = viewport.getBoundingClientRect();
       const lp = viewportToLayout(e.clientX - rect.left, e.clientY - rect.top);
       const hit = seatsVis ? findSeatAtLayout(grid, layout.seats, lp.x, lp.y) : null;
@@ -926,7 +996,8 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
         hoveredSeat = hit;
         if (hit) {
           const seatData = idToSeat.get(hit.id);
-          const sec = sections.find((s) => s.grade === (seatData?.grade || hit.grade));
+          const sec = sections.find((s) => s.id === (seatData?.section || hit._block))
+            || sections.find((s) => s.grade === (seatData?.grade || hit.grade));
           showTooltip(tooltipEl, e, { ...hit, ...seatData }, sec?.label);
           const st = seatData?.status;
           viewport.style.cursor = st === 'sold' ? 'not-allowed' : st === 'holding' ? 'wait' : 'pointer';
@@ -954,7 +1025,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   });
 
   const endDrag = () => {
-    const seatsVisible = state.scale >= SEAT_LOD_ZOOM_THRESHOLD;
+    const seatsVisible = state.scale >= seatLodThreshold;
     if (!readOnly && dragging && !dragMoved && downSeat && seatsVisible) {
       const seatData = idToSeat.get(downSeat.id);
       const st = seatData ? seatData.status : 'available';
@@ -1037,7 +1108,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
       requestAnimationFrame(step);
     },
     scrollToZone(zoneId) {
-      const zoneSeats = layout.seats.filter((s) => s.grade === zoneId);
+      const zoneSeats = layout.seats.filter((s) => s._block === zoneId || s.section === zoneId || s.grade === zoneId);
       if (!zoneSeats.length) return;
       let sumX = 0, sumY = 0;
       zoneSeats.forEach((s) => { sumX += s._x; sumY += s._y; });

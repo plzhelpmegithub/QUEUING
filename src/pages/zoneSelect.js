@@ -18,7 +18,7 @@ import { showSoldOutModal } from '../components/soldOutModal.js';
 import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { connectSeats } from '../services/realtimeIntegration.js';
-import { generateEventSessions, formatStoredSessions } from '../data/concerts.js';
+import { generateEventSessions, formatStoredSessions, getVenueZoneLayout } from '../data/concerts.js';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
@@ -37,7 +37,7 @@ function formatSessionLabel(session, eventDate) {
 }
 
 function zoneColor(z, i) {
-  return z.color || GRADE_COLOR[z.name] || FALLBACK_PALETTE[i % FALLBACK_PALETTE.length];
+  return z.color || GRADE_COLOR[z.grade] || GRADE_COLOR[z.name] || FALLBACK_PALETTE[i % FALLBACK_PALETTE.length];
 }
 
 // Releases a held-but-unpaid seat back to the backend — fire-and-forget, since
@@ -72,7 +72,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
 
   Promise.all([
     fetch('/events').then((r) => r.json()),
-    fetch('/seats').then((r) => r.json()),
+    fetch(`/seats?eventId=${encodeURIComponent(eventId)}`).then((r) => r.json()),
   ])
     .then(([eventsData, seatsData]) => {
       if (destroyed) return;
@@ -83,7 +83,28 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       }
 
       const allSeats = seatsData.seats || [];
-      const layout = (c.sections || []).length ? c.sections : [{ name: 'A', seats: c.totalSeats, price: c.price }];
+      const storedLayout = (c.sections || []).length
+        ? c.sections
+        : [{ name: 'A', seats: c.totalSeats, price: c.price }];
+      const olympicGradeByZone = c.venue === '올림픽홀'
+        ? new Map(getVenueZoneLayout(c).map((z) => [z.id, z]))
+        : new Map();
+      // 올림픽홀 이벤트의 API section은 실제 구역명(A1, B1...)이고,
+      // 등급은 좌석 배치 데이터의 grade(S/R/A/VIP)에서 가져온다.
+      // 두 값을 분리해 두어 구역별 가격·등급이 섞이지 않게 한다.
+      const layout = c.venue === '올림픽홀'
+        ? storedLayout.map((z) => {
+          const zoneId = z.name || z.id;
+          const mapped = olympicGradeByZone.get(zoneId);
+          return {
+            ...z,
+            id: zoneId,
+            name: zoneId,
+            grade: mapped?.grade || z.grade || zoneId,
+            label: mapped?.label || z.label || `${zoneId}구역`,
+          };
+        })
+        : storedLayout;
       let session = getSelectedSession(c.eventId);
       const eventSessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
 
@@ -145,23 +166,32 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
 
       layout.forEach((z, i) => {
         const zoneSeats = allSeats.filter((s) => s.section === z.name && belongsToThisEvent(s));
-        const available = zoneSeats.filter((s) => s.status === 'available');
+        const available = zoneSeats.filter((s) => s.status === 'AVAILABLE');
         totalAvailable += available.length;
         const color = zoneColor(z, i);
-        zoneMeta[z.name] = { label: `${z.name}구역`, price: Number(available[0]?.price || z.price || c.price) || 0, color };
+        const zoneLabel = c.venue === '올림픽홀' && z.grade
+          ? `${z.name}구역 · ${z.grade}석`
+          : `${z.name}구역`;
+        zoneMeta[z.name] = {
+          label: zoneLabel,
+          grade: z.grade || z.name,
+          price: Number(available[0]?.price || z.price || c.price) || 0,
+          color,
+        };
         if (zoneSeats.length === 0) return;
-        sections.push({ id: z.name, label: `${z.name}구역`, grade: z.name, zone: c.eventName, cols: zoneSeats.length, color });
+        sections.push({ id: z.name, label: zoneLabel, grade: z.grade || z.name, zone: c.eventName, cols: zoneSeats.length, color });
         zoneSeats.forEach((s, idx) => {
           const bareId = s.seatId.includes(':') ? s.seatId.split(':').pop() : s.seatId;
           let status = 'available';
-          if (s.status === 'sold' || s.status === 'RESERVED') status = 'sold';
-          else if (s.status === 'held' || s.status === 'LOCKED') status = 'holding';
+          if (s.status === 'SOLD') status = 'sold';
+          else if (s.status === 'HELD') status = 'holding';
           flatSeats.push({
             id: s.seatId,
             section: s.section,
+            zoneId: z.name,
             row: bareId.split('-')[0],
             seatNum: parseInt(bareId.split('-')[1], 10) || idx + 1,
-            grade: z.name,
+            grade: z.grade || z.name,
             status,
             price: Number(s.price || z.price || c.price) || 0,
           });
@@ -228,7 +258,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         <div class="container mt-16">
           <div class="zone-legend">
             ${Object.entries(zoneMeta)
-              .map(([name, z]) => `<span><span class="zone-legend__dot" style="background:${z.color}"></span>${name} · ${formatPrice(z.price)}</span>`)
+              .map(([name, z]) => `<span><span class="zone-legend__dot" style="background:${z.color}"></span>${name} · ${z.grade}석 · ${formatPrice(z.price)}</span>`)
               .join('')}
           </div>
         </div>
@@ -260,7 +290,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           }
           if (mySeats.length) {
             clearHold();
-            const userId = getState().user?.email;
+            const userId = getState().user?.userId || getState().user?.email;
             mySeats.forEach((seat) => {
               releaseHeldSeat({ seatId: seat.id, userId });
               seat.status = 'available';
@@ -347,7 +377,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       }
 
       function deselectSeat(seat) {
-        const userId = getState().user?.email;
+        const userId = getState().user?.userId || getState().user?.email;
         releaseHeldSeat({ seatId: seat.id, userId });
         seat.status = 'available';
         mySeats = mySeats.filter((s) => s.id !== seat.id);
@@ -367,7 +397,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         const target = flatSeats.find((s) => s.id === id);
         if (!target) return;
 
-        const userId = getState().user?.email;
+        const userId = getState().user?.userId || getState().user?.email;
         if (!userId) {
           showToast({ title: '로그인이 필요합니다', body: '좌석을 선점하려면 먼저 로그인해주세요.', type: 'default' });
           return;
@@ -498,7 +528,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           <div class="order-rail__seat-list">
             ${mySeats
               .map((s) => {
-                const zone = zoneMeta[s.grade];
+                const zone = zoneMeta[s.zoneId || s.section || s.grade];
                 return `
               <div class="order-rail__seat-item">
                 <div>
@@ -534,7 +564,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           setCurrentOrder({
             concertId: c.eventId,
             session,
-            seats: mySeats.map((s) => ({ ...s, gradeName: zoneMeta[s.grade].label })),
+            seats: mySeats.map((s) => ({ ...s, gradeName: zoneMeta[s.zoneId || s.section || s.grade].label })),
             source: 'regular',
             securedAt: Date.now(),
             holdDeadline: deadline,
@@ -550,7 +580,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           const remaining = holdDeadline - Date.now();
           if (remaining <= 0) {
             clearHold();
-            const userId = getState().user?.email;
+          const userId = getState().user?.userId || getState().user?.email;
             mySeats.forEach((s) => {
               releaseHeldSeat({ seatId: s.id, userId });
               s.status = 'available';
@@ -575,7 +605,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const mySeatIds = new Set();
       let allSoldOutShown = false;
       function pollSeats() {
-        fetch('/seats')
+        fetch(`/seats?eventId=${encodeURIComponent(c.eventId)}`)
           .then((r) => r.json())
           .then((data) => {
             const seats2 = data.seats || [];
@@ -589,8 +619,8 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
               const local = seatIndex.get(serverSeat.seatId);
               if (!local || mySeatIds.has(local.id)) continue;
               let next = 'available';
-              if (serverSeat.status === 'sold' || serverSeat.status === 'RESERVED') next = 'sold';
-              else if (serverSeat.status === 'held' || serverSeat.status === 'LOCKED') next = 'holding';
+              if (serverSeat.status === 'SOLD') next = 'sold';
+              else if (serverSeat.status === 'HELD') next = 'holding';
               if (local.status !== next) { local.status = next; changed = true; }
             }
             for (const local of flatSeats) {
@@ -601,7 +631,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             }
             mySeatIds.clear();
             if (changed) seatMapApi.updateStatuses(flatSeats);
-            const remain = seats2.filter((s) => zoneNames.includes(s.section) && belongsToThisEvent(s) && s.status === 'available').length;
+            const remain = seats2.filter((s) => zoneNames.includes(s.section) && belongsToThisEvent(s) && s.status === 'AVAILABLE').length;
             const remainEl = container.querySelector('[data-remaining]');
             if (remainEl) remainEl.textContent = `${formatNumber(remain)}석`;
             if (!allSoldOutShown && remain === 0) {

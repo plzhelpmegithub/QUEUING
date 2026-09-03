@@ -116,8 +116,7 @@ function render() {
     <div class="container">
       <div class="site-header__left">
         <a href="#/" class="site-header__logo">
-          <img src="/favicon.svg" alt="" class="site-header__mark" />
-          QUEUING
+          <img src="/images/queuing-logo.png" alt="QUEUING" class="site-header__mark" />
         </a>
       </div>
       <div class="site-header__actions">
@@ -131,8 +130,7 @@ function render() {
     <div class="container">
       <div class="site-header__left">
         <a href="#/" class="site-header__logo">
-          <img src="/favicon.svg" alt="" class="site-header__mark" />
-          QUEUING
+          <img src="/images/queuing-logo.png" alt="QUEUING" class="site-header__mark" />
         </a>
         <nav class="site-header__nav">
           ${NAV_ITEMS.map(

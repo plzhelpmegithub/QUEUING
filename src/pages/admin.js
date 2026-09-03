@@ -1,12 +1,12 @@
 import { CONCERTS } from '../data/concerts.js';
+import { OLYMPIC_HALL, OLYMPIC_HALL_FLOOR_SEAT_COUNT } from '../data/olympicHallSeats.js';
 import { isAdmin, isLoggedIn } from '../state/store.js';
 import { navigate } from '../router.js';
 import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { formatDeadline } from '../utils/format.js';
 
-// Mock 콘서트 카탈로그(data/concerts.js)와 동일한 관례로 기본값을 채워둠 — VIP/R/S/A 4등급,
-// 실제 Redis에 좌석을 그만큼 생성하므로(수만 석은 데모에 과함) 개수는 축소해서 기본 제공
+// 일반 공연의 기본 등급/가격 입력값. 올림픽홀은 아래 CSV 구역별 생성값을 사용한다.
 const GRADE_DEFAULTS = [
   { key: 'VIP', seats: 20, price: 180000 },
   { key: 'R', seats: 50, price: 140000 },
@@ -14,11 +14,18 @@ const GRADE_DEFAULTS = [
   { key: 'A', seats: 100, price: 80000 },
 ];
 
+const OLYMPIC_HALL_GRADE_SEATS = OLYMPIC_HALL.zones.reduce((totals, zone) => {
+  const count = zone.id === 'Floor' ? OLYMPIC_HALL_FLOOR_SEAT_COUNT : zone.seats.length;
+  totals[zone.grade] = (totals[zone.grade] || 0) + count;
+  return totals;
+}, {});
+
 function createEventGradeRowHtml(g) {
+  const seatCount = OLYMPIC_HALL_GRADE_SEATS[g.key] || g.seats;
   return `
     <tr data-grade-row="${g.key}">
       <td><b>${g.key}</b></td>
-      <td><input type="number" min="0" data-grade-seats="${g.key}" value="${g.seats}" style="width:90px;" /></td>
+      <td><input type="number" min="0" data-grade-seats="${g.key}" value="${seatCount}" style="width:90px;" disabled /></td>
       <td><input type="number" min="0" step="1000" data-grade-price="${g.key}" value="${g.price}" style="width:120px;" /></td>
     </tr>
   `;
@@ -47,44 +54,44 @@ const RANDOM_ARTISTS = [
 const POSTER_CONCERTS = [
   { artist: 'AKMU', eventName: 'AKMU 2026 CONCERT [사춘기 : SAILING HOME]', eventDate: '2026-11-01', venue: '올림픽홀', sessions: [{ date: '2026-11-01', time: '19:00' }, { date: '2026-11-02', time: '18:00' }] },
   { artist: '윤하', eventName: '윤하 2026 CONCERT [STARDUST : EVENT HORIZON]', eventDate: '2026-11-08', venue: '올림픽홀', sessions: [{ date: '2026-11-08', time: '19:00' }] },
-  { artist: 'Stray Kids', eventName: 'Stray Kids 2026 WORLD TOUR [THUNDEROUS : UNCHAINED]', eventDate: '2026-11-14', venue: '고척스카이돔', sessions: [{ date: '2026-11-14', time: '18:00' }, { date: '2026-11-15', time: '17:00' }] },
-  { artist: 'RIIZE', eventName: 'RIIZE 2026 FAN CONCERT [GET A GUITAR : FIRST LIGHT]', eventDate: '2026-11-22', venue: 'YES24 LIVE HALL', sessions: [{ date: '2026-11-22', time: '18:00' }, { date: '2026-11-23', time: '17:00' }] },
-  { artist: 'IVE', eventName: 'IVE 2026 CONCERT [AFTER LIKE : THE CROWN]', eventDate: '2026-11-28', venue: 'KSPO DOME', sessions: [{ date: '2026-11-28', time: '18:00' }, { date: '2026-11-29', time: '17:00' }] },
-  { artist: 'DAY6', eventName: 'DAY6 2026 CONCERT [한 페이지가 될 수 있게 : FOREVER YOUNG]', eventDate: '2026-11-29', venue: 'KSPO DOME', sessions: [{ date: '2026-11-29', time: '18:00' }, { date: '2026-11-30', time: '17:00' }] },
-  { artist: '(G)I-DLE', eventName: '(G)I-DLE 2026 WORLD TOUR [SUPER LADY : QUEENDOM]', eventDate: '2026-12-05', venue: '고척스카이돔', sessions: [{ date: '2026-12-05', time: '18:00' }, { date: '2026-12-06', time: '17:00' }] },
-  { artist: 'TXT', eventName: 'TOMORROW X TOGETHER 2026 WORLD TOUR [STAR SEEKERS : ACT TWO]', eventDate: '2026-12-12', venue: 'KSPO DOME', sessions: [{ date: '2026-12-12', time: '18:00' }, { date: '2026-12-13', time: '17:00' }] },
-  { artist: 'SEVENTEEN', eventName: 'SEVENTEEN 2026 WORLD TOUR [DIAMOND EDGE : REBORN]', eventDate: '2026-12-19', venue: 'KSPO DOME', sessions: [{ date: '2026-12-19', time: '18:00' }, { date: '2026-12-20', time: '17:00' }] },
+  { artist: 'Stray Kids', eventName: 'Stray Kids 2026 WORLD TOUR [THUNDEROUS : UNCHAINED]', eventDate: '2026-11-14', venue: '올림픽홀', sessions: [{ date: '2026-11-14', time: '18:00' }, { date: '2026-11-15', time: '17:00' }] },
+  { artist: 'RIIZE', eventName: 'RIIZE 2026 FAN CONCERT [GET A GUITAR : FIRST LIGHT]', eventDate: '2026-11-22', venue: '올림픽홀', sessions: [{ date: '2026-11-22', time: '18:00' }, { date: '2026-11-23', time: '17:00' }] },
+  { artist: 'IVE', eventName: 'IVE 2026 CONCERT [AFTER LIKE : THE CROWN]', eventDate: '2026-11-28', venue: '올림픽홀', sessions: [{ date: '2026-11-28', time: '18:00' }, { date: '2026-11-29', time: '17:00' }] },
+  { artist: 'DAY6', eventName: 'DAY6 2026 CONCERT [한 페이지가 될 수 있게 : FOREVER YOUNG]', eventDate: '2026-11-29', venue: '올림픽홀', sessions: [{ date: '2026-11-29', time: '18:00' }, { date: '2026-11-30', time: '17:00' }] },
+  { artist: '(G)I-DLE', eventName: '(G)I-DLE 2026 WORLD TOUR [SUPER LADY : QUEENDOM]', eventDate: '2026-12-05', venue: '올림픽홀', sessions: [{ date: '2026-12-05', time: '18:00' }, { date: '2026-12-06', time: '17:00' }] },
+  { artist: 'TXT', eventName: 'TOMORROW X TOGETHER 2026 WORLD TOUR [STAR SEEKERS : ACT TWO]', eventDate: '2026-12-12', venue: '올림픽홀', sessions: [{ date: '2026-12-12', time: '18:00' }, { date: '2026-12-13', time: '17:00' }] },
+  { artist: 'SEVENTEEN', eventName: 'SEVENTEEN 2026 WORLD TOUR [DIAMOND EDGE : REBORN]', eventDate: '2026-12-19', venue: '올림픽홀', sessions: [{ date: '2026-12-19', time: '18:00' }, { date: '2026-12-20', time: '17:00' }] },
   { artist: '백예린', eventName: '백예린 2026 CONCERT [Square : INDIE NIGHT]', eventDate: '2026-12-25', venue: '올림픽홀', sessions: [{ date: '2026-12-25', time: '19:00' }] },
   { artist: 'Heize', eventName: 'Heize 2026 CONCERT [HAPPEN IN WINTER]', eventDate: '2026-12-26', venue: '올림픽홀', sessions: [{ date: '2026-12-26', time: '20:00' }] },
-  { artist: '성시경', eventName: '성시경 2026 연말콘서트 [두 사람 : YEAR-END BALLAD NIGHT]', eventDate: '2026-12-31', venue: 'KSPO DOME', sessions: [{ date: '2026-12-31', time: '20:00' }] },
-  { artist: '이적', eventName: '이적 2027 CONCERT [하늘을 달리다 : VOICE OF A GENERATION]', eventDate: '2027-01-03', venue: '세종문화회관', sessions: [{ date: '2027-01-03', time: '19:00' }] },
-  { artist: 'NewJeans', eventName: 'NewJeans 2027 FAN CONCERT [OMG : SUMMER DREAMING]', eventDate: '2027-01-10', venue: 'KSPO DOME', sessions: [{ date: '2027-01-10', time: '18:00' }, { date: '2027-01-11', time: '17:00' }] },
-  { artist: 'BLACKPINK', eventName: 'BLACKPINK 2027 WORLD TOUR [PINK VENOM : THE FINALE]', eventDate: '2027-01-17', venue: '올림픽주경기장', sessions: [{ date: '2027-01-17', time: '18:00' }, { date: '2027-01-18', time: '17:00' }] },
-  { artist: '박효신', eventName: '박효신 2027 CONCERT [SOULS AND SONGS]', eventDate: '2027-01-24', venue: '세종문화회관', sessions: [{ date: '2027-01-24', time: '19:00' }, { date: '2027-01-25', time: '18:00' }] },
-  { artist: 'NCT DREAM', eventName: 'NCT DREAM 2027 CONCERT [THE DREAM SHOW 4 : WONDERLAND]', eventDate: '2027-01-31', venue: 'KSPO DOME', sessions: [{ date: '2027-01-31', time: '18:00' }, { date: '2027-02-01', time: '17:00' }] },
-  { artist: 'TAEYEON', eventName: 'TAEYEON 2027 CONCERT [ONCE UPON A TIME]', eventDate: '2027-02-07', venue: 'KSPO DOME', sessions: [{ date: '2027-02-07', time: '18:00' }, { date: '2027-02-08', time: '17:00' }] },
-  { artist: 'aespa', eventName: 'aespa 2027 WORLD TOUR [SUPERNOVA : SYNK HORIZON]', eventDate: '2027-02-14', venue: '고척스카이돔', sessions: [{ date: '2027-02-14', time: '18:00' }, { date: '2027-02-15', time: '17:00' }] },
+  { artist: '성시경', eventName: '성시경 2026 연말콘서트 [두 사람 : YEAR-END BALLAD NIGHT]', eventDate: '2026-12-31', venue: '올림픽홀', sessions: [{ date: '2026-12-31', time: '20:00' }] },
+  { artist: '이적', eventName: '이적 2027 CONCERT [하늘을 달리다 : VOICE OF A GENERATION]', eventDate: '2027-01-03', venue: '올림픽홀', sessions: [{ date: '2027-01-03', time: '19:00' }] },
+  { artist: 'NewJeans', eventName: 'NewJeans 2027 FAN CONCERT [OMG : SUMMER DREAMING]', eventDate: '2027-01-10', venue: '올림픽홀', sessions: [{ date: '2027-01-10', time: '18:00' }, { date: '2027-01-11', time: '17:00' }] },
+  { artist: 'BLACKPINK', eventName: 'BLACKPINK 2027 WORLD TOUR [PINK VENOM : THE FINALE]', eventDate: '2027-01-17', venue: '올림픽홀', sessions: [{ date: '2027-01-17', time: '18:00' }, { date: '2027-01-18', time: '17:00' }] },
+  { artist: '박효신', eventName: '박효신 2027 CONCERT [SOULS AND SONGS]', eventDate: '2027-01-24', venue: '올림픽홀', sessions: [{ date: '2027-01-24', time: '19:00' }, { date: '2027-01-25', time: '18:00' }] },
+  { artist: 'NCT DREAM', eventName: 'NCT DREAM 2027 CONCERT [THE DREAM SHOW 4 : WONDERLAND]', eventDate: '2027-01-31', venue: '올림픽홀', sessions: [{ date: '2027-01-31', time: '18:00' }, { date: '2027-02-01', time: '17:00' }] },
+  { artist: 'TAEYEON', eventName: 'TAEYEON 2027 CONCERT [ONCE UPON A TIME]', eventDate: '2027-02-07', venue: '올림픽홀', sessions: [{ date: '2027-02-07', time: '18:00' }, { date: '2027-02-08', time: '17:00' }] },
+  { artist: 'aespa', eventName: 'aespa 2027 WORLD TOUR [SUPERNOVA : SYNK HORIZON]', eventDate: '2027-02-14', venue: '올림픽홀', sessions: [{ date: '2027-02-14', time: '18:00' }, { date: '2027-02-15', time: '17:00' }] },
   { artist: '자우림', eventName: '자우림 2027 CONCERT [스물다섯, 스물하나 : TIMELESS ECHOES]', eventDate: '2027-02-15', venue: '올림픽홀', sessions: [{ date: '2027-02-15', time: '19:00' }] },
-  { artist: 'ZICO', eventName: 'ZICO 2027 CONCERT [SPOT! : KING OF THE JUNGLE]', eventDate: '2027-02-22', venue: '고척스카이돔', sessions: [{ date: '2027-02-22', time: '19:00' }] },
-  { artist: 'LE SSERAFIM', eventName: 'LE SSERAFIM 2027 WORLD TOUR [FEARLESS : FLAME RISES]', eventDate: '2027-02-28', venue: 'KSPO DOME', sessions: [{ date: '2027-02-28', time: '18:00' }, { date: '2027-03-01', time: '17:00' }] },
-  { artist: 'BTS', eventName: 'BTS 2027 WORLD TOUR [BEYOND THE SCENE : ETERNAL]', eventDate: '2027-03-01', venue: '올림픽주경기장', sessions: [{ date: '2027-03-01', time: '18:00' }, { date: '2027-03-02', time: '17:00' }] },
-  { artist: 'AILEE', eventName: 'AILEE 2027 CONCERT [I WILL SHOW YOU : THE POWERHOUSE]', eventDate: '2027-03-08', venue: '블루스퀘어', sessions: [{ date: '2027-03-08', time: '19:00' }] },
-  { artist: 'IU', eventName: 'IU 2027 CONCERT [THE GOLDEN HOUR : CURTAIN CALL]', eventDate: '2027-03-14', venue: '올림픽주경기장', sessions: [{ date: '2027-03-14', time: '18:00' }, { date: '2027-03-15', time: '17:00' }] },
+  { artist: 'ZICO', eventName: 'ZICO 2027 CONCERT [SPOT! : KING OF THE JUNGLE]', eventDate: '2027-02-22', venue: '올림픽홀', sessions: [{ date: '2027-02-22', time: '19:00' }] },
+  { artist: 'LE SSERAFIM', eventName: 'LE SSERAFIM 2027 WORLD TOUR [FEARLESS : FLAME RISES]', eventDate: '2027-02-28', venue: '올림픽홀', sessions: [{ date: '2027-02-28', time: '18:00' }, { date: '2027-03-01', time: '17:00' }] },
+  { artist: 'BTS', eventName: 'BTS 2027 WORLD TOUR [BEYOND THE SCENE : ETERNAL]', eventDate: '2027-03-01', venue: '올림픽홀', sessions: [{ date: '2027-03-01', time: '18:00' }, { date: '2027-03-02', time: '17:00' }] },
+  { artist: 'AILEE', eventName: 'AILEE 2027 CONCERT [I WILL SHOW YOU : THE POWERHOUSE]', eventDate: '2027-03-08', venue: '올림픽홀', sessions: [{ date: '2027-03-08', time: '19:00' }] },
+  { artist: 'IU', eventName: 'IU 2027 CONCERT [THE GOLDEN HOUR : CURTAIN CALL]', eventDate: '2027-03-14', venue: '올림픽홀', sessions: [{ date: '2027-03-14', time: '18:00' }, { date: '2027-03-15', time: '17:00' }] },
   { artist: '잔나비', eventName: '잔나비 2027 CONCERT [주저하는 연인들을 위해 : MONKEY CINEMA]', eventDate: '2027-03-15', venue: '올림픽홀', sessions: [{ date: '2027-03-15', time: '19:00' }] },
-  { artist: 'EXO', eventName: 'EXO 2027 CONCERT [EXO PLANET #6 : CHRONICLE]', eventDate: '2027-03-22', venue: 'KSPO DOME', sessions: [{ date: '2027-03-22', time: '18:00' }, { date: '2027-03-23', time: '17:00' }] },
-  { artist: '영탁', eventName: '영탁 2027 CONCERT [찐이야 : ALL-IN LIVE]', eventDate: '2027-03-29', venue: '고척스카이돔', sessions: [{ date: '2027-03-29', time: '18:00' }] },
+  { artist: 'EXO', eventName: 'EXO 2027 CONCERT [EXO PLANET #6 : CHRONICLE]', eventDate: '2027-03-22', venue: '올림픽홀', sessions: [{ date: '2027-03-22', time: '18:00' }, { date: '2027-03-23', time: '17:00' }] },
+  { artist: '영탁', eventName: '영탁 2027 CONCERT [찐이야 : ALL-IN LIVE]', eventDate: '2027-03-29', venue: '올림픽홀', sessions: [{ date: '2027-03-29', time: '18:00' }] },
   { artist: '폴킴', eventName: '폴킴 2027 CONCERT [비 : EVERY DAY EVERY MOMENT]', eventDate: '2027-04-05', venue: '올림픽홀', sessions: [{ date: '2027-04-05', time: '19:00' }] },
-  { artist: 'TWICE', eventName: 'TWICE 2027 WORLD TOUR [FEEL SPECIAL : ONCE MORE]', eventDate: '2027-04-05', venue: '올림픽주경기장', sessions: [{ date: '2027-04-05', time: '18:00' }, { date: '2027-04-06', time: '17:00' }] },
-  { artist: '김범수', eventName: '김범수 2027 CONCERT [보고 싶다 : A VOICE FOR ETERNITY]', eventDate: '2027-04-12', venue: '세종문화회관', sessions: [{ date: '2027-04-12', time: '19:00' }] },
-  { artist: 'Red Velvet', eventName: 'Red Velvet 2027 CONCERT [CHILL KILL : THE VELVET NIGHT]', eventDate: '2027-04-19', venue: 'KSPO DOME', sessions: [{ date: '2027-04-19', time: '18:00' }, { date: '2027-04-20', time: '17:00' }] },
-  { artist: '송가인', eventName: '송가인 2027 CONCERT [트로트의 여왕 : 꽃길만 걸으세요]', eventDate: '2027-04-26', venue: 'KSPO DOME', sessions: [{ date: '2027-04-26', time: '18:00' }] },
-  { artist: '이승철', eventName: '이승철 2027 CONCERT [LEGEND CONTINUES]', eventDate: '2027-05-03', venue: '세종문화회관', sessions: [{ date: '2027-05-03', time: '19:00' }, { date: '2027-05-04', time: '18:00' }] },
-  { artist: '임영웅', eventName: '임영웅 2027 전국투어 [IM HERO : LEGEND TOUR]', eventDate: '2027-05-10', venue: '올림픽주경기장', sessions: [{ date: '2027-05-10', time: '18:00' }, { date: '2027-05-11', time: '17:00' }] },
+  { artist: 'TWICE', eventName: 'TWICE 2027 WORLD TOUR [FEEL SPECIAL : ONCE MORE]', eventDate: '2027-04-05', venue: '올림픽홀', sessions: [{ date: '2027-04-05', time: '18:00' }, { date: '2027-04-06', time: '17:00' }] },
+  { artist: '김범수', eventName: '김범수 2027 CONCERT [보고 싶다 : A VOICE FOR ETERNITY]', eventDate: '2027-04-12', venue: '올림픽홀', sessions: [{ date: '2027-04-12', time: '19:00' }] },
+  { artist: 'Red Velvet', eventName: 'Red Velvet 2027 CONCERT [CHILL KILL : THE VELVET NIGHT]', eventDate: '2027-04-19', venue: '올림픽홀', sessions: [{ date: '2027-04-19', time: '18:00' }, { date: '2027-04-20', time: '17:00' }] },
+  { artist: '송가인', eventName: '송가인 2027 CONCERT [트로트의 여왕 : 꽃길만 걸으세요]', eventDate: '2027-04-26', venue: '올림픽홀', sessions: [{ date: '2027-04-26', time: '18:00' }] },
+  { artist: '이승철', eventName: '이승철 2027 CONCERT [LEGEND CONTINUES]', eventDate: '2027-05-03', venue: '올림픽홀', sessions: [{ date: '2027-05-03', time: '19:00' }, { date: '2027-05-04', time: '18:00' }] },
+  { artist: '임영웅', eventName: '임영웅 2027 전국투어 [IM HERO : LEGEND TOUR]', eventDate: '2027-05-10', venue: '올림픽홀', sessions: [{ date: '2027-05-10', time: '18:00' }, { date: '2027-05-11', time: '17:00' }] },
   { artist: 'YB', eventName: 'YB 2027 CONCERT [나는 나비 : ROCK NEVER DIES]', eventDate: '2027-05-17', venue: '올림픽홀', sessions: [{ date: '2027-05-17', time: '19:00' }] },
-  { artist: '장윤정', eventName: '장윤정 2027 CONCERT [어머나! : TIMELESS DIVA]', eventDate: '2027-05-24', venue: '세종문화회관', sessions: [{ date: '2027-05-24', time: '18:00' }] },
-  { artist: '이찬원', eventName: '이찬원 2027 CONCERT [진또배기 : YOUNG KING OF TROT]', eventDate: '2027-06-07', venue: 'KSPO DOME', sessions: [{ date: '2027-06-07', time: '18:00' }] },
-  { artist: '선우정아', eventName: '선우정아 2027 CONCERT [도망가자 : CATHARSIS]', eventDate: '2027-06-14', venue: '블루스퀘어', sessions: [{ date: '2027-06-14', time: '19:00' }] },
-  { artist: 'NELL', eventName: 'NELL 2027 CONCERT [지구가 태양을 네 번 : FOUR SEASONS]', eventDate: '2027-06-21', venue: '블루스퀘어', sessions: [{ date: '2027-06-21', time: '19:00' }] },
+  { artist: '장윤정', eventName: '장윤정 2027 CONCERT [어머나! : TIMELESS DIVA]', eventDate: '2027-05-24', venue: '올림픽홀', sessions: [{ date: '2027-05-24', time: '18:00' }] },
+  { artist: '이찬원', eventName: '이찬원 2027 CONCERT [진또배기 : YOUNG KING OF TROT]', eventDate: '2027-06-07', venue: '올림픽홀', sessions: [{ date: '2027-06-07', time: '18:00' }] },
+  { artist: '선우정아', eventName: '선우정아 2027 CONCERT [도망가자 : CATHARSIS]', eventDate: '2027-06-14', venue: '올림픽홀', sessions: [{ date: '2027-06-14', time: '19:00' }] },
+  { artist: 'NELL', eventName: 'NELL 2027 CONCERT [지구가 태양을 네 번 : FOUR SEASONS]', eventDate: '2027-06-21', venue: '올림픽홀', sessions: [{ date: '2027-06-21', time: '19:00' }] },
 ];
 
 const RANDOM_AGENCIES = {
@@ -196,68 +203,30 @@ function generateConcertNotices() {
   ];
 }
 
-const SEATING_TYPES_CYCLE = ['arena', 'theater'];
-let seatingCycleIdx = 0;
 let posterCycleIdx = 0;
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
-}
-function randInt(min, max) {
-  return Math.floor(min + Math.random() * (max - min + 1));
-}
-
-// 등급별로 각각 5000 단위로 딱 떨어지는 좌석수를 뽑음(예: VIP 5000, R 15000,
-// S 20000, A 30000처럼) — 총합을 먼저 정하고 비율로 나누면 19800처럼 애매한
-// 숫자가 나와서, 등급별로 독립적으로 반올림된 값을 뽑는 방식으로 바꿈
-const VENUE_FIXED_SEATS = {
-  '고척스카이돔': { VIP: 2000, R: 4000, S: 4000, A: 4000 },   // 합계 14,000
-  '올림픽홀':     { VIP: 500,  R: 800,  S: 900,  A: 800 },     // 합계 3,000
-};
-
-const MAX_TOTAL_SEATS = 14000;
-const GRADE_SEAT_RANGE = { VIP: [1, 2], R: [2, 4], S: [3, 5], A: [3, 5] }; // step(1000) 배수 범위
-
-// 극장(theater) 좌석 고정값
-const THEATER_FIXED_SEATS = { VIP: 448, R: 200, S: 30, A: 100 }; // 합계 778
-
-function randRoundSeats(step, minMult, maxMult) {
-  return step * randInt(minMult, maxMult);
 }
 
 function buildRandomEventPayload() {
   const posterData = POSTER_CONCERTS[posterCycleIdx % POSTER_CONCERTS.length];
   posterCycleIdx++;
   const artist = posterData.artist;
-  const venueFixed = VENUE_FIXED_SEATS[posterData.venue];
-  const seatingType = SEATING_TYPES_CYCLE[seatingCycleIdx++ % SEATING_TYPES_CYCLE.length];
-  const sections = GRADE_DEFAULTS.map((g) => {
-    let seats;
-    if (venueFixed) {
-      seats = venueFixed[g.key];
-    } else if (seatingType === 'theater') {
-      seats = THEATER_FIXED_SEATS[g.key];
-    } else {
-      seats = randRoundSeats(1000, GRADE_SEAT_RANGE[g.key][0], GRADE_SEAT_RANGE[g.key][1]);
-    }
-    return {
-      name: g.key,
-      seats,
-      price: Math.round((g.price * (0.85 + Math.random() * 0.3)) / 1000) * 1000,
-    };
-  });
-  if (!venueFixed && seatingType !== 'theater') {
-    const total = sections.reduce((s, sec) => s + sec.seats, 0);
-    if (total > MAX_TOTAL_SEATS) {
-      const ratio = MAX_TOTAL_SEATS / total;
-      sections.forEach((sec) => { sec.seats = Math.max(100, Math.round(sec.seats * ratio / 100) * 100); });
-    }
-  }
+  const priceOf = (grade) => {
+    const base = GRADE_DEFAULTS.find((item) => item.key === grade)?.price || GRADE_DEFAULTS[GRADE_DEFAULTS.length - 1].price;
+    return Math.round((base * (0.85 + Math.random() * 0.3)) / 1000) * 1000;
+  };
+  const sections = OLYMPIC_HALL.zones.map((zone) => ({
+    name: zone.id,
+    seats: zone.id === 'Floor' ? OLYMPIC_HALL_FLOOR_SEAT_COUNT : zone.seats.length,
+    price: priceOf(zone.grade),
+  }));
   return {
     eventName: posterData.eventName,
     eventDate: posterData.eventDate,
-    venue: posterData.venue,
-    seatingType,
+    venue: '올림픽홀',
+    seatingType: 'olympichall',
     sections,
     sessions: posterData.sessions,
     runtime: pick(RANDOM_RUNTIMES),
@@ -558,18 +527,18 @@ function openCreateEventModal(onCreated) {
         </div>
         <div class="field">
           <label>공연장</label>
-          <input type="text" name="venue" placeholder="예: 올림픽공원 체조경기장" />
+          <select name="venue">
+            <option value="올림픽홀">서울 올림픽홀</option>
+          </select>
         </div>
         <div class="field">
           <label>좌석 형태</label>
           <select name="seatingType">
-            <option value="arena">아레나 (직사각형 좌석맵)</option>
-            <option value="standing">스탠딩 (그리드)</option>
-            <option value="theater">극장 (다층 직사각형)</option>
+            <option value="olympichall">서울 올림픽홀 실제 좌석 배치</option>
           </select>
         </div>
         <div class="field">
-          <label>구역별 좌석 수 / 가격 (0으로 두면 해당 구역 제외)</label>
+          <label>등급별 좌석 수 / 가격 (올림픽홀 실제 구역 기준)</label>
           <table class="qtable">
             <thead><tr><th>등급</th><th>좌석 수</th><th>가격(원)</th></tr></thead>
             <tbody>${GRADE_DEFAULTS.map(createEventGradeRowHtml).join('')}</tbody>
@@ -595,16 +564,15 @@ function openCreateEventModal(onCreated) {
       return;
     }
 
-    const sections = GRADE_DEFAULTS.map((g) => {
-      const seats = parseInt(form.querySelector(`[data-grade-seats="${g.key}"]`).value, 10) || 0;
-      const price = parseInt(form.querySelector(`[data-grade-price="${g.key}"]`).value, 10) || 0;
-      return { name: g.key, seats, price };
-    }).filter((s) => s.seats > 0);
-
-    if (sections.length === 0) {
-      errEl.textContent = '최소 1개 구역은 좌석 수가 1석 이상이어야 합니다.';
-      return;
-    }
+    const pricesByGrade = Object.fromEntries(GRADE_DEFAULTS.map((g) => [
+      g.key,
+      parseInt(form.querySelector(`[data-grade-price="${g.key}"]`).value, 10) || 0,
+    ]));
+    const sections = OLYMPIC_HALL.zones.map((zone) => ({
+      name: zone.id,
+      seats: zone.id === 'Floor' ? OLYMPIC_HALL_FLOOR_SEAT_COUNT : zone.seats.length,
+      price: pricesByGrade[zone.grade] || 0,
+    }));
 
     if (eventsCache.some((e) => e.eventName === eventName)) {
       errEl.textContent = '이미 동일한 이름의 공연이 존재합니다.';
@@ -617,8 +585,8 @@ function openCreateEventModal(onCreated) {
     createEvent({
       eventName,
       eventDate: form.eventDate.value || undefined,
-      venue: form.venue.value.trim() || undefined,
-      seatingType: form.seatingType.value,
+      venue: '올림픽홀',
+      seatingType: 'olympichall',
       sections,
     })
       .then((result) => {
@@ -656,7 +624,8 @@ export const adminPage = {
         <div class="admin-status">
           <button type="button" class="btn btn-primary btn-sm" data-open-create-event>+ 공연 생성</button>
           <button type="button" class="btn btn-outline btn-sm" data-random-create-event>📋 포스터 공연 생성</button>
-
+          <button type="button" class="btn btn-outline btn-sm" data-redis-reset style="border-color:#e67e22;color:#e67e22;">Redis 초기화</button>
+          <button type="button" class="btn btn-outline btn-sm" data-redis-recover style="border-color:#27ae60;color:#27ae60;">DB→Redis 복구</button>
         </div>
       </div>
 
@@ -703,6 +672,84 @@ export const adminPage = {
         .finally(() => {
           btn.disabled = false;
         });
+    });
+
+    container.querySelector('[data-redis-reset]').addEventListener('click', () => {
+      openModal({
+        title: 'Redis 초기화',
+        bodyHtml: `
+          <p style="margin-bottom:12px;">이벤트 관련 Redis 상태를 초기화합니다. 인증 세션은 유지됩니다.</p>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button type="button" class="btn btn-outline btn-block" data-redis-mode="soft" style="text-align:left;padding:12px 16px;">
+              <b>Soft</b><br/><span style="font-size:12px;color:var(--color-text-secondary);">대기열 · 매진 플래그 · 활성 이벤트 포인터 초기화 (좌석 유지)</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-block" data-redis-mode="hard" style="text-align:left;padding:12px 16px;border-color:#e74c3c;">
+              <b>Hard</b><br/><span style="font-size:12px;color:var(--color-text-secondary);">위 항목 + 전체 좌석 키 삭제 + DB에서 이벤트 목록 재동기화</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-block" data-redis-mode="resync" style="text-align:left;padding:12px 16px;">
+              <b>Resync</b><br/><span style="font-size:12px;color:var(--color-text-secondary);">MariaDB 기준으로 이벤트 목록 캐시만 재구성 (좌석·대기열 유지)</span>
+            </button>
+          </div>
+        `,
+        footerHtml: '<button type="button" class="btn btn-outline" data-modal-close>취소</button>',
+      });
+      document.querySelectorAll('[data-redis-mode]').forEach((modeBtn) => {
+        modeBtn.addEventListener('click', () => {
+          const mode = modeBtn.dataset.redisMode;
+          closeModal();
+          fetch('/admin/redis/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          })
+            .then((r) => r.json())
+            .then((result) => {
+              if (result.success) {
+                showToast({ title: `Redis 초기화 완료 (${mode})`, body: result.cleared.join(', '), type: 'success' });
+                refreshEventsList(container);
+              } else {
+                showToast({ title: 'Redis 초기화 실패', body: result.message || '알 수 없는 오류' });
+              }
+            })
+            .catch(() => showToast({ title: 'Redis 초기화 요청 실패', body: '서버 연결을 확인해주세요.' }));
+        });
+      });
+    });
+
+    container.querySelector('[data-redis-recover]').addEventListener('click', () => {
+      openModal({
+        title: 'MariaDB → Redis 복구',
+        bodyHtml: `
+          <p style="margin-bottom:12px;">Redis가 비어있을 때 MariaDB 데이터를 기반으로 복구합니다.</p>
+          <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:16px;">이벤트 목록, 좌석 상태, 대기열을 모두 복원합니다.<br/>이미 Redis에 데이터가 있는 항목은 건너뜁니다.</p>
+          <button type="button" class="btn btn-primary btn-block" data-do-recover>복구 실행</button>
+        `,
+        footerHtml: '<button type="button" class="btn btn-outline" data-modal-close>취소</button>',
+      });
+      document.querySelector('[data-do-recover]')?.addEventListener('click', () => {
+        closeModal();
+        fetch('/admin/redis/recover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+          .then((r) => r.json())
+          .then((result) => {
+            if (result.success) {
+              const r = result.results;
+              const summary = [
+                r.events?.recovered ? `이벤트 ${r.events.count}개` : null,
+                r.seats?.recovered ? `좌석 ${r.seats.total}석` : (r.seats?.message || null),
+                r.queue?.recovered ? `대기열 (eligible=${r.queue.eligible}, standby=${r.queue.standby})` : (r.queue?.message || null),
+              ].filter(Boolean).join(' · ');
+              showToast({ title: `Redis 복구 완료`, body: summary || '복구할 데이터 없음', type: 'success' });
+              refreshEventsList(container);
+            } else {
+              showToast({ title: 'Redis 복구 실패', body: result.message || '알 수 없는 오류' });
+            }
+          })
+          .catch(() => showToast({ title: 'Redis 복구 요청 실패', body: '서버 연결을 확인해주세요.' }));
+      });
     });
 
     return () => {

@@ -6,7 +6,7 @@ export function closeModal() {
   if (active) active.close();
 }
 
-export function openModal({ title, bodyHtml, footerHtml = '', size = '' }) {
+export function openModal({ title, bodyHtml, footerHtml = '', size = '', onClose = null }) {
   closeModal();
 
   const overlay = document.createElement('div');
@@ -28,11 +28,15 @@ export function openModal({ title, bodyHtml, footerHtml = '', size = '' }) {
     if (e.key === 'Escape') close();
   }
 
+  let closed = false;
   function close() {
+    if (closed) return;
+    closed = true;
     overlay.remove();
     document.body.classList.remove('modal-open');
     document.removeEventListener('keydown', escHandler);
     if (active === api) active = null;
+    if (typeof onClose === 'function') onClose();
   }
 
   overlay.addEventListener('click', (e) => {

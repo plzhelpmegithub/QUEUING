@@ -12,7 +12,38 @@
   background-size: cover;
   background-position: center;
 }
-.detail-hero__overlay { position:absolute; inset:0; background: linear-gradient(180deg, rgba(0,0,0,.05) 0%, rgba(0,0,0,.4) 40%, rgba(0,0,0,.88) 100%); }
+.detail-hero--spread {
+  isolation: isolate;
+  overflow: hidden;
+  background: #240b10;
+}
+.detail-hero--spread::before {
+  content: "";
+  position: absolute;
+  z-index: -2;
+  inset: -12%;
+  background-image: var(--detail-poster-image);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  filter: blur(28px) saturate(1.25);
+  transform: scale(1.08);
+  opacity: .78;
+}
+.detail-hero--spread::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background-image:
+    linear-gradient(90deg, rgba(15, 4, 6, .58), rgba(15, 4, 6, .18) 50%, rgba(15, 4, 6, .62)),
+    var(--detail-poster-image);
+  background-position: center, center;
+  background-size: cover, contain;
+  background-repeat: no-repeat;
+  opacity: .72;
+}
+.detail-hero__overlay { position:absolute; inset:0; z-index:0; background: linear-gradient(180deg, rgba(0,0,0,.04) 0%, rgba(0,0,0,.28) 40%, rgba(0,0,0,.9) 100%); }
 .detail-hero__content {
   position: relative; z-index:1; padding: 44px 0; width:100%;
   animation: detailFadeUp .6s cubic-bezier(.22,1,.36,1) both;
@@ -35,6 +66,18 @@
 .detail-info-card h3 { font-size: 16px; font-weight: 800; margin-bottom: 14px; }
 .price-row { display:flex; justify-content:space-between; padding: 10px 0; font-size: 14px; border-bottom: 1px dashed var(--color-border); }
 .price-row:last-child { border-bottom: none; }
+.detail-seatmap { margin-top: 4px; }
+.detail-seatmap .vm-legend { padding: 8px 0; }
+.detail-seatmap .vm-viewport { height: 460px; }
+.detail-seatmap--static .vm-legend,
+.detail-seatmap--static .vm-zoom-controls,
+.detail-seatmap--static .vm-zoom-hint { display: none; }
+.detail-seatmap--static .vm-viewport {
+  height: auto;
+  aspect-ratio: 1426 / 1103;
+  cursor: default;
+  pointer-events: none;
+}
 
 .booking-panel {
   position: sticky; top: calc(var(--header-h) + 20px);
@@ -308,6 +351,72 @@
 .membership-benefits-strip { display:grid; grid-template-columns: repeat(4,1fr); gap: 16px; max-width: 980px; margin: 60px auto 0; text-align:center; }
 .membership-benefits-strip .b-icon { font-size: 26px; margin-bottom: 10px; }
 .membership-benefits-strip .b-title { font-size: 13.5px; font-weight: 700; }
+.membership-status-row { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+.membership-status-visual { display:flex; align-items:center; gap:20px; min-width:0; }
+.membership-rocket-stage {
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:124px;
+  height:170px;
+  flex:0 0 124px;
+  overflow:hidden;
+  border-radius:var(--radius-lg);
+  background:linear-gradient(180deg,#f7f7f7 0%,#fff 72%);
+  border:1px solid var(--color-border);
+}
+.membership-status-visual.is-active .membership-rocket-stage {
+  background:radial-gradient(circle at 50% 34%,rgba(255,218,150,.32),transparent 38%),linear-gradient(180deg,#fff7ee 0%,#fff 72%);
+  border-color:#ffd9b0;
+}
+.membership-status-visual.is-standby .membership-rocket-stage { border-style:dashed; }
+.membership-rocket-stage::after {
+  content:'';
+  position:absolute;
+  bottom:25px;
+  width:70px;
+  height:4px;
+  border-radius:var(--radius-pill);
+  background:#cfd4dc;
+  box-shadow:0 5px 0 -1px #e6e8ec;
+}
+.membership-status-visual.is-active .membership-rocket-stage::after { background:#e6a15d; box-shadow:0 5px 0 -1px #f4d5ae; }
+.membership-rocket-emoji {
+  position:relative;
+  z-index:1;
+  display:inline-block;
+  font-size:76px;
+  line-height:1;
+  transform:rotate(-45deg);
+  filter:drop-shadow(0 5px 6px rgba(49,62,78,.18));
+}
+.membership-status-visual.is-standby .membership-rocket-emoji { filter:grayscale(1) opacity(.52) drop-shadow(0 4px 5px rgba(49,62,78,.12)); }
+.membership-rocket__standby-light {
+  position:absolute;
+  bottom:30px;
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#d2a33b;
+  box-shadow:0 0 0 3px rgba(210,163,59,.13);
+}
+.membership-status-visual__copy { min-width:0; }
+.membership-status-visual__copy strong { display:block; font-size:18px; font-weight:900; }
+.membership-status-visual.is-active .membership-status-visual__copy strong { color:var(--color-primary); }
+.membership-status-visual__copy span { display:block; margin-top:7px; color:var(--color-text-secondary); font-size:12.5px; line-height:1.5; }
+.membership-status-actions { flex:0 0 auto; }
+.membership-plan-meta { margin-top:20px; padding:14px 0 0 144px; border-top:1px solid var(--color-border); }
+.membership-mini-status { display:flex; align-items:center; min-height:32px; }
+.membership-mini-stage { position:relative; display:flex; align-items:center; justify-content:center; width:34px; height:44px; }
+.membership-mini-stage .membership-rocket-emoji { font-size:28px; }
+.membership-mini-status.is-standby .membership-rocket-emoji { filter:grayscale(1) opacity(.5) drop-shadow(0 3px 4px rgba(49,62,78,.1)); }
+
+@media (max-width: 600px) {
+  .membership-status-row { align-items:flex-start; flex-direction:column; }
+  .membership-status-actions { align-self:flex-end; }
+  .membership-plan-meta { padding-left:0; }
+}
 
 /* ============ Private Link ============ */
 .privatelink-page { max-width: 620px; margin: 0 auto; padding: 80px 0 100px; text-align:center; }
@@ -343,13 +452,14 @@
 .mypage-section-title:first-child { margin-top: 0; }
 
 .ticket-row { display:flex; align-items:center; justify-content:space-between; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 18px 20px; margin-bottom: 12px; }
+.ticket-row__main { display:flex; align-items:flex-start; gap:14px; min-width:0; flex:1; }
+.ticket-row__poster { display:block; flex:0 0 64px; width:64px; height:88px; object-fit:cover; border-radius:8px; background:var(--color-bg-secondary); }
+.ticket-row__info { min-width:0; padding-top:2px; }
 .ticket-row__concert { font-weight: 800; font-size: 14.5px; margin-bottom: 4px; }
 .ticket-row__meta { font-size: 12.5px; color: var(--color-text-secondary); }
 .ticket-row__price { font-weight: 800; font-size: 15px; }
 .ticket-row__actions { display: flex; gap: 8px; justify-content: flex-end; }
 .ticket-row__actions .btn-sm { height: 32px; padding: 0 12px; font-size: 12px; }
-
-.mypage-cal-layout { display: grid; grid-template-columns: 380px 1fr; gap: 28px; }
 
 /* ============ Auth pages ============ */
 .auth-page { max-width: 420px; margin: 0 auto; padding: 70px 0 100px; }
@@ -378,3 +488,5 @@
 
 /* ============ Interests page ============ */
 .interest-grid { display:grid; grid-template-columns: repeat(4,1fr); gap: 18px; }
+.interest-card__poster-wrap { aspect-ratio: 2 / 3; overflow:hidden; position:relative; cursor:pointer; background:var(--color-bg-secondary); }
+.interest-card__poster { display:block; width:100%; height:100%; object-fit:cover; }

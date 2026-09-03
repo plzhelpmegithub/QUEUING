@@ -22,7 +22,7 @@ const MAX_RENDERED_SEATS = 168;
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 
 // A파트(seatService.js) 실제 좌석 status 값 → 프론트 내부 상태 매핑
-const REAL_STATUS_TO_LOCAL = { available: 'available', held: 'holding', sold: 'sold', cancelled: 'available' };
+const REAL_STATUS_TO_LOCAL = { AVAILABLE: 'available', HELD: 'holding', SOLD: 'sold', CANCELLED: 'available' };
 
 function allZonesSoldOut(concertId, layout) {
   return layout.every((z) => getVenueZoneRemaining(concertId, z.id) <= 0);
@@ -56,7 +56,11 @@ function renderSoldOutPanel(el, c, zone, layout) {
 // 없으면(A 서버 미연결, 이벤트 미생성 등) null을 반환해서 mock으로 폴백하게 한다.
 async function loadLiveSeatsForZone(zone) {
   const realSeats = await fetchRealSeats();
-  const matching = realSeats.filter((s) => s.section === zone.grade);
+  // 올림픽홀 CSV 방식에서는 API section이 A1~I3의 실제 구역 ID다.
+  // 기존 등급형 데이터도 계속 읽을 수 있도록 grade/label을 보조 조건으로 둔다.
+  const matching = realSeats.filter((s) => (
+    s.section === zone.id || s.section === zone.grade || s.section === zone.label
+  ));
   if (matching.length === 0) return null;
 
   const cols = 12;
@@ -90,7 +94,9 @@ export const seatSelectPage = {
     }
 
     const session = getSelectedSession(c.id);
-    const seatCount = Math.max(0, Math.min(MAX_RENDERED_SEATS, getVenueZoneRemaining(c.id, zone.id)));
+    const isOH = c.venue === '올림픽홀';
+    const maxSeats = isOH ? 1200 : MAX_RENDERED_SEATS;
+    const seatCount = Math.max(0, Math.min(maxSeats, getVenueZoneRemaining(c.id, zone.id)));
 
     if (seatCount <= 0) {
       container.innerHTML = `<div class="container" style="padding:60px 0;"></div>`;

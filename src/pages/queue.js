@@ -30,7 +30,7 @@ export const queuePage = {
           return;
         }
 
-        const userId = getState().user?.email;
+        const userId = getState().user?.userId || getState().user?.email;
         if (!userId) {
           container.innerHTML = `<div class="center-state"><div class="center-state__title">로그인이 필요합니다</div></div>`;
           navigate('login');

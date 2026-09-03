@@ -22,15 +22,16 @@
 .site-header__logo {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   color: #fff;
   font-size: 24px;
   font-weight: 900;
   letter-spacing: 0.02em;
 }
 .site-header__mark {
-  width: 30px;
-  height: 30px;
+  width: 64px;
+  height: 58px;
+  object-fit: contain;
   display: block;
 }
 .site-header__nav { display: flex; gap: 36px; }
@@ -350,6 +351,7 @@
 .cal__dot { width: 5px; height: 5px; border-radius: 50%; }
 .cal__dot--booked { background: var(--color-primary); }
 .cal__dot--upcoming { background: transparent; border: 1.4px solid var(--color-primary); }
+.cal__dot--performance { background: var(--color-text-secondary); }
 .cal__dot--interest { color: var(--color-primary); font-size: 8px; line-height: 1; }
 
 .cal__legend { display:flex; gap: 14px; margin-top: 12px; padding-top:12px; border-top:1px solid var(--color-border); font-size: 11px; color: var(--color-text-secondary); flex-wrap: wrap; flex-shrink: 0; }

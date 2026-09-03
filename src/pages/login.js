@@ -113,6 +113,10 @@ export const loginPage = {
             isMonitor: result.role === 'monitor',
             role: result.role === 'admin' ? 'ADMIN' : result.role === 'monitor' ? 'MONITOR' : 'USER',
             userId: result.userId || email,
+            phone: result.phone || '',
+            birthDate: result.birthDate || '',
+            marketingOptIn: result.marketingOptIn,
+            joinedAt: result.joinedAt,
           });
           const back = popReturnTo();
           if (result.role === 'admin') navigate(back || 'admin');

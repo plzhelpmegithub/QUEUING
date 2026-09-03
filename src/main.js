@@ -25,6 +25,8 @@ import { signupPage } from './pages/signup.js';
 import { signupCompletePage } from './pages/signupComplete.js';
 import { adminPage } from './pages/admin.js';
 import { monitoringPage } from './pages/monitoring.js';
+import { seatMapperPage } from './pages/seatMapper.js';
+import { olympicHallPreviewPage } from './pages/olympicHallPreview.js';
 import { subscribe, isAdmin, isMonitor, clearSeatSelectTimer, clearCurrentOrder, touchSession } from './state/store.js';
 
 registerRoute(/^$/, homePage);
@@ -47,6 +49,8 @@ registerRoute(/^signup$/, signupPage);
 registerRoute(/^signup-complete$/, signupCompletePage);
 registerRoute(/^admin$/, adminPage);
 registerRoute(/^monitoring$/, monitoringPage);
+registerRoute(/^seat-mapper$/, seatMapperPage);
+registerRoute(/^olympic-hall$/, olympicHallPreviewPage);
 
 const BOOKING_GUARD_RE = /^(queue|zones|seats)\//;
 let beforeUnloadBound = false;

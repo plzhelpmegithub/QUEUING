@@ -24,6 +24,7 @@ function weekLabel(weekStart) {
 }
 
 function typeBadge(type) {
+  if (type === 'performance') return { label: '공연 일정', cls: 'badge-gray' };
   if (type === 'booked') return { label: '예매 완료', cls: 'badge-red' };
   if (type === 'interest') return { label: '관심 공연', cls: 'badge-red-light' };
   if (type === 'upcoming') return { label: '예매 오픈', cls: 'badge-outline' };
@@ -49,6 +50,7 @@ export function mountCalendar(el, { events = [], onSelectConcert = () => {} } = 
     const hasBooked = evs.some((e) => e.type === 'booked');
     const hasInterest = evs.some((e) => e.type === 'interest');
     const hasUpcoming = evs.some((e) => e.type === 'upcoming');
+    const hasPerformance = evs.some((e) => e.type === 'performance');
     const classes = [
       'cal__day',
       dateStr === todayStr ? 'is-today' : '',
@@ -61,6 +63,7 @@ export function mountCalendar(el, { events = [], onSelectConcert = () => {} } = 
           ${hasBooked ? `<span class="cal__dot cal__dot--booked" title="예매 완료"></span>` : ''}
           ${hasInterest ? `<span class="cal__dot--interest">♥</span>` : ''}
           ${hasUpcoming ? `<span class="cal__dot cal__dot--upcoming" title="예매 오픈"></span>` : ''}
+          ${hasPerformance ? `<span class="cal__dot cal__dot--performance" title="공연 일정"></span>` : ''}
         </span>
       </div>
     `;
@@ -127,6 +130,7 @@ export function mountCalendar(el, { events = [], onSelectConcert = () => {} } = 
         <span><span class="cal__dot cal__dot--booked"></span>예매 완료</span>
         <span><span class="cal__dot--interest">♥</span>관심 공연</span>
         <span><span class="cal__dot cal__dot--upcoming"></span>예매 오픈/예정</span>
+        <span><span class="cal__dot cal__dot--performance"></span>공연 일정</span>
       </div>
       <div class="cal__selected-info" data-info></div>
     `;

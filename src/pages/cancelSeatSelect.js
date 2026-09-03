@@ -20,7 +20,7 @@ export const cancelSeatSelectPage = {
 
     Promise.all([
       fetch('/events').then((r) => r.json()),
-      fetch('/seats').then((r) => r.json()),
+      fetch(`/seats?eventId=${encodeURIComponent(eventId)}`).then((r) => r.json()),
     ])
       .then(([eventsData, seatsData]) => {
         if (destroyed) return;
@@ -32,7 +32,7 @@ export const cancelSeatSelectPage = {
 
         const allSeats = seatsData.seats || [];
         const eventPrefix = `${eventId}:`;
-        const availableSeats = allSeats.filter((s) => s.seatId.startsWith(eventPrefix) && s.status === 'available');
+        const availableSeats = allSeats.filter((s) => s.seatId.startsWith(eventPrefix) && s.status === 'AVAILABLE');
 
         if (availableSeats.length === 0) {
           container.innerHTML = `

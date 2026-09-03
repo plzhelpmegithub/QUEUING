@@ -25,6 +25,10 @@ const state = {
 const SESSION_TTL_MS = 20 * 60 * 1000; // 20 minutes of mock login session
 const AUTH_KEY = 'queuing_auth';
 
+function asBoolean(value) {
+  return value === true || value === 1 || value === '1';
+}
+
 function saveAuth() {
   try {
     localStorage.setItem(AUTH_KEY, JSON.stringify({
@@ -71,7 +75,18 @@ export function getState() {
 // Auth is centralized here (not in header.js/login.js) so swapping this mock
 // implementation for real AWS Cognito calls later only touches this module —
 // components only ever see isLoggedIn()/getState().user, never a token directly.
-export function login({ name, email, isAdmin = false, isMonitor = false, role: rawRole, userId }) {
+export function login({
+  name,
+  email,
+  isAdmin = false,
+  isMonitor = false,
+  role: rawRole,
+  userId,
+  phone = '',
+  birthDate = '',
+  marketingOptIn = false,
+  joinedAt,
+}) {
   const resolvedRole = rawRole || (isAdmin ? 'ADMIN' : isMonitor ? 'MONITOR' : 'USER');
   state.user = {
     name: name || '게스트',
@@ -80,9 +95,10 @@ export function login({ name, email, isAdmin = false, isMonitor = false, role: r
     isAdmin: isAdmin || resolvedRole === 'ADMIN',
     isMonitor: isMonitor || resolvedRole === 'MONITOR',
     role: resolvedRole,
-    phone: '',
-    marketingOptIn: false,
-    joinedAt: Date.now(),
+    phone: phone || '',
+    birthDate: birthDate || '',
+    marketingOptIn: asBoolean(marketingOptIn),
+    joinedAt: joinedAt || Date.now(),
     accessToken: `mock-access-${Math.random().toString(36).slice(2)}`,
     refreshToken: `mock-refresh-${Math.random().toString(36).slice(2)}`,
   };
@@ -99,6 +115,42 @@ export function updateProfile(patch) {
   Object.assign(state.user, patch);
   saveAuth();
   emit();
+}
+
+// 회원정보는 서버에도 저장해 새로고침·재로그인 후 유지한다.
+// 비밀번호는 서버로만 전달하고 state/localStorage에는 절대 넣지 않는다.
+export function updateProfileOnServer(patch) {
+  const userId = state.user?.userId;
+  if (!userId) return Promise.resolve({ success: false, message: '로그인이 필요합니다.' });
+
+  return fetch('/auth/profile', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, ...patch }),
+  })
+    .then(async (response) => {
+      let data = {};
+      try {
+        data = await response.json();
+      } catch (_) {}
+      if (!response.ok || !data.success) {
+        return { success: false, message: data.message || data.error || '회원정보를 저장하지 못했습니다.' };
+      }
+
+      const profile = data.user || {};
+      updateProfile({
+        ...(profile.name !== undefined ? { name: profile.name } : {}),
+        ...(profile.phone !== undefined ? { phone: profile.phone } : {}),
+        ...(profile.birthDate !== undefined ? { birthDate: profile.birthDate } : {}),
+        ...(profile.marketingOptIn !== undefined ? { marketingOptIn: asBoolean(profile.marketingOptIn) } : {}),
+        ...(profile.joinedAt !== undefined ? { joinedAt: profile.joinedAt } : {}),
+      });
+      return data;
+    })
+    .catch((err) => {
+      console.error('[Auth] 회원정보 수정 API 실패:', err);
+      return { success: false, message: '네트워크 오류로 회원정보를 저장하지 못했습니다.' };
+    });
 }
 
 export function isAdmin() {
@@ -485,6 +537,20 @@ export function requestRefund(bookingId) {
     addNotification({ title: '환불이 완료되었습니다', body: `예매번호 ${b.bookingId}의 환불 처리가 완료되었습니다.` });
     emit();
   }, 4000);
+}
+
+// 무통장입금 예매는 아직 결제되지 않았으므로 환불 처리 없이 즉시 취소한다.
+// 실제 좌석 해제와 DB reservations 취소는 마이페이지에서 /seats/cancel 성공 후 호출한다.
+export function cancelUnpaidBooking(bookingId) {
+  const b = state.bookings.find((x) => x.bookingId === bookingId);
+  if (!b || b.status !== 'unpaid') return;
+  b.status = 'cancelled';
+  b.cancelledAt = Date.now();
+  addNotification({
+    title: '입금 전 예매가 취소되었습니다',
+    body: `예매번호 ${b.bookingId}의 무통장입금 예매가 취소되었습니다.`,
+  });
+  emit();
 }
 
 // Mock session-expiry watchdog — checks every few seconds whether the logged-in

@@ -4,14 +4,41 @@
 import { formatPrice, formatNumber, formatDeadline } from '../utils/format.js';
 import { mountRefundSummary } from '../components/refundPolicy.js';
 import { mountLiveChat } from '../components/liveChat.js';
+import { mountSeatMap } from '../components/seatMap.js';
 import { navigate } from '../router.js';
 import { isLoggedIn, setReturnTo, setSelectedSession, getState } from '../state/store.js';
-import { generateEventSessions, formatStoredSessions, getConcertImage } from '../data/concerts.js';
+import { generateEventSessions, formatStoredSessions, getConcertImage, getTicketPriceRows, getVenueZoneLayout } from '../data/concerts.js';
+import { OLYMPIC_HALL_CSV_ZONES, OLYMPIC_HALL_FLOOR_SEAT_COUNT } from '../data/olympicHallSeats.js';
 
 const VENUE_SEATMAP = {
-  '올림픽홀': '/images/seatmaps/올림픽홀.jpg',
+  '올림픽홀': '/images/seatmaps/올림픽홀-csv.png',
   '고척스카이돔': '/images/seatmaps/고척스카이돔.jpg',
 };
+
+function buildOlympicHallPreviewData(event) {
+  const venueZones = getVenueZoneLayout(event);
+  const storedSections = new Map(
+    (event.sections || []).map((section) => [section.id || section.name, section]),
+  );
+  const zoneById = new Map(venueZones.map((zone) => [zone.id, zone]));
+  const sections = venueZones.map((zone) => ({
+    id: zone.id,
+    grade: zone.grade,
+    label: `${zone.id}구역 · ${zone.grade}석`,
+    price: Number(storedSections.get(zone.id)?.price ?? zone.price ?? event.price ?? 0),
+  }));
+  const seats = OLYMPIC_HALL_CSV_ZONES.flatMap((zone) => zone.seats.map((seat) => ({
+    id: seat.id,
+    section: zone.id,
+    status: 'available',
+    price: sections.find((section) => section.id === zone.id)?.price || 0,
+  })));
+  const floorPrice = Number(storedSections.get('Floor')?.price ?? zoneById.get('Floor')?.price ?? event.price ?? 0);
+  for (let i = 0; i < OLYMPIC_HALL_FLOOR_SEAT_COUNT; i++) {
+    seats.push({ id: `Floor-${i + 1}`, section: 'Floor', status: 'available', price: floorPrice });
+  }
+  return { sections, seats };
+}
 
 export const concertDetailPage = {
   render(container, params) {
@@ -21,6 +48,7 @@ export const concertDetailPage = {
     let destroyed = false;
     let openTimer = null;
     let chatCleanup = null;
+    let venueSeatMapCtrl = null;
 
     // /events 전체 조회 후 eventId로 찾기
     fetch('/events')
@@ -34,7 +62,7 @@ export const concertDetailPage = {
         }
 
         const imgUrl = getConcertImage(c.eventName || c.eventId);
-        const bgStyle = `background: url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${c.color || '#667eea,#764ba2'})`;
+        const bgStyle = `--detail-poster-image: url('${imgUrl}')`;
         const sessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
         const sessionDates = [...new Set(sessions.map((s) => s.date))];
         const dateRangeText = sessionDates.length > 1
@@ -42,9 +70,10 @@ export const concertDetailPage = {
           : sessionDates[0] || c.eventDate || '-';
 
         const descText = c.description || `${c.eventName} 공연입니다.`;
+        const ticketPriceRows = getTicketPriceRows(c);
 
         container.innerHTML = `
-          <section class="detail-hero" style="${bgStyle}">
+          <section class="detail-hero detail-hero--spread" style="${bgStyle}">
             <div class="detail-hero__overlay"></div>
             <div class="container detail-hero__content">
               <div class="detail-hero__artist">${c.eventName}</div>
@@ -72,7 +101,9 @@ export const concertDetailPage = {
                 ${VENUE_SEATMAP[c.venue] ? `
                 <div style="margin-top:16px;padding-top:14px;border-top:1px dashed var(--color-border);">
                   <div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:8px;">좌석 배치도 — ${c.venue}</div>
-                  <img src="${VENUE_SEATMAP[c.venue]}" alt="${c.venue} 좌석배치도" style="width:100%;border-radius:12px;object-fit:contain;background:#fff;" />
+                  ${c.venue === '올림픽홀'
+                    ? `<div class="detail-seatmap detail-seatmap--static" data-venue-seatmap role="img" aria-label="${c.venue} 좌석 배치도"></div>`
+                    : `<img src="${VENUE_SEATMAP[c.venue]}" alt="${c.venue} 좌석배치도" style="width:100%;border-radius:12px;object-fit:contain;background:#fff;" />`}
                 </div>` : ''}
                 ${c.cast ? `
                 <div style="margin-top:16px;padding-top:14px;border-top:1px dashed var(--color-border);">
@@ -92,13 +123,9 @@ export const concertDetailPage = {
               </div>
               <div class="detail-info-card">
                 <h3>티켓 가격</h3>
-                ${
-                  (c.sections || []).length
-                    ? c.sections
-                        .map((s) => `<div class="price-row"><span>${s.label || s.name}석</span><b>${formatPrice(s.price)}</b></div>`)
-                        .join('')
-                    : `<div class="price-row"><span>일반석</span><b>${formatPrice(c.price)}</b></div>`
-                }
+                ${ticketPriceRows
+                  .map(({ grade, price }) => `<div class="price-row"><span>${grade}석</span><b>${formatPrice(price)}</b></div>`)
+                  .join('')}
               </div>
               <div class="detail-info-card">
                 <h3>예매 유의사항</h3>
@@ -123,6 +150,16 @@ export const concertDetailPage = {
             </div>
           </div>
         `;
+
+        if (c.venue === '올림픽홀') {
+          const previewData = buildOlympicHallPreviewData(c);
+          venueSeatMapCtrl = mountSeatMap(container.querySelector('[data-venue-seatmap]'), {
+            sections: previewData.sections,
+            seats: previewData.seats,
+            readOnly: true,
+            venue: '올림픽홀',
+          });
+        }
 
         // 캘린더 날짜 + 회차 선택
         let selectedDate = null;
@@ -310,6 +347,7 @@ export const concertDetailPage = {
       destroyed = true;
       if (openTimer) clearInterval(openTimer);
       if (chatCleanup) chatCleanup();
+      if (venueSeatMapCtrl) venueSeatMapCtrl.destroy();
     };
   },
 };
