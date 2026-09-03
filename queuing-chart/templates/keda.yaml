@@ -1,15 +1,8 @@
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
-metadata:
-  name: sqs-queue-scaledobject
-spec:
-  scaleTargetRef:
-    name: email-worker
-  minReplicaCount: 0
-  maxReplicaCount: 10
-  triggers:
-  - type: aws-sqs-queue
-    metadata:
-      queueURL: "http://localstack.queuing-localstack.svc.cluster.local:4566/000000000000/resale-queue"
-      queueLength: "5"
-      awsRegion: "ap-northeast-2"
+triggers:
+- type: aws-sqs-queue
+  metadata:
+    queueURL: "http://localstack.queuing-localstack.svc.cluster.local:4566/000000000000/resale-queue"
+    queueLength: "5"
+    awsRegion: "ap-northeast-2"
+  authenticationRef:
+    name: keda-aws-credentials
