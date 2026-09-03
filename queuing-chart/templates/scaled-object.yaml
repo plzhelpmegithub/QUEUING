@@ -2,7 +2,7 @@ apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
   name: queuing-worker-b-scaler
-  namespace: default
+  namespace: email-worker
 spec:
   scaleTargetRef:
     name: queuing-worker-b
