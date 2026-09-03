@@ -13,7 +13,8 @@ service:
 env:
   dbHost: "211.46.52.164"
   dbPort: "13306"
-  dbPassword: "hWE6Nka0dG"
+  dbUser: "team2"
+  dbPassword: "Gkrtod1@"
   redisHost: "redis-master.realtime.svc.cluster.local"
   redisPort: "6379"
   redisPassword: "SJsQlDBpnFTKfyu3i0z3nv55"
