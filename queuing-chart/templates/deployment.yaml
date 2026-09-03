@@ -32,7 +32,7 @@ spec:
         - name: MYSQL_PORT
           value: "13306"
         - name: MYSQL_USER
-          value: "root"
+          value: "team2"
         - name: MYSQL_PASSWORD
           valueFrom:
             secretKeyRef:
