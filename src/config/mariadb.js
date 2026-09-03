@@ -1,8 +1,5 @@
-const mariadb = require('mariadb'); // MariaDB 클라이언트 라이브러리
+const mariadb = require('mariadb');
 
-// MariaDB 연결 풀 — 환경변수로 접속 정보 주입 (redis.js와 동일한 패턴)
-// B파트가 만들어둔 queuing_db를 공용으로 사용하되, 테이블명은 분리해서 씀
-// (users → auth_users, reservations는 B파트 resale_queues와 이름이 안 겹침)
 const pool = mariadb.createPool({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 3306,

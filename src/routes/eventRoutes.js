@@ -5,25 +5,16 @@ const seatService = require('../services/seatService');
 const { notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
 const { publishSeatEvent, EVENT_TYPE } = require('../services/eventService');
 
-// 이벤트 정보 저장용 Redis 키
-const EVENT_KEY = 'event:info';           // 현재 활성 이벤트 (예매 진행 중)
-const EVENT_LIST_KEY = 'events:list';     // 전체 이벤트 목록 (홈 카드 표시용)
+const EVENT_KEY = 'event:info';
+const EVENT_LIST_KEY = 'events:list';
 const SEAT_PREFIX = 'seat:';
 
-// 구역 등급별 기본 색상 (프론트 zoneSelect의 GRADE_COLOR와 동일하게 맞춤)
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
 
-/**
- * 부채꼴(아레나) 좌석맵 좌표 자동 계산
- * - 프론트 신규 디자인(zone-fan)은 구역마다 angle/radius/blockW/blockH 좌표가 있어야
- *   무대를 중심으로 부채꼴 형태로 배치할 수 있음
- * - 구역 생성 순서를 무대에서 가까운 순(반지름이 작은 순)으로 간주해
- *   중심을 기준으로 대칭으로 펼쳐 배치
- */
 function assignZoneGeometry(sections) {
   const n = sections.length;
-  const ANGLE_SPAN = 150; // 무대를 중심으로 펼쳐지는 총 각도(도)
+  const ANGLE_SPAN = 150;
   return sections.map((s, i) => {
     const angle = n === 1 ? 0 : Math.round(-ANGLE_SPAN / 2 + (i * ANGLE_SPAN) / (n - 1));
     const radius = 100 + i * 65;
@@ -36,28 +27,6 @@ function assignZoneGeometry(sections) {
 
 async function eventRoutes(fastify) {
 
-  // =============================================
-  // 공연 생성
-  // =============================================
-
-  /**
-   * 공연 생성 API
-   *
-   * 구역별 생성:
-   * {
-   *   "eventName": "2026 콘서트",
-   *   "eventDate": "2026-12-25",
-   *   "venue": "올림픽공원 체조경기장",
-   *   "sections": [
-   *     { "name": "VIP", "seats": 100, "price": 150000 },
-   *     { "name": "R", "seats": 500, "price": 99000 },
-   *     { "name": "S", "seats": 400, "price": 77000 }
-   *   ]
-   * }
-   *
-   * 단일 구역 간편 생성:
-   * { "eventName": "2026 팬미팅", "totalSeats": 5, "price": 88000 }
-   */
   fastify.post('/event/create', async (request, reply) => {
     const { eventName, eventDate, venue, sections, totalSeats, price, seatingType, description, cast, agency, runtime, ageRating, notices, sessions } = request.body || {};
     const VALID_SEATING = new Set(['arena', 'standing', 'theater']);
@@ -77,7 +46,6 @@ async function eventRoutes(fastify) {
     let sectionSummary = [];
 
     if (sections && Array.isArray(sections)) {
-      // ===== 구역별 생성 =====
       for (const section of sections) {
         if (!section.name || !section.seats || section.seats < 1) {
           return reply.status(400).send({ error: '각 section에 name과 seats(1 이상)가 필요합니다.' });
@@ -98,7 +66,6 @@ async function eventRoutes(fastify) {
         });
       }
     } else if (totalSeats && totalSeats >= 1) {
-      // ===== 단일 구역 간편 생성 =====
       const padLength = String(totalSeats).length;
       for (let i = 1; i <= totalSeats; i++) {
         allSeatIds.push(`${eventId}:A-${String(i).padStart(padLength, '0')}`);
@@ -118,13 +85,10 @@ async function eventRoutes(fastify) {
     await queueService.setTotalSeats(totalSeatCount);
     await queueService.openTicketing();
 
-    // 부채꼴(아레나) 좌석맵일 때만 구역별 좌표(angle/radius/blockW/blockH) 자동 계산
-    // — 프론트 신규 디자인의 .zone-fan 렌더링에 필요. standing은 좌표 없이 그리드로 표시.
     const sectionsWithGeometry = resolvedSeatingType === 'arena'
       ? assignZoneGeometry(sectionSummary)
       : sectionSummary;
 
-    // 이벤트 정보 저장 (활성 이벤트)
     const extraFields = {};
     if (description) extraFields.description = description;
     if (cast) extraFields.cast = cast;
@@ -150,7 +114,6 @@ async function eventRoutes(fastify) {
       ...hashExtras,
     });
 
-    // MariaDB events 테이블에 영구 저장
     const emojis = ['🎵', '🎭', '🎨', '🎷', '🎤', '🎸', '🎹', '🎻'];
     const colors = ['#667eea,#764ba2', '#f093fb,#f5576c', '#4facfe,#00f2fe', '#a18cd1,#fbc2eb', '#ffecd2,#fcb69f'];
     const chosenEmoji = emojis[Math.floor(Math.random() * emojis.length)];
@@ -166,7 +129,6 @@ async function eventRoutes(fastify) {
       console.error('[Event] MariaDB 저장 실패:', dbErr.message);
     }
 
-    // Redis 캐시에도 저장 (실시간 조회 성능용)
     const eventCard = JSON.stringify({
       eventId,
       eventName,
@@ -196,10 +158,6 @@ async function eventRoutes(fastify) {
     });
   });
 
-  // =============================================
-  // 공연 정보 조회
-  // =============================================
-
   fastify.get('/event/info', async (request, reply) => {
     const info = await redis.hgetall(EVENT_KEY);
     if (!info || !info.eventName) {
@@ -219,30 +177,9 @@ async function eventRoutes(fastify) {
     });
   });
 
-  // =============================================
-  // 공연 정보 수정
-  // =============================================
-
-  /**
-   * 공연 정보 수정 API
-   * - 공연명, 날짜, 장소, 구역별 가격 수정 가능
-   * - 수정 시 예매자에게 이메일/문자 알림 발송
-   *
-   * 요청 예시:
-   * {
-   *   "eventDate": "2026-12-31",
-   *   "venue": "잠실종합운동장",
-   *   "reason": "장소 변경",
-   *   "notify": true,
-   *   "users": [
-   *     { "userId": "user-001", "email": "a@test.com", "phone": "+821012345678" }
-   *   ]
-   * }
-   */
   fastify.patch('/event/update', async (request, reply) => {
     const { eventName, eventDate, venue, reason, notify, users, priceUpdates } = request.body || {};
 
-    // 현재 이벤트 정보 조회
     const info = await redis.hgetall(EVENT_KEY);
     if (!info || !info.eventName) {
       return reply.status(404).send({ message: '등록된 공연이 없습니다.' });
@@ -252,9 +189,8 @@ async function eventRoutes(fastify) {
       return reply.status(409).send({ message: '이미 취소된 공연입니다.' });
     }
 
-    // 변경할 필드만 업데이트
     const updates = {};
-    const changes = [];          // 변경 이력
+    const changes = [];
 
     if (eventName) {
       updates.eventName = eventName;
@@ -273,7 +209,6 @@ async function eventRoutes(fastify) {
       updates.updatedAt = new Date().toISOString();
       await redis.hset(EVENT_KEY, updates);
 
-      // MariaDB 동기화
       try {
         const setClauses = [];
         const params = [];
@@ -290,10 +225,8 @@ async function eventRoutes(fastify) {
       }
     }
 
-    // 구역별 가격 수정 (Redis 좌석 데이터 직접 업데이트)
     if (priceUpdates && Array.isArray(priceUpdates)) {
       for (const pu of priceUpdates) {
-        // pu = { section: "VIP", price: 180000 }
         let cursor = '0';
         do {
           const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${info.eventId}:${pu.section}-*`, 'COUNT', 200);
@@ -307,7 +240,6 @@ async function eventRoutes(fastify) {
         changes.push(`${pu.section}석 가격: → ${pu.price.toLocaleString()}원`);
       }
 
-      // sections 정보도 업데이트 (구역 좌표(angle/radius 등)는 그대로 유지됨)
       const sections = JSON.parse(info.sections || '[]');
       for (const pu of priceUpdates) {
         const section = sections.find(s => s.name === pu.section);
@@ -317,8 +249,6 @@ async function eventRoutes(fastify) {
       updates.sections = sections;
     }
 
-    // /events 목록 카드도 동기화 — 프론트가 /events 한 번으로 최신 이름/장소/구역
-    // 정보를 받으므로, 여기서 갱신 안 하면 목록 화면에서 옛날 정보가 계속 보임
     if (info.eventId && (Object.keys(updates).length > 0)) {
       const cardStr = await redis.hget(EVENT_LIST_KEY, info.eventId);
       if (cardStr) {
@@ -336,7 +266,6 @@ async function eventRoutes(fastify) {
 
     const changeDetail = changes.join(', ');
 
-    // 예매자에게 알림 발송
     let notificationResult = null;
     if (notify && users && users.length > 0) {
       notificationResult = await notifyEventUpdate(
@@ -353,28 +282,9 @@ async function eventRoutes(fastify) {
     });
   });
 
-  // =============================================
-  // 공연 취소
-  // =============================================
-
-  /**
-   * 공연 취소 API
-   * - 전체 좌석 초기화 + 대기열 초기화
-   * - 예매자 전원에게 취소 사유 포함 이메일/문자 발송
-   *
-   * 요청 예시:
-   * {
-   *   "reason": "아티스트 건강 상의 사유로 공연이 취소되었습니다.",
-   *   "users": [
-   *     { "userId": "user-001", "email": "a@test.com", "phone": "+821012345678", "seatId": "VIP-01" },
-   *     { "userId": "user-002", "email": "b@test.com", "phone": "+821098765432", "seatId": "R-001" }
-   *   ]
-   * }
-   */
   fastify.post('/event/cancel', async (request, reply) => {
     const { reason, users } = request.body || {};
 
-    // 현재 이벤트 정보 조회
     const info = await redis.hgetall(EVENT_KEY);
     if (!info || !info.eventName) {
       return reply.status(404).send({ message: '등록된 공연이 없습니다.' });
@@ -388,14 +298,12 @@ async function eventRoutes(fastify) {
       return reply.status(400).send({ error: '취소 사유(reason)는 필수입니다.' });
     }
 
-    // 1) 공연 상태를 cancelled로 변경
     await redis.hset(EVENT_KEY, {
       status: 'cancelled',
       cancelReason: reason,
       cancelledAt: new Date().toISOString(),
     });
 
-    // MariaDB 동기화
     try {
       await pool.query(
         `UPDATE events SET status = 'cancelled', cancel_reason = ?, cancelled_at = NOW() WHERE event_id = ?`,
@@ -405,20 +313,16 @@ async function eventRoutes(fastify) {
       console.error('[Event] MariaDB 취소 동기화 실패:', dbErr.message);
     }
 
-    // 2) 해당 이벤트의 좌석 키 일괄 삭제 (Redis 메모리 확보)
     const { deleted: cancelledSeats } = await seatService.cleanupEventSeats(info.eventId);
 
-    // 3) 대기열 초기화
     await redis.del('queue:waiting', 'queue:standby', 'queue:admitted', 'queue:counter');
 
-    // 4) 공연 취소 이벤트 발행 → C파트가 접속 중인 사용자에게 실시간 알림
     await publishSeatEvent(EVENT_TYPE.SOLD_OUT, {
       seatId: 'ALL',
       message: `공연 취소: ${reason}`,
       cancelled: true,
     });
 
-    // 5) 예매자에게 이메일/문자 발송
     let notificationResult = null;
     if (users && users.length > 0) {
       notificationResult = await notifyEventCancellation(
@@ -440,7 +344,6 @@ async function eventRoutes(fastify) {
       message: `"${info.eventName}" 공연이 취소되었습니다. ${cancelledSeats}석 초기화 완료.`,
     });
 
-    // 목록에서도 상태 변경
     const eventId = info.eventId;
     if (eventId) {
       const cardStr = await redis.hget(EVENT_LIST_KEY, eventId);
@@ -452,16 +355,10 @@ async function eventRoutes(fastify) {
     }
   });
 
-  // =============================================
-  // 이벤트 목록 (홈 카드용)
-  // =============================================
-
-  // 전체 이벤트 목록 조회 (Redis → MariaDB 폴백)
   fastify.get('/events', async (request, reply) => {
     const all = await redis.hgetall(EVENT_LIST_KEY);
     let events = Object.values(all || {}).map(v => JSON.parse(v));
 
-    // Redis에 없으면 MariaDB에서 복구
     if (events.length === 0) {
       try {
         const rows = await pool.query(`SELECT * FROM events ORDER BY created_at DESC`);
@@ -479,7 +376,6 @@ async function eventRoutes(fastify) {
           ticketOpenAt: r.ticket_open_at || null,
           createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
         }));
-        // Redis 캐시 재구성
         if (events.length > 0) {
           const pipeline = redis.pipeline();
           events.forEach(e => pipeline.hset(EVENT_LIST_KEY, e.eventId, JSON.stringify(e)));
@@ -494,9 +390,6 @@ async function eventRoutes(fastify) {
     return reply.send({ events, count: events.length });
   });
 
-  // 공연 예매 오픈 시간 수동 설정/변경 (테스트용) — 관리자가 특정 공연의
-  // ticketOpenAt을 직접 지정해 예매 오픈 카운트다운 UI를 즉시 검증할 수 있게 함.
-  // ticketOpenAt을 null로 보내면 오픈 시간 제한이 해제된다(즉시 예매 가능 상태로 표시).
   fastify.patch('/events/:eventId/open-time', async (request, reply) => {
     const { eventId } = request.params;
     const { ticketOpenAt } = request.body || {};
@@ -516,7 +409,6 @@ async function eventRoutes(fastify) {
     card.ticketOpenAt = ticketOpenAt || null;
     await redis.hset(EVENT_LIST_KEY, eventId, JSON.stringify(card));
 
-    // 현재 활성 이벤트(event:info)와 같은 공연이면 그쪽 상태도 동기화
     const info = await redis.hgetall(EVENT_KEY);
     if (info && info.eventId === eventId) {
       if (card.ticketOpenAt) {
@@ -536,8 +428,6 @@ async function eventRoutes(fastify) {
     });
   });
 
-  // 공연 예매 마감 시간 설정/변경 — ticketCloseAt이 지나면 자동으로 티켓팅이 마감된다.
-  // ticketCloseAt을 null로 보내면 마감 시간 제한이 해제된다(수동 마감으로 전환).
   fastify.patch('/events/:eventId/close-time', async (request, reply) => {
     const { eventId } = request.params;
     const { ticketCloseAt } = request.body || {};
@@ -578,7 +468,6 @@ async function eventRoutes(fastify) {
     });
   });
 
-  // 이벤트 삭제 (목록에서 제거)
   fastify.delete('/events/:eventId', async (request, reply) => {
     const { eventId } = request.params;
     const removed = await redis.hdel(EVENT_LIST_KEY, eventId);
@@ -597,7 +486,6 @@ async function eventRoutes(fastify) {
     return reply.send({ success: true, eventId, message: '이벤트가 삭제되었습니다.' });
   });
 
-  // 더미 이벤트 초기화 (홈 화면용)
   fastify.post('/events/seed', async (request, reply) => {
     const dummyEvents = [
       { eventId: 'demo-1', eventName: '2026 연말 콘서트', eventDate: '2026-12-25', venue: '올림픽공원 체조경기장', totalSeats: 1000, price: 99000, emoji: '🎵', color: '#667eea,#764ba2', status: 'open' },
@@ -614,7 +502,6 @@ async function eventRoutes(fastify) {
     });
     await pipeline.exec();
 
-    // MariaDB에도 저장 (중복 호출 시 기존 레코드 갱신)
     let dbSaved = 0;
     let dbError = null;
     try {
@@ -635,6 +522,187 @@ async function eventRoutes(fastify) {
     }
 
     return reply.send({ seeded: dummyEvents.length, dbSaved, dbError, message: '더미 이벤트 5개 생성 완료' });
+  });
+
+  fastify.post('/admin/redis/reset', async (request, reply) => {
+    const { mode = 'soft' } = request.body || {};
+    const cleared = [];
+
+    await redis.del(EVENT_KEY);
+    cleared.push('event:info');
+
+    await redis.del('queue:waiting', 'queue:standby', 'queue:admitted', 'queue:counter');
+    cleared.push('queue:waiting', 'queue:standby', 'queue:admitted', 'queue:counter');
+
+    await redis.del('event:sold-out', 'event:ticketing-status');
+    cleared.push('event:sold-out', 'event:ticketing-status');
+
+    let tokenCount = 0;
+    let cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', 'admission:*', 'COUNT', 200);
+      cursor = next;
+      if (keys.length > 0) {
+        await redis.del(...keys);
+        tokenCount += keys.length;
+      }
+    } while (cursor !== '0');
+    if (tokenCount > 0) cleared.push(`admission tokens (${tokenCount})`);
+
+    let seatCount = 0;
+    if (mode === 'hard') {
+      cursor = '0';
+      do {
+        const [next, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}*`, 'COUNT', 200);
+        cursor = next;
+        if (keys.length > 0) {
+          await redis.del(...keys);
+          seatCount += keys.length;
+        }
+      } while (cursor !== '0');
+      cleared.push(`seat keys (${seatCount})`);
+    }
+
+    let resynced = 0;
+    if (mode === 'resync' || mode === 'hard') {
+      await redis.del(EVENT_LIST_KEY);
+      try {
+        const rows = await pool.query('SELECT * FROM events ORDER BY created_at DESC');
+        const pipeline = redis.pipeline();
+        rows.forEach((r) => {
+          const card = {
+            eventId: r.event_id,
+            eventName: r.event_name,
+            eventDate: r.event_date || '',
+            venue: r.venue || '',
+            totalSeats: r.total_seats,
+            seatingType: r.seating_type || 'arena',
+            sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
+            status: r.status || 'open',
+            emoji: r.emoji || '',
+            color: r.color || '#667eea,#764ba2',
+            ticketOpenAt: r.ticket_open_at || null,
+            ticketCloseAt: r.ticket_close_at || null,
+            createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+          };
+          if (r.description) card.description = r.description;
+          if (r.cast) card.cast = r.cast;
+          if (r.sessions) {
+            try { card.sessions = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions; } catch {}
+          }
+          pipeline.hset(EVENT_LIST_KEY, card.eventId, JSON.stringify(card));
+          resynced++;
+        });
+        await pipeline.exec();
+      } catch (dbErr) {
+        console.error('[Redis Reset] MariaDB resync 실패:', dbErr.message);
+      }
+      cleared.push(`events:list resync (${resynced})`);
+    }
+
+    console.log(`[Redis Reset] mode=${mode} — ${cleared.join(', ')}`);
+    return reply.send({
+      success: true,
+      mode,
+      cleared,
+      seatCount,
+      resynced,
+      message: `Redis 초기화 완료 (${mode})`,
+    });
+  });
+
+  fastify.post('/admin/redis/recover', async (request, reply) => {
+    const { eventId } = request.body || {};
+
+    let targetEventId = eventId;
+    if (!targetEventId) {
+      const rows = await pool.query(
+        "SELECT event_id FROM events WHERE status = 'open' ORDER BY created_at DESC LIMIT 1",
+      );
+      if (rows.length === 0) {
+        return reply.status(400).send({ success: false, message: 'open 상태의 이벤트가 없습니다. eventId를 직접 지정해주세요.' });
+      }
+      targetEventId = rows[0].event_id;
+    }
+
+    const results = {};
+
+    try {
+      const allEvents = await pool.query('SELECT * FROM events ORDER BY created_at DESC');
+      if (allEvents.length > 0) {
+        const pipeline = redis.pipeline();
+        allEvents.forEach((r) => {
+          const card = {
+            eventId: r.event_id,
+            eventName: r.event_name,
+            eventDate: r.event_date || '',
+            venue: r.venue || '',
+            totalSeats: r.total_seats,
+            seatingType: r.seating_type || 'arena',
+            sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
+            status: r.status || 'open',
+            emoji: r.emoji || '',
+            color: r.color || '#667eea,#764ba2',
+            ticketOpenAt: r.ticket_open_at || null,
+            ticketCloseAt: r.ticket_close_at || null,
+            createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+          };
+          if (r.description) card.description = r.description;
+          pipeline.hset(EVENT_LIST_KEY, card.eventId, JSON.stringify(card));
+        });
+        await pipeline.exec();
+        results.events = { recovered: true, count: allEvents.length };
+      }
+    } catch (err) {
+      results.events = { recovered: false, error: err.message };
+    }
+
+    try {
+      const evtRows = await pool.query('SELECT * FROM events WHERE event_id = ?', [targetEventId]);
+      if (evtRows.length > 0) {
+        const e = evtRows[0];
+        await redis.hset(EVENT_KEY, {
+          eventId: e.event_id,
+          eventName: e.event_name,
+          eventDate: e.event_date || '',
+          venue: e.venue || '',
+          totalSeats: (e.total_seats || 0).toString(),
+          seatingType: e.seating_type || 'arena',
+          status: e.status || 'open',
+        });
+        results.eventInfo = { recovered: true, eventId: targetEventId };
+      }
+    } catch (err) {
+      results.eventInfo = { recovered: false, error: err.message };
+    }
+
+    try {
+      results.seats = await seatService.recoverSeatsFromMariaDB(targetEventId);
+    } catch (err) {
+      results.seats = { recovered: false, error: err.message };
+    }
+
+    try {
+      results.queue = await queueService.recoverQueueFromMariaDB(targetEventId);
+    } catch (err) {
+      results.queue = { recovered: false, error: err.message };
+    }
+
+    const ticketingStatus = await redis.get('event:ticketing-status');
+    if (!ticketingStatus) {
+      await redis.set('event:ticketing-status', 'open');
+      results.ticketingStatus = 'open (기본값 설정)';
+    } else {
+      results.ticketingStatus = `${ticketingStatus} (기존 유지)`;
+    }
+
+    console.log(`[Redis Recover] eventId=${targetEventId}`, JSON.stringify(results));
+    return reply.send({
+      success: true,
+      eventId: targetEventId,
+      results,
+      message: `MariaDB → Redis 복구 완료 (${targetEventId})`,
+    });
   });
 }
 

@@ -1,44 +1,35 @@
 const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
 
-// ===== AWS 클라이언트 설정 (LocalStack 호환) =====
-const sesClient = new SESClient({
-  endpoint: process.env.AWS_ENDPOINT || 'http://192.168.0.191:4566',
-  region: process.env.AWS_REGION || 'ap-northeast-2',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || 'fakekey',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || 'fakesecret',
-  },
-});
+function buildAwsConfig() {
+  const config = {
+    region: process.env.AWS_REGION || 'ap-northeast-2',
+  };
+  if (process.env.AWS_ENDPOINT) {
+    config.endpoint = process.env.AWS_ENDPOINT;
+  }
+  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    config.credentials = {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    };
+  }
+  return config;
+}
 
-const snsClient = new SNSClient({
-  endpoint: process.env.AWS_ENDPOINT || 'http://192.168.0.191:4566',
-  region: process.env.AWS_REGION || 'ap-northeast-2',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || 'fakekey',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || 'fakesecret',
-  },
-});
+const sesClient = new SESClient(buildAwsConfig());
+const snsClient = new SNSClient(buildAwsConfig());
 
-// 발신자 이메일 (SES에 인증된 이메일이어야 함)
 const FROM_EMAIL = process.env.FROM_EMAIL || 'noreply@queuing.com';
 
-/**
- * 이메일 발송 (SES)
- * - 예매 확인, 공연 취소 안내 등에 사용
- *
- * @param {string} to - 수신자 이메일
- * @param {string} subject - 제목
- * @param {string} body - 본문 (HTML)
- */
 async function sendEmail(to, subject, body) {
   try {
     await sesClient.send(new SendEmailCommand({
-      Source: FROM_EMAIL,                          // 보내는 사람
-      Destination: { ToAddresses: [to] },          // 받는 사람
+      Source: FROM_EMAIL,
+      Destination: { ToAddresses: [to] },
       Message: {
-        Subject: { Data: subject },                // 제목
-        Body: { Html: { Data: body } },            // HTML 본문
+        Subject: { Data: subject },
+        Body: { Html: { Data: body } },
       },
     }));
     console.log(`[Email] 발송 성공: ${to} — ${subject}`);
@@ -49,18 +40,11 @@ async function sendEmail(to, subject, body) {
   }
 }
 
-/**
- * 문자 발송 (SNS)
- * - 긴급 알림, 공연 취소 안내 등에 사용
- *
- * @param {string} phoneNumber - 수신자 전화번호 (예: "+821012345678")
- * @param {string} message - 문자 내용
- */
 async function sendSMS(phoneNumber, message) {
   try {
     await snsClient.send(new PublishCommand({
-      PhoneNumber: phoneNumber,                    // 받는 사람 전화번호
-      Message: message,                            // 문자 내용
+      PhoneNumber: phoneNumber,
+      Message: message,
     }));
     console.log(`[SMS] 발송 성공: ${phoneNumber}`);
     return { success: true, phoneNumber, type: 'sms' };
@@ -70,19 +54,10 @@ async function sendSMS(phoneNumber, message) {
   }
 }
 
-/**
- * 공연 취소 알림 발송 (이메일 + 문자 동시)
- * - 공연이 취소되면 예매한 전체 사용자에게 알림
- *
- * @param {object} eventInfo - { eventName, eventDate, venue }
- * @param {string} reason - 취소 사유
- * @param {object[]} users - [{ userId, email, phone, seatId }]
- */
 async function notifyEventCancellation(eventInfo, reason, users) {
   const results = { email: [], sms: [], total: users.length };
 
   for (const user of users) {
-    // 이메일 발송
     if (user.email) {
       const subject = `[QUEUING] "${eventInfo.eventName}" 공연 취소 안내`;
       const body = `
@@ -104,7 +79,6 @@ async function notifyEventCancellation(eventInfo, reason, users) {
       results.email.push(emailResult);
     }
 
-    // 문자 발송
     if (user.phone) {
       const message = `[QUEUING] "${eventInfo.eventName}" 공연이 취소되었습니다. 사유: ${reason}. 결제 금액은 3~5일 내 환불됩니다.`;
       const smsResult = await sendSMS(user.phone, message);
@@ -116,14 +90,6 @@ async function notifyEventCancellation(eventInfo, reason, users) {
   return results;
 }
 
-/**
- * 공연 변경 알림 발송 (이메일 + 문자)
- * - 날짜, 장소 등이 변경되면 예매자에게 알림
- *
- * @param {object} eventInfo - { eventName }
- * @param {string} changeDetail - 변경 내용 설명
- * @param {object[]} users - [{ userId, email, phone }]
- */
 async function notifyEventUpdate(eventInfo, changeDetail, users) {
   const results = { email: [], sms: [], total: users.length };
 

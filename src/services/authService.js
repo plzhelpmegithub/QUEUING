@@ -3,11 +3,10 @@ const pool = require('../config/mariadb');
 
 const TABLE_NAME = 'users';
 
-/**
- * users 테이블 초기화
- * - 서버 시작 시 호출 (테이블 자체는 dbService.initTable에서 생성)
- * - 기본 관리자 계정(admin@queuing.kr/admin1234) 자동 생성
- */
+function asBoolean(value) {
+  return value === true || value === 1 || value === '1';
+}
+
 async function initUsersTable() {
   try {
     const existing = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, ['admin@queuing.kr']);
@@ -33,16 +32,7 @@ async function initUsersTable() {
   }
 }
 
-/**
- * 회원가입
- * @param {string} userId - 사용자 ID
- * @param {string} password - 비밀번호 (평문 → bcrypt 암호화 후 저장)
- * @param {string} email - 이메일
- * @param {string} role - 역할 (user/admin, 기본: user)
- * @param {{name?: string, phone?: string, birthDate?: string}} profile - 부가 정보 (이름/휴대폰/생년월일)
- */
 async function register(userId, password, email, role = 'user', profile = {}) {
-  // 1) 중복 확인
   try {
     const existing = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, [userId]);
     if (existing.length > 0) {
@@ -52,10 +42,8 @@ async function register(userId, password, email, role = 'user', profile = {}) {
     console.error('[Auth] 중복 확인 실패:', err.message);
   }
 
-  // 2) 비밀번호 암호화
   const hashedPw = await bcrypt.hash(password, 10);
 
-  // 3) DB 저장
   try {
     await pool.query(
       `INSERT INTO ${TABLE_NAME} (user_id, password, role, email, name, phone, birth_date) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -69,21 +57,19 @@ async function register(userId, password, email, role = 'user', profile = {}) {
   }
 }
 
-/**
- * 로그인
- * @param {string} userId - 사용자 ID
- * @param {string} password - 비밀번호 (평문)
- */
 async function login(userId, password) {
   try {
-    const rows = await pool.query(`SELECT user_id, password, role, email, name FROM ${TABLE_NAME} WHERE user_id = ?`, [userId]);
+    const rows = await pool.query(
+      `SELECT user_id, password, role, email, name, phone, birth_date, marketing_opt_in, created_at
+       FROM ${TABLE_NAME} WHERE user_id = ?`,
+      [userId],
+    );
     const user = rows[0];
 
     if (!user) {
       return { success: false, message: '존재하지 않는 아이디입니다.' };
     }
 
-    // 비밀번호 검증
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return { success: false, message: '비밀번호가 올바르지 않습니다.' };
@@ -96,6 +82,10 @@ async function login(userId, password) {
       role: user.role,
       email: user.email,
       name: user.name || '',
+      phone: user.phone || '',
+      birthDate: user.birth_date instanceof Date ? user.birth_date.toISOString().slice(0, 10) : user.birth_date || '',
+      marketingOptIn: asBoolean(user.marketing_opt_in),
+      joinedAt: user.created_at instanceof Date ? user.created_at.toISOString() : user.created_at || '',
       message: '로그인 성공',
     };
   } catch (err) {
@@ -104,9 +94,62 @@ async function login(userId, password) {
   }
 }
 
-/**
- * 전체 사용자 목록 (관리자용)
- */
+function profileFromRow(row) {
+  return {
+    userId: row.user_id,
+    role: row.role,
+    email: row.email || '',
+    name: row.name || '',
+    phone: row.phone || '',
+    birthDate: row.birth_date instanceof Date ? row.birth_date.toISOString().slice(0, 10) : row.birth_date || '',
+    marketingOptIn: asBoolean(row.marketing_opt_in),
+    joinedAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at || '',
+  };
+}
+
+async function updateProfile(userId, patch = {}) {
+  try {
+    const existing = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, [userId]);
+    if (existing.length === 0) {
+      return { success: false, message: '사용자 정보를 찾을 수 없습니다.' };
+    }
+
+    const assignments = [];
+    const values = [];
+    if (patch.name !== undefined) {
+      assignments.push('name = ?');
+      values.push(patch.name);
+    }
+    if (patch.phone !== undefined) {
+      assignments.push('phone = ?');
+      values.push(patch.phone);
+    }
+    if (patch.marketingOptIn !== undefined) {
+      assignments.push('marketing_opt_in = ?');
+      values.push(patch.marketingOptIn ? 1 : 0);
+    }
+    if (patch.password) {
+      assignments.push('password = ?');
+      values.push(await bcrypt.hash(patch.password, 10));
+    }
+
+    if (assignments.length > 0) {
+      values.push(userId);
+      await pool.query(`UPDATE ${TABLE_NAME} SET ${assignments.join(', ')} WHERE user_id = ?`, values);
+    }
+
+    const rows = await pool.query(
+      `SELECT user_id, role, email, name, phone, birth_date, marketing_opt_in, created_at
+       FROM ${TABLE_NAME} WHERE user_id = ?`,
+      [userId],
+    );
+    return { success: true, user: profileFromRow(rows[0]), message: '회원정보가 수정되었습니다.' };
+  } catch (err) {
+    console.error('[Auth] 회원정보 수정 실패:', err.message);
+    return { success: false, message: '회원정보 수정 중 오류가 발생했습니다.' };
+  }
+}
+
 async function listUsers() {
   try {
     const rows = await pool.query(`SELECT user_id, role, email, name, phone, birth_date, created_at FROM ${TABLE_NAME}`);
@@ -126,4 +169,4 @@ async function listUsers() {
   }
 }
 
-module.exports = { initUsersTable, register, login, listUsers };
+module.exports = { initUsersTable, register, login, listUsers, updateProfile };

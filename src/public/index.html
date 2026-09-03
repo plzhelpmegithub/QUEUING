@@ -361,9 +361,9 @@ async function leaveQueue(){if(!currentUser)return;if(!confirm('대기열에서 
 async function loadSeatUI(){const r=await api('GET','/seats');const g=document.getElementById('seatGridUI');g.innerHTML='';
   if(!r.seats||!r.seats.length){g.innerHTML='<p style="color:#94a3b8">좌석 없음</p>';return}
   r.seats.sort((a,b)=>a.seatId.localeCompare(b.seatId));
-  r.seats.forEach(s=>{const d=document.createElement('div');const c=s.seatId===(selectedSeat)?'seat-selected':'seat-'+s.status;
+  r.seats.forEach(s=>{const d=document.createElement('div');const c=s.seatId===(selectedSeat)?'seat-selected':'seat-'+(s.status||'').toLowerCase();
     d.className='seat-item '+c;d.textContent=s.seatId;d.title=(s.section||'')+' '+(s.price?Number(s.price).toLocaleString()+'원':'');
-    if(s.status==='available')d.onclick=()=>selectSeat(s);g.appendChild(d)});
+    if(s.status==='AVAILABLE')d.onclick=()=>selectSeat(s);g.appendChild(d)});
   const grades={};r.seats.forEach(s=>{if(s.section&&s.price)grades[s.section]=s.price});const gd=document.getElementById('seatPriceGrades');gd.innerHTML='';
   const gc={VIP:'#ef4444',R:'#3b82f6',S:'#22c55e',A:'#4f46e5',B:'#8b5cf6',C:'#06b6d4',D:'#f59e0b',E:'#ec4899',F:'#14b8a6'};
   Object.entries(grades).forEach(([n,p])=>{gd.innerHTML+='<div class="price-grade"><div class="grade-dot" style="background:'+(gc[n]||'#6b7280')+'"></div>'+n+'석<span style="margin-left:auto;font-weight:600">'+Number(p).toLocaleString()+'원</span></div>'})}

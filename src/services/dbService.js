@@ -1,7 +1,5 @@
 const pool = require('../config/mariadb');
 
-// ===== 테이블 초기화 — 서버 시작 시 1회 호출 =====
-
 async function addColumns(table, columns) {
   for (const col of columns) {
     try {
@@ -19,7 +17,6 @@ async function modifyColumns(table, columns) {
 }
 
 async function initTable() {
-  // 1. users (회원 정보)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       user_id VARCHAR(50) PRIMARY KEY,
@@ -29,6 +26,7 @@ async function initTable() {
       name VARCHAR(50) DEFAULT '',
       phone VARCHAR(20) DEFAULT '',
       birth_date DATE NULL,
+      marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -43,10 +41,10 @@ async function initTable() {
     "name VARCHAR(50) DEFAULT ''",
     "phone VARCHAR(20) DEFAULT ''",
     "birth_date DATE NULL",
+    "marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE",
     "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
   ]);
 
-  // 2. memberships (멤버십 권한)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS memberships (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -72,7 +70,6 @@ async function initTable() {
     "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
   ]);
 
-  // 3. events (공연 및 회차 정보)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (
       event_id VARCHAR(50) PRIMARY KEY,
@@ -115,7 +112,6 @@ async function initTable() {
     "updated_at DATETIME NULL",
   ]);
 
-  // 4. seats (좌석 및 점유 상태)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS seats (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -149,7 +145,6 @@ async function initTable() {
     "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
   ]);
 
-  // 5. waiting_queue (일반 대기열 순번)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS waiting_queue (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -180,7 +175,6 @@ async function initTable() {
     "updated_at DATETIME NULL",
   ]);
 
-  // 6. cancel_allocations (취소표 재분배 및 할당)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cancel_allocations (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -212,7 +206,6 @@ async function initTable() {
     "responded_at DATETIME NULL",
   ]);
 
-  // 7. wishlists (위시리스트)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wishlists (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -234,7 +227,6 @@ async function initTable() {
     "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
   ]);
 
-  // 8. backups (백업 데이터 관리)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS backups (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -253,7 +245,6 @@ async function initTable() {
     "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
   ]);
 
-  // 9. reservations (최종 예매 및 결제 내역)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reservations (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -285,8 +276,6 @@ async function initTable() {
 
   console.log('[MariaDB] 전체 테이블 (9개) 준비 완료');
 }
-
-// ===== reservations CRUD =====
 
 function toItem(row) {
   return {

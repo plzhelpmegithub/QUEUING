@@ -1,35 +1,23 @@
 const redis = require('../config/redis');
 const crypto = require('crypto');
-const { lockAttempts } = require('./metricsService'); // Prometheus 메트릭
+const { lockAttempts } = require('./metricsService');
 
-// ===== 락 설정 =====
-const LOCK_TTL = 5;          // 락 자동 만료 시간 (초) — 데드락 방지용
-const RETRY_COUNT = 3;       // 락 획득 실패 시 재시도 횟수
-const RETRY_DELAY_MS = 200;  // 재시도 간격 (밀리초)
+const LOCK_TTL = 5; // 락 자동 만료 시간 (초) — 데드락 방지용
+const RETRY_COUNT = 3;
+const RETRY_DELAY_MS = 200;
 
-/**
- * 락 획득
- * - 같은 좌석에 동시에 여러 사용자가 요청해도 1명만 성공
- * - SET NX EX 사용: 키가 없을 때만 생성 + 자동 만료
- * - value에 고유 토큰 저장 → 본인이 건 락만 해제 가능
- *
- * @param {string} resource - 잠글 대상 (예: "A-001")
- * @returns {{ acquired: boolean, token: string|null }}
- */
 async function acquireLock(resource) {
-  const lockKey = `lock:${resource}`;        // 락 키 (예: lock:A-001)
-  const token = crypto.randomUUID();         // 고유 토큰 — 누가 건 락인지 식별
+  const lockKey = `lock:${resource}`;
+  const token = crypto.randomUUID();
 
   for (let attempt = 1; attempt <= RETRY_COUNT; attempt++) {
-    // SET key value NX EX — 키 없을 때만(NX) 생성 + 5초 후 자동 삭제(EX)
     const result = await redis.set(lockKey, token, 'EX', LOCK_TTL, 'NX');
 
     if (result === 'OK') {
-      lockAttempts.inc({ result: 'success' }); // 성공 카운터 증가
-      return { acquired: true, token }; // 락 획득 성공
+      lockAttempts.inc({ result: 'success' });
+      return { acquired: true, token };
     }
 
-    // 마지막 시도가 아니면 대기 후 재시도
     if (attempt < RETRY_COUNT) {
       // 지터(jitter) — 랜덤 시간 추가로 동시 재시도 분산 (경합 완화)
       const jitter = Math.floor(Math.random() * 100);
@@ -37,19 +25,10 @@ async function acquireLock(resource) {
     }
   }
 
-  lockAttempts.inc({ result: 'fail' }); // 실패 카운터 증가
-  return { acquired: false, token: null }; // 3번 다 실패
+  lockAttempts.inc({ result: 'fail' });
+  return { acquired: false, token: null };
 }
 
-/**
- * 락 해제
- * - Lua 스크립트로 "내 토큰일 때만 삭제"를 원자적으로 처리
- * - 다른 사용자가 건 락을 실수로 해제하는 것 방지
- * - GET + DEL을 따로 하면 그 사이에 다른 요청이 끼어들 수 있어서 Lua 필수
- *
- * @param {string} resource - 잠근 대상
- * @param {string} token - acquireLock에서 받은 토큰
- */
 async function releaseLock(resource, token) {
   const lockKey = `lock:${resource}`;
 
@@ -64,17 +43,14 @@ async function releaseLock(resource, token) {
   `;
 
   const result = await redis.eval(luaScript, 1, lockKey, token);
-  return result === 1; // 1이면 삭제 성공, 0이면 이미 만료되었거나 다른 토큰
+  return result === 1;
 }
 
-/**
- * 락 상태 확인 (디버깅/모니터링용)
- */
 async function getLockInfo(resource) {
   const lockKey = `lock:${resource}`;
   const [token, ttl] = await Promise.all([
-    redis.get(lockKey),   // 현재 락을 건 토큰
-    redis.ttl(lockKey),   // 남은 만료 시간
+    redis.get(lockKey),
+    redis.ttl(lockKey),
   ]);
 
   return {
@@ -83,7 +59,6 @@ async function getLockInfo(resource) {
   };
 }
 
-// 대기 함수
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

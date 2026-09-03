@@ -4,7 +4,6 @@ const queueService = require('../services/queueService');
 
 async function cancelQueueRoutes(fastify) {
 
-  // 취소표 대기열 종합 상태 조회
   fastify.get('/cancel-queue/status/:eventId/:userId', async (request, reply) => {
     const { eventId, userId } = request.params;
 
@@ -33,7 +32,6 @@ async function cancelQueueRoutes(fastify) {
     });
   });
 
-  // Secret Link 발급 (취소표 발생 시 호출)
   fastify.post('/cancel-queue/allocate', async (request, reply) => {
     const { eventId, seatId } = request.body || {};
     if (!eventId || !seatId) {
@@ -66,7 +64,6 @@ async function cancelQueueRoutes(fastify) {
     });
   });
 
-  // Secret Link 멤버십 검증 후 순차 발급 (비회원 스킵)
   fastify.post('/cancel-queue/allocate-next', async (request, reply) => {
     const { eventId, seatId, maxSkip } = request.body || {};
     if (!eventId || !seatId) {
@@ -107,13 +104,11 @@ async function cancelQueueRoutes(fastify) {
     });
   });
 
-  // 만료된 할당 일괄 처리
   fastify.post('/cancel-queue/expire-overdue', async (request, reply) => {
     const result = await cancelAllocationService.expireAllOverdue();
     return reply.send(result);
   });
 
-  // 이벤트별 할당 내역 조회
   fastify.get('/cancel-queue/history/:eventId', async (request, reply) => {
     const { eventId } = request.params;
     const history = await cancelAllocationService.getAllocationHistory(eventId);
