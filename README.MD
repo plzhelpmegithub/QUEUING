@@ -44,6 +44,7 @@ api/
         ├── wishlistService.js          # 위시리스트 CRUD
         ├── backupService.js            # 스냅샷 백업/복구
         ├── cancelAllocationService.js  # 취소표 할당 관리
+        ├── redisRecoveryService.js     # Redis 자동 복구·주기적 정합성 점검
         └── dbService.js                # MariaDB 테이블 초기화
 ```
 
@@ -83,7 +84,8 @@ api/
 - HTTP 요청 응답 시간 측정 미들웨어 (`onRequest` / `onResponse` 훅)
 - 헬스체크 (`GET /health`)
 - 서버 시작 시 초기화: Redis 만료 리스너, MariaDB 9개 테이블 생성, 관리자 계정 생성
-- `SIGINT` 시그널 수신 시 Redis 리스너 정리 후 graceful shutdown
+- 서버 시작 시 MariaDB 기준 Redis 자동 복구를 최대 3회 시도하고, 이후 주기적 정합성 점검 시작
+- `SIGINT` 시그널 수신 시 Redis 리스너·자동 복구 타이머 정리 후 graceful shutdown
 
 ---
 
@@ -127,11 +129,13 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `PATCH /event/update` | 공연 정보 수정 + 알림 발송 |
 | `POST /event/cancel` | 공연 취소. 좌석 전체 정리, 대기열 초기화, 취소 알림 |
 | `GET /events` | 이벤트 목록 조회 (MariaDB 폴백) |
-| `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정 |
+| `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정/해제. Redis 캐시와 MariaDB `events.ticket_open_at`에 함께 저장하며, 현재 활성 이벤트이면 자동 오픈 스케줄도 등록 |
 | `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제 (자동 마감) |
 | `DELETE /events/:eventId` | 이벤트 삭제 |
 | `POST /events/batch-delete` | 최대 5개 이벤트를 순차 삭제하며 Redis 좌석과 MariaDB 관련 데이터를 함께 정리 |
 | `POST /events/seed` | 데모용 더미 이벤트 5개 생성 |
+| `POST /admin/redis/reset` | Redis 이벤트 상태 초기화. `hard`/`resync`는 MariaDB 기준으로 이벤트 목록을 재구성하며 DB에 저장된 오픈 예정 시간도 복원 |
+| `POST /admin/redis/recover` | MariaDB의 이벤트·좌석·대기열·예매 상태를 Redis로 전체 복구하고, 대상 이벤트의 오픈 예정 시간과 자동 오픈 타이머를 재등록 |
 
 ---
 
@@ -243,14 +247,36 @@ Redis 기반 대기열 관리의 핵심 로직.
 | `queue:admitted` | Set | 입장 허용된 사용자 |
 | `queue:counter` | String | 대기 번호 카운터 |
 | `event:ticketing-status` | String | 티켓팅 상태 (open/sold_out/closed) |
+| `event:schedule` | Hash | 예약 오픈 시각과 자동 마감 설정 |
 
 **주요 함수:**
 - `enter()`: 대기열 진입. 티켓팅 상태에 따라 eligible 또는 standby 배정. 멤버십 레벨당 score -50 우선순위 부여. 중복 진입 방지. 이미 admitted인데 토큰이 없는 경우(결제 확정으로 소모 또는 만료) admitted에서 제거 후 대기열 맨 뒤로 재배정
 - `admitBatch()`: eligible 상위 100명을 admitted로 이동 + JWT Admission Token 발급
 - `scheduleTicketing()`: 자동 오픈/마감 타이머 설정
+- `restoreTicketingSchedule()`: Redis 초기화·복구 후 저장된 오픈 시각을 기준으로 스케줄과 메모리 타이머를 재등록. 이미 오픈 시각이 지났으면 즉시 `open` 상태로 복구
 - `scheduleStandbyClose()`: standby 마감 시간 예약
 
 `eventId`, `sessionDate`, `sessionTime`을 전달한 요청은 `queue:waiting:{eventId}:{sessionKey}`처럼 회차별 Redis 키를 사용한다. 회차별 대기열과 Admission Token이 서로 섞이지 않으며, 컨텍스트를 생략한 기존 관리/테스트 API는 기존 전역 키를 계속 사용한다.
+
+---
+
+### src/services/redisRecoveryService.js — Redis 자동 복구
+
+MariaDB를 원본 데이터로 보고 Redis의 필수 상태를 자동으로 맞춘다.
+
+- API 시작 시 Redis 연결 후 DB를 기준으로 복구를 최대 3회 시도
+- Redis가 실행 중인 상태에서도 기본 60초마다 누락·불일치 여부 점검
+- `event:info`, `events:list`, 회차별 좌석, 회차별 대기열, `event:schedule`, `event:ticketing-status` 복구
+- 여러 API 인스턴스가 동시에 복구하지 않도록 `lock:redis-recovery` 분산 락 사용
+- Redis `FLUSHALL`처럼 키가 모두 사라진 경우 다음 점검 주기에 전체 이벤트·좌석·대기열을 복구
+- 복구된 미래 오픈 시간은 Node.js 타이머에 다시 등록하고, API가 재시작되어도 DB의 오픈 시간을 기준으로 타이머 재생성
+
+자동 복구 관련 환경변수:
+
+| 변수 | 기본값 | 설명 |
+|---|---:|---|
+| `REDIS_RECOVERY_ATTEMPTS` | `3` | 시작/복구 실패 시 재시도 횟수 |
+| `REDIS_RECOVERY_INTERVAL_MS` | `60000` | Redis 정합성 점검 주기(밀리초, 최소 5000) |
 
 ---
 
@@ -510,6 +536,9 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 
 7. 타이머 만료 시
    Redis keyspace notification → 좌석 자동 해제 또는 standby 자동 배정
+
+8. Redis 복구
+   API 시작 시 자동 복구 → 60초마다 누락 여부 점검 → 필요할 때 MariaDB 이벤트·좌석·대기열·예매 상태 복구 + 이벤트 오픈 시각 복원 + 자동 오픈 타이머 재등록
 ```
 
 ---

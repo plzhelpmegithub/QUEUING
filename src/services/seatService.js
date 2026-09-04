@@ -376,20 +376,27 @@ async function getAvailableCount(eventId, context = {}) {
   };
 }
 
-async function recoverSeatsFromMariaDB(eventId) {
+async function recoverSeatsFromMariaDB(eventId, options = {}) {
   if (!eventId) return { recovered: false, message: 'eventId 필요' };
-
-  const [firstKey] = await redis.scan(0, 'MATCH', `${SEAT_PREFIX}${eventId}:*`, 'COUNT', 1);
-  const checkKeys = (await redis.scan(0, 'MATCH', `${SEAT_PREFIX}${eventId}:*`, 'COUNT', 10))[1];
-  if (checkKeys.length > 0) {
-    return { recovered: false, message: 'Redis에 이미 좌석 데이터가 있습니다', existing: checkKeys.length };
-  }
 
   const rows = await pool.query(
     'SELECT seat_id, status, held_by, held_at, section, price, session_date, session_time FROM seats WHERE event_id = ?',
     [eventId],
   );
   if (rows.length === 0) return { recovered: false, message: 'MariaDB에 좌석 데이터 없음' };
+
+  const existingKeys = [];
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${eventId}:*`, 'COUNT', 200);
+    cursor = nextCursor;
+    existingKeys.push(...keys);
+  } while (cursor !== '0');
+
+  const force = Boolean(options.force);
+  if (!force && existingKeys.length >= rows.length) {
+    return { recovered: false, message: 'Redis에 좌석 데이터가 이미 충분합니다', existing: existingKeys.length, expected: rows.length };
+  }
 
   const pipeline = redis.pipeline();
   let available = 0, held = 0, sold = 0;
@@ -434,7 +441,7 @@ async function recoverSeatsFromMariaDB(eventId) {
   }
 
   console.log(`[Seat Recovery] ${eventId}: ${rows.length}석 복구 (available=${available}, held=${held}, sold=${sold})`);
-  return { recovered: true, total: rows.length, available, held, sold };
+  return { recovered: true, total: rows.length, available, held, sold, existing: existingKeys.length };
 }
 
 module.exports = { initSeats, holdSeat, confirmSeat, cancelSeat, releaseSeat, getSeatTimer, getAllSeats, isSoldOut, getAvailableCount, cleanupEventSeats, recoverSeatsFromMariaDB, STATUS };

@@ -2,6 +2,7 @@ const redis = require('../config/redis');
 const pool = require('../config/mariadb');
 const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
+const { recoverAll } = require('../services/redisRecoveryService');
 const { notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
 const { publishSeatEvent, EVENT_TYPE } = require('../services/eventService');
 const { buildSeatId } = require('../services/sessionContext');
@@ -13,6 +14,48 @@ const SEAT_PREFIX = 'seat:';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
+
+function parseJson(value, fallback) {
+  if (value == null || value === '') return fallback;
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch (_) { return fallback; }
+}
+
+function toIsoDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+}
+
+// MariaDB의 이벤트 행을 Redis events:list 카드 형태로 변환한다.
+// 오픈 예정 시간도 이 변환 경로를 거쳐 복구하므로 Redis 초기화 후에도 유지된다.
+function eventCardFromRow(row) {
+  const sessions = parseJson(row.sessions, []);
+  const sessionCount = Array.isArray(sessions) && sessions.length > 0 ? sessions.length : 1;
+  const card = {
+    eventId: row.event_id,
+    eventName: row.event_name,
+    eventDate: row.event_date || '',
+    venue: row.venue || '',
+    totalSeats: Number(row.total_seats || 0),
+    sessions,
+    seatsPerSession: Math.ceil(Number(row.total_seats || 0) / sessionCount),
+    seatingType: row.seating_type || 'arena',
+    sections: parseJson(row.sections, []),
+    status: row.status || 'open',
+    emoji: row.emoji || '🎵',
+    color: row.color || '#667eea,#764ba2',
+    ticketOpenAt: toIsoDate(row.ticket_open_at),
+    ticketCloseAt: toIsoDate(row.ticket_close_at),
+    createdAt: toIsoDate(row.created_at),
+  };
+
+  for (const field of ['description', 'cast', 'agency', 'runtime', 'ageRating', 'notices']) {
+    if (row[field]) card[field] = row[field];
+  }
+  return card;
+}
 
 function assignZoneGeometry(sections) {
   const n = sections.length;
@@ -409,28 +452,7 @@ async function eventRoutes(fastify) {
     if (events.length === 0) {
       try {
         const rows = await pool.query(`SELECT * FROM events ORDER BY created_at DESC`);
-        events = rows.map(r => ({
-          eventId: r.event_id,
-          eventName: r.event_name,
-          eventDate: r.event_date || '',
-          venue: r.venue || '',
-          totalSeats: r.total_seats,
-          seatsPerSession: (() => {
-            try {
-              const parsed = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions;
-              const count = Array.isArray(parsed) && parsed.length ? parsed.length : 1;
-              return Math.ceil((r.total_seats || 0) / count);
-            } catch (_) { return r.total_seats || 0; }
-          })(),
-          sessions: (() => { try { return typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions || []; } catch (_) { return []; } })(),
-          seatingType: r.seating_type || 'arena',
-          sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
-          status: r.status || 'open',
-          emoji: r.emoji || '🎵',
-          color: r.color || '#667eea,#764ba2',
-          ticketOpenAt: r.ticket_open_at || null,
-          createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
-        }));
+        events = rows.map(eventCardFromRow);
         if (events.length > 0) {
           const pipeline = redis.pipeline();
           events.forEach(e => pipeline.hset(EVENT_LIST_KEY, e.eventId, JSON.stringify(e)));
@@ -448,10 +470,10 @@ async function eventRoutes(fastify) {
   fastify.patch('/events/:eventId/open-time', async (request, reply) => {
     const { eventId } = request.params;
     const { ticketOpenAt } = request.body || {};
+    const parsedOpenAt = ticketOpenAt ? new Date(ticketOpenAt) : null;
 
     if (ticketOpenAt !== null && ticketOpenAt !== undefined) {
-      const parsed = new Date(ticketOpenAt);
-      if (Number.isNaN(parsed.getTime())) {
+      if (Number.isNaN(parsedOpenAt?.getTime())) {
         return reply.status(400).send({ error: 'ticketOpenAt이 올바른 날짜/시간 형식이 아닙니다.' });
       }
     }
@@ -461,22 +483,49 @@ async function eventRoutes(fastify) {
       return reply.status(404).send({ message: '해당 이벤트가 없습니다.' });
     }
     const card = JSON.parse(cardStr);
-    card.ticketOpenAt = ticketOpenAt || null;
+    const normalizedOpenAt = parsedOpenAt ? parsedOpenAt.toISOString() : null;
+
+    // 오픈 예정 시간은 Redis 캐시뿐 아니라 MariaDB에도 저장해야
+    // Redis 초기화(resync/recover) 후에도 같은 설정을 복구할 수 있다.
+    try {
+      const dbEvents = await pool.query(
+        'SELECT event_id FROM events WHERE event_id = ?',
+        [eventId],
+      );
+      if (dbEvents.length === 0) {
+        return reply.status(404).send({ error: 'MariaDB에 해당 이벤트가 없습니다.' });
+      }
+      await pool.query(
+        'UPDATE events SET ticket_open_at = ? WHERE event_id = ?',
+        [parsedOpenAt, eventId],
+      );
+    } catch (dbErr) {
+      console.error('[Event] 예매 오픈 시간 MariaDB 저장 실패:', dbErr.message);
+      return reply.status(500).send({ error: '예매 오픈 시간을 DB에 저장하지 못했습니다.' });
+    }
+
+    card.ticketOpenAt = normalizedOpenAt;
     await redis.hset(EVENT_LIST_KEY, eventId, JSON.stringify(card));
 
     const info = await redis.hgetall(EVENT_KEY);
+    let schedule = null;
     if (info && info.eventId === eventId) {
       if (card.ticketOpenAt) {
         await redis.hset(EVENT_KEY, 'ticketOpenAt', card.ticketOpenAt);
       } else {
         await redis.hdel(EVENT_KEY, 'ticketOpenAt');
       }
+
+      // 현재 활성 이벤트라면 오픈 예정 시간에 맞춰 Redis 스케줄과
+      // 메모리 타이머를 함께 갱신한다. null이면 즉시 오픈으로 복귀한다.
+      schedule = await queueService.restoreTicketingSchedule(card.ticketOpenAt);
     }
 
     return reply.send({
       success: true,
       eventId,
       ticketOpenAt: card.ticketOpenAt,
+      schedule,
       message: card.ticketOpenAt
         ? `예매 오픈 시간이 ${card.ticketOpenAt}로 설정되었습니다.`
         : '예매 오픈 시간 제한이 해제되었습니다.',
@@ -669,36 +718,10 @@ async function eventRoutes(fastify) {
     if (mode === 'resync' || mode === 'hard') {
       await redis.del(EVENT_LIST_KEY);
       try {
-        const rows = await pool.query('SELECT * FROM events ORDER BY created_at DESC');
-        const pipeline = redis.pipeline();
-        rows.forEach((r) => {
-          const card = {
-            eventId: r.event_id,
-            eventName: r.event_name,
-            eventDate: r.event_date || '',
-            venue: r.venue || '',
-            totalSeats: r.total_seats,
-            sessions: (() => { try { return typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions || []; } catch (_) { return []; } })(),
-            seatsPerSession: (() => {
-              try {
-                const list = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions;
-                return Math.ceil((r.total_seats || 0) / (Array.isArray(list) && list.length ? list.length : 1));
-              } catch (_) { return r.total_seats || 0; }
-            })(),
-            seatingType: r.seating_type || 'arena',
-            sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
-            status: r.status || 'open',
-            emoji: r.emoji || '',
-            color: r.color || '#667eea,#764ba2',
-            ticketOpenAt: r.ticket_open_at || null,
-            ticketCloseAt: r.ticket_close_at || null,
-            createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
-          };
-          if (r.description) card.description = r.description;
-          if (r.cast) card.cast = r.cast;
-          if (r.sessions) {
-            try { card.sessions = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions; } catch {}
-          }
+      const rows = await pool.query('SELECT * FROM events ORDER BY created_at DESC');
+      const pipeline = redis.pipeline();
+      rows.forEach((r) => {
+          const card = eventCardFromRow(r);
           pipeline.hset(EVENT_LIST_KEY, card.eventId, JSON.stringify(card));
           resynced++;
         });
@@ -722,128 +745,21 @@ async function eventRoutes(fastify) {
 
   fastify.post('/admin/redis/recover', async (request, reply) => {
     const { eventId } = request.body || {};
-
-    let targetEventId = eventId;
-    if (!targetEventId) {
-      const rows = await pool.query(
-        "SELECT event_id FROM events WHERE status = 'open' ORDER BY created_at DESC LIMIT 1",
-      );
-      if (rows.length === 0) {
-        return reply.status(400).send({ success: false, message: 'open 상태의 이벤트가 없습니다. eventId를 직접 지정해주세요.' });
-      }
-      targetEventId = rows[0].event_id;
-    }
-
-    const results = {};
-
     try {
-      const allEvents = await pool.query('SELECT * FROM events ORDER BY created_at DESC');
-      if (allEvents.length > 0) {
-        const pipeline = redis.pipeline();
-        allEvents.forEach((r) => {
-          const card = {
-            eventId: r.event_id,
-            eventName: r.event_name,
-            eventDate: r.event_date || '',
-            venue: r.venue || '',
-            totalSeats: r.total_seats,
-            sessions: (() => { try { return typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions || []; } catch (_) { return []; } })(),
-            seatsPerSession: (() => {
-              try {
-                const list = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions;
-                return Math.ceil((r.total_seats || 0) / (Array.isArray(list) && list.length ? list.length : 1));
-              } catch (_) { return r.total_seats || 0; }
-            })(),
-            seatingType: r.seating_type || 'arena',
-            sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
-            status: r.status || 'open',
-            emoji: r.emoji || '',
-            color: r.color || '#667eea,#764ba2',
-            ticketOpenAt: r.ticket_open_at || null,
-            ticketCloseAt: r.ticket_close_at || null,
-            createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
-          };
-          if (r.description) card.description = r.description;
-          pipeline.hset(EVENT_LIST_KEY, card.eventId, JSON.stringify(card));
-        });
-        await pipeline.exec();
-        results.events = { recovered: true, count: allEvents.length };
+      const results = await recoverAll({ eventId: eventId || null, reason: 'manual', force: true });
+      if (results.skipped && results.reason === 'another recovery is running') {
+        return reply.status(409).send({ success: false, message: '다른 Redis 복구 작업이 진행 중입니다.' });
       }
+      return reply.send({
+        success: results.recovered,
+        eventId: results.eventInfo?.eventId || eventId || null,
+        results,
+        message: results.recovered ? 'MariaDB → Redis 전체 복구 완료' : 'Redis 복구가 필요하지 않습니다.',
+      });
     } catch (err) {
-      results.events = { recovered: false, error: err.message };
+      console.error('[Redis Recover] 전체 복구 실패:', err.message);
+      return reply.status(500).send({ success: false, message: 'MariaDB → Redis 복구에 실패했습니다.', error: err.message });
     }
-
-    try {
-      const evtRows = await pool.query('SELECT * FROM events WHERE event_id = ?', [targetEventId]);
-      if (evtRows.length > 0) {
-        const e = evtRows[0];
-        await redis.hset(EVENT_KEY, {
-          eventId: e.event_id,
-          eventName: e.event_name,
-          eventDate: e.event_date || '',
-          venue: e.venue || '',
-          totalSeats: (e.total_seats || 0).toString(),
-          sessions: typeof e.sessions === 'string' ? e.sessions : JSON.stringify(e.sessions || []),
-          seatsPerSession: (() => {
-            try {
-              const list = typeof e.sessions === 'string' ? JSON.parse(e.sessions) : e.sessions;
-              return String(Math.ceil((e.total_seats || 0) / (Array.isArray(list) && list.length ? list.length : 1)));
-            } catch (_) { return String(e.total_seats || 0); }
-          })(),
-          seatingType: e.seating_type || 'arena',
-          status: e.status || 'open',
-        });
-        results.eventInfo = { recovered: true, eventId: targetEventId };
-      }
-    } catch (err) {
-      results.eventInfo = { recovered: false, error: err.message };
-    }
-
-    try {
-      results.seats = await seatService.recoverSeatsFromMariaDB(targetEventId);
-    } catch (err) {
-      results.seats = { recovered: false, error: err.message };
-    }
-
-    try {
-      const targetRows = await pool.query('SELECT sessions FROM events WHERE event_id = ?', [targetEventId]);
-      let targetSessions = [];
-      try {
-        const stored = targetRows[0]?.sessions;
-        targetSessions = typeof stored === 'string' ? JSON.parse(stored) : stored || [];
-      } catch (_) {}
-      if (Array.isArray(targetSessions) && targetSessions.length > 0) {
-        const recovered = [];
-        for (const session of targetSessions) {
-          recovered.push(await queueService.recoverQueueFromMariaDB(targetEventId, {
-            eventId: targetEventId,
-            sessionDate: session.date || '',
-            sessionTime: session.time || '',
-          }));
-        }
-        results.queue = recovered;
-      } else {
-        results.queue = await queueService.recoverQueueFromMariaDB(targetEventId);
-      }
-    } catch (err) {
-      results.queue = { recovered: false, error: err.message };
-    }
-
-    const ticketingStatus = await redis.get('event:ticketing-status');
-    if (!ticketingStatus) {
-      await redis.set('event:ticketing-status', 'open');
-      results.ticketingStatus = 'open (기본값 설정)';
-    } else {
-      results.ticketingStatus = `${ticketingStatus} (기존 유지)`;
-    }
-
-    console.log(`[Redis Recover] eventId=${targetEventId}`, JSON.stringify(results));
-    return reply.send({
-      success: true,
-      eventId: targetEventId,
-      results,
-      message: `MariaDB → Redis 복구 완료 (${targetEventId})`,
-    });
   });
 }
 

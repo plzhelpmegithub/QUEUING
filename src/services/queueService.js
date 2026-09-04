@@ -334,6 +334,10 @@ async function scheduleTicketing(openAt, durationMinutes) {
   if (openTimer) clearTimeout(openTimer);
   if (closeTimer) clearTimeout(closeTimer);
 
+  // 예약 시간이 되기 전에는 대기열 진입을 막고, 타이머가 도달하면
+  // openTicketing()이 다시 오픈하도록 현재 상태를 closed로 맞춘다.
+  await closeTicketing();
+
   await redis.hset('event:schedule', {
     openAt,
     durationMinutes: (durationMinutes || 0).toString(),
@@ -364,6 +368,29 @@ async function scheduleTicketing(openAt, durationMinutes) {
     autoClose: durationMinutes ? `오픈 후 ${durationMinutes}분 뒤 자동 마감` : '수동 마감',
     message: `티켓팅이 ${openAt}에 자동 오픈됩니다.`,
   };
+}
+
+// Redis 초기화 또는 API 재시작 후 DB에 저장된 오픈 예정 시간을
+// Redis 스케줄과 메모리 타이머로 다시 등록한다.
+async function restoreTicketingSchedule(openAt, durationMinutes = 0) {
+  if (!openAt) {
+    await cancelSchedule();
+    await openTicketing();
+    return { success: true, scheduled: false, status: 'open', message: '예매가 즉시 오픈 상태로 복구되었습니다.' };
+  }
+
+  const openTime = new Date(openAt).getTime();
+  if (!Number.isFinite(openTime)) {
+    return { success: false, scheduled: false, message: '저장된 오픈 시간이 올바르지 않습니다.' };
+  }
+
+  if (openTime <= Date.now()) {
+    await cancelSchedule();
+    await openTicketing();
+    return { success: true, scheduled: false, status: 'open', openAt, message: '오픈 시간이 지나 예매중 상태로 복구되었습니다.' };
+  }
+
+  return scheduleTicketing(openAt, durationMinutes);
 }
 
 async function cancelSchedule() {
@@ -475,6 +502,7 @@ async function cancelCloseSchedule() {
 async function recoverQueueFromMariaDB(eventId, context = {}) {
   if (!eventId) return { recovered: false, message: 'eventId 필요' };
 
+  const force = Boolean(context.force);
   const hasSession = Boolean(context.sessionDate || context.sessionTime);
   const keys = queueKeys(hasSession ? { ...context, eventId } : {});
   const sessionClause = hasSession ? ' AND session_date = ? AND session_time = ?' : '';
@@ -483,7 +511,7 @@ async function recoverQueueFromMariaDB(eventId, context = {}) {
   const existingCount = await redis.zcard(keys.waitingKey);
   const existingStandby = await redis.zcard(keys.standbyKey);
   const existingAdmitted = await redis.scard(keys.admittedKey);
-  if (existingCount + existingStandby + existingAdmitted > 0) {
+  if (existingCount + existingStandby + existingAdmitted > 0 && !force) {
     return { recovered: false, message: 'Redis 대기열에 이미 데이터가 있습니다', existing: { eligible: existingCount, standby: existingStandby, admitted: existingAdmitted } };
   }
 
@@ -524,7 +552,7 @@ async function recoverQueueFromMariaDB(eventId, context = {}) {
     [eventId, ...sessionParams],
   );
   const counter = maxRow[0]?.max_idx || 0;
-  if (counter > 0) await redis.set(COUNTER_KEY, counter);
+  if (counter > 0) await redis.set(keys.counterKey, counter);
 
   const eventRow = await pool.query(
     'SELECT total_seats, sessions FROM events WHERE event_id = ?',
@@ -551,4 +579,4 @@ async function recoverQueueFromMariaDB(eventId, context = {}) {
   };
 }
 
-module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, isUserAdmitted, clearQueuesForEvent, queueKeys, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule, scheduleStandbyClose, scheduleCloseTime, cancelCloseSchedule, recoverQueueFromMariaDB };
+module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, isUserAdmitted, clearQueuesForEvent, queueKeys, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, restoreTicketingSchedule, cancelSchedule, getSchedule, scheduleStandbyClose, scheduleCloseTime, cancelCloseSchedule, recoverQueueFromMariaDB };

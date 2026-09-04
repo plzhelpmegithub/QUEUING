@@ -67,6 +67,11 @@ fastify.get('/metrics', async (request, reply) => {
 const { initExpiryListener, stopExpiryListener } = require('./services/timerService');
 const { initTable } = require('./services/dbService');
 const { startRetryWorker, stopRetryWorker } = require('./services/syncRetryService');
+const {
+  recoverWithRetry,
+  startAutoRecovery,
+  stopAutoRecovery,
+} = require('./services/redisRecoveryService');
 
 const { initUsersTable } = require('./services/authService');
 const start = async () => {
@@ -74,6 +79,9 @@ const start = async () => {
     await initExpiryListener();
     await initTable();
     await initUsersTable();
+    const recovery = await recoverWithRetry({ reason: 'startup' });
+    console.log('[Server] Redis 시작 복구 결과:', JSON.stringify(recovery));
+    startAutoRecovery();
     startRetryWorker();
     const port = process.env.PORT || 3000;
     await fastify.listen({ port, host: '0.0.0.0' });
@@ -85,6 +93,7 @@ const start = async () => {
 };
 
 process.on('SIGINT', async () => {
+  stopAutoRecovery();
   stopRetryWorker();
   await stopExpiryListener();
   await fastify.close();
