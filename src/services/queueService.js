@@ -2,6 +2,7 @@ const redis = require('../config/redis');
 const pool = require('../config/mariadb');
 const { isPriorityUser } = require('./membershipService');
 const { syncToMariaDB } = require('./syncRetryService');
+const { normalizeSessionContext, getScopedKey } = require('./sessionContext');
 
 const QUEUE_KEY = 'queue:waiting';
 const COUNTER_KEY = 'queue:counter';
@@ -13,45 +14,61 @@ const HOLD_DURATION_KEY = 'event:hold-duration';
 
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 100;
 
-async function setTotalSeats(count) {
-  await redis.set(TOTAL_SEATS_KEY, count);
+function queueKeys(context = {}) {
+  const normalized = normalizeSessionContext(context);
+  return {
+    ...normalized,
+    waitingKey: getScopedKey(QUEUE_KEY, normalized),
+    counterKey: getScopedKey(COUNTER_KEY, normalized),
+    admittedKey: getScopedKey(ADMITTED_KEY, normalized),
+    standbyKey: getScopedKey(STANDBY_KEY, normalized),
+    totalSeatsKey: getScopedKey(TOTAL_SEATS_KEY, normalized),
+    statusKey: getScopedKey(TICKETING_STATUS_KEY, normalized),
+  };
+}
+
+async function setTotalSeats(count, context = {}) {
+  const keys = queueKeys(context);
+  await redis.set(keys.totalSeatsKey, count);
   return { totalSeats: count, message: `총 좌석 수 ${count}석으로 설정` };
 }
 
-async function enter(userId) {
-  const ticketingStatus = await redis.get(TICKETING_STATUS_KEY);
+async function enter(userId, context = {}) {
+  const requestedContext = Boolean(context.eventId || context.sessionDate || context.sessionTime);
+  const eventInfo = await redis.hgetall('event:info');
+  const currentEventId = context.eventId || eventInfo?.eventId || '';
+  const keys = queueKeys(requestedContext ? { ...context, eventId: currentEventId } : {});
+  const ticketingStatus = (await redis.get(keys.statusKey)) || (requestedContext ? await redis.get(TICKETING_STATUS_KEY) : null);
   if (ticketingStatus === 'closed') {
     return { status: 'closed', message: '현재 티켓팅이 마감되었습니다. 더 이상 대기열에 진입할 수 없습니다.' };
   }
-  const eventInfo = await redis.hgetall('event:info');
   if (!ticketingStatus) {
-    if (!eventInfo || !eventInfo.eventId) {
+    if (!currentEventId) {
       return { status: 'closed', message: '등록된 공연이 없습니다.' };
     }
-    await redis.set(TICKETING_STATUS_KEY, 'open');
+    await redis.set(keys.statusKey, 'open');
   }
-  const currentEventId = eventInfo?.eventId || '';
 
-  const isAdmitted = await redis.sismember(ADMITTED_KEY, userId);
+  const isAdmitted = await redis.sismember(keys.admittedKey, userId);
   if (isAdmitted) {
     const { getRawToken } = require('./tokenService');
-    const existing = await getRawToken(userId);
+    const existing = await getRawToken(userId, keys);
     if (existing) {
       return { status: 'admitted', token: existing.token, expiresAt: existing.expiresAt, message: '이미 입장이 허용된 상태입니다.' };
     }
 
-    await redis.srem(ADMITTED_KEY, userId);
+    await redis.srem(keys.admittedKey, userId);
     await syncToMariaDB(
-      `UPDATE waiting_queue SET status = 'RE_QUEUED', updated_at = NOW() WHERE user_id = ? AND status IN ('ADMITTED','PROMOTED')`,
-      [userId],
+      `UPDATE waiting_queue SET status = 'RE_QUEUED', updated_at = NOW() WHERE user_id = ? AND event_id = ? AND session_date = ? AND session_time = ? AND status IN ('ADMITTED','PROMOTED')`,
+      [userId, currentEventId, keys.sessionDate, keys.sessionTime],
       `queue:re_queue ${userId}`,
     );
   }
 
-  const existingScore = await redis.zscore(QUEUE_KEY, userId);
+  const existingScore = await redis.zscore(keys.waitingKey, userId);
   if (existingScore !== null) {
-    const position = await redis.zrank(QUEUE_KEY, userId);
-    const totalSeats = parseInt(await redis.get(TOTAL_SEATS_KEY), 10) || 0;
+    const position = await redis.zrank(keys.waitingKey, userId);
+    const totalSeats = parseInt(await redis.get(keys.totalSeatsKey), 10) || 0;
     const type = (position + 1) <= totalSeats ? 'eligible' : 'standby';
     return {
       status: 'waiting',
@@ -62,9 +79,9 @@ async function enter(userId) {
     };
   }
 
-  const standbyScore = await redis.zscore(STANDBY_KEY, userId);
+  const standbyScore = await redis.zscore(keys.standbyKey, userId);
   if (standbyScore !== null) {
-    const rank = await redis.zrank(STANDBY_KEY, userId);
+    const rank = await redis.zrank(keys.standbyKey, userId);
     return {
       status: 'standby',
       type: 'standby',
@@ -73,13 +90,13 @@ async function enter(userId) {
     };
   }
 
-  const totalSeats = parseInt(await redis.get(TOTAL_SEATS_KEY), 10) || 0;
+  const totalSeats = parseInt(await redis.get(keys.totalSeatsKey), 10) || 0;
   if (totalSeats === 0) {
     return { status: 'error', message: '이벤트 좌석이 설정되지 않았습니다.' };
   }
 
   // INCR은 원자적이라 동시 요청에도 중복 없음
-  let ticket = await redis.incr(COUNTER_KEY);
+  let ticket = await redis.incr(keys.counterKey);
 
   let priorityLevel = 0;
   try {
@@ -89,15 +106,15 @@ async function enter(userId) {
     }
   } catch (_) {}
 
-  const currentStatus = await redis.get(TICKETING_STATUS_KEY);
+  const currentStatus = (await redis.get(keys.statusKey)) || (requestedContext ? await redis.get(TICKETING_STATUS_KEY) : null);
 
   if (currentStatus === 'sold_out' || ticket > totalSeats) {
-    await redis.zadd(STANDBY_KEY, ticket, userId);
-    const rank = await redis.zrank(STANDBY_KEY, userId);
+    await redis.zadd(keys.standbyKey, ticket, userId);
+    const rank = await redis.zrank(keys.standbyKey, userId);
 
     await syncToMariaDB(
-      `INSERT INTO waiting_queue (user_id, event_id, queue_type, queue_index, status) VALUES (?, ?, 'standby', ?, 'WAITING')`,
-      [userId, currentEventId, ticket],
+      `INSERT INTO waiting_queue (user_id, event_id, session_date, session_time, queue_type, queue_index, status) VALUES (?, ?, ?, ?, 'standby', ?, 'WAITING')`,
+      [userId, currentEventId, keys.sessionDate, keys.sessionTime, ticket],
       `queue:enter:standby ${userId}`,
     );
 
@@ -110,12 +127,12 @@ async function enter(userId) {
       message: `현재 매진 상태입니다. 취소표 대기 ${rank + 1}번째로 등록되었습니다.`,
     };
   } else {
-    await redis.zadd(QUEUE_KEY, ticket, userId);
-    const position = await redis.zrank(QUEUE_KEY, userId);
+    await redis.zadd(keys.waitingKey, ticket, userId);
+    const position = await redis.zrank(keys.waitingKey, userId);
 
     await syncToMariaDB(
-      `INSERT INTO waiting_queue (user_id, event_id, queue_type, queue_index, status) VALUES (?, ?, 'eligible', ?, 'WAITING')`,
-      [userId, currentEventId, ticket],
+      `INSERT INTO waiting_queue (user_id, event_id, session_date, session_time, queue_type, queue_index, status) VALUES (?, ?, ?, ?, 'eligible', ?, 'WAITING')`,
+      [userId, currentEventId, keys.sessionDate, keys.sessionTime, ticket],
       `queue:enter:eligible ${userId}`,
     );
 
@@ -130,15 +147,16 @@ async function enter(userId) {
   }
 }
 
-async function getPosition(userId) {
-  const isAdmitted = await redis.sismember(ADMITTED_KEY, userId);
+async function getPosition(userId, context = {}) {
+  const keys = queueKeys(context);
+  const isAdmitted = await redis.sismember(keys.admittedKey, userId);
   if (isAdmitted) {
     return { status: 'admitted', message: '입장이 허용된 상태입니다.' };
   }
 
-  const rank = await redis.zrank(QUEUE_KEY, userId);
+  const rank = await redis.zrank(keys.waitingKey, userId);
   if (rank !== null) {
-    const totalWaiting = await redis.zcard(QUEUE_KEY);
+    const totalWaiting = await redis.zcard(keys.waitingKey);
     return {
       status: 'waiting',
       type: 'eligible',
@@ -148,9 +166,9 @@ async function getPosition(userId) {
     };
   }
 
-  const standbyRank = await redis.zrank(STANDBY_KEY, userId);
+  const standbyRank = await redis.zrank(keys.standbyKey, userId);
   if (standbyRank !== null) {
-    const totalStandby = await redis.zcard(STANDBY_KEY);
+    const totalStandby = await redis.zcard(keys.standbyKey);
     return {
       status: 'standby',
       type: 'standby',
@@ -163,33 +181,34 @@ async function getPosition(userId) {
   return { status: 'not_found', message: '대기열에 등록되어 있지 않습니다.' };
 }
 
-async function admitBatch() {
+async function admitBatch(context = {}) {
   const { issueToken } = require('./tokenService');
-  const users = await redis.zrange(QUEUE_KEY, 0, BATCH_SIZE - 1);
+  const keys = queueKeys(context);
+  const users = await redis.zrange(keys.waitingKey, 0, BATCH_SIZE - 1);
 
   if (users.length === 0) {
     return { admitted: [], count: 0, message: '대기 중인 사용자가 없습니다.' };
   }
 
   const pipeline = redis.pipeline();
-  pipeline.zrem(QUEUE_KEY, ...users);
-  pipeline.sadd(ADMITTED_KEY, ...users);
+  pipeline.zrem(keys.waitingKey, ...users);
+  pipeline.sadd(keys.admittedKey, ...users);
   await pipeline.exec();
 
   const tokens = {};
   for (const userId of users) {
-    const { token, expiresAt } = await issueToken(userId);
+    const { token, expiresAt } = await issueToken(userId, undefined, keys);
     tokens[userId] = { token, expiresAt };
   }
 
   const placeholders = users.map(() => '?').join(',');
   await syncToMariaDB(
-    `UPDATE waiting_queue SET status = 'ADMITTED', updated_at = NOW() WHERE user_id IN (${placeholders}) AND status = 'WAITING'`,
-    users,
+    `UPDATE waiting_queue SET status = 'ADMITTED', updated_at = NOW() WHERE user_id IN (${placeholders}) AND event_id = ? AND session_date = ? AND session_time = ? AND status = 'WAITING'`,
+    [...users, keys.eventId, keys.sessionDate, keys.sessionTime],
     `queue:admit batch(${users.length})`,
   );
 
-  const remaining = await redis.zcard(QUEUE_KEY);
+  const remaining = await redis.zcard(keys.waitingKey);
   return {
     admitted: users,
     tokens,
@@ -199,39 +218,42 @@ async function admitBatch() {
   };
 }
 
-async function getNextStandby() {
-  const users = await redis.zrange(STANDBY_KEY, 0, 0);
+async function getNextStandby(context = {}) {
+  const keys = queueKeys(context);
+  const users = await redis.zrange(keys.standbyKey, 0, 0);
   if (users.length === 0) {
     return { userId: null, message: '취소표 대기자가 없습니다.' };
   }
   return { userId: users[0], message: `다음 대기자: ${users[0]}` };
 }
 
-async function promoteStandby(userId) {
+async function promoteStandby(userId, context = {}) {
   const { issueToken } = require('./tokenService');
-  const removed = await redis.zrem(STANDBY_KEY, userId);
+  const keys = queueKeys(context);
+  const removed = await redis.zrem(keys.standbyKey, userId);
   if (removed === 0) {
     return { success: false, message: '해당 사용자가 standby에 없습니다.' };
   }
-  await redis.sadd(ADMITTED_KEY, userId);
-  const { token, expiresAt } = await issueToken(userId);
+  await redis.sadd(keys.admittedKey, userId);
+  const { token, expiresAt } = await issueToken(userId, undefined, keys);
 
   await syncToMariaDB(
-    `UPDATE waiting_queue SET status = 'PROMOTED', updated_at = NOW() WHERE user_id = ? AND queue_type = 'standby' AND status = 'WAITING'`,
-    [userId],
+    `UPDATE waiting_queue SET status = 'PROMOTED', updated_at = NOW() WHERE user_id = ? AND event_id = ? AND session_date = ? AND session_time = ? AND queue_type = 'standby' AND status = 'WAITING'`,
+    [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
     `queue:promote ${userId}`,
   );
 
   return { success: true, userId, token, expiresAt, message: `${userId} 입장 허용 + Token 발급` };
 }
 
-async function getStats() {
+async function getStats(context = {}) {
+  const keys = queueKeys(context);
   const [waiting, standby, admitted, lastTicket, totalSeats] = await Promise.all([
-    redis.zcard(QUEUE_KEY),
-    redis.zcard(STANDBY_KEY),
-    redis.scard(ADMITTED_KEY),
-    redis.get(COUNTER_KEY),
-    redis.get(TOTAL_SEATS_KEY),
+    redis.zcard(keys.waitingKey),
+    redis.zcard(keys.standbyKey),
+    redis.scard(keys.admittedKey),
+    redis.get(keys.counterKey),
+    redis.get(keys.totalSeatsKey),
   ]);
 
   return {
@@ -241,6 +263,26 @@ async function getStats() {
     admitted,
     lastTicket: parseInt(lastTicket, 10) || 0,
   };
+}
+
+async function isUserAdmitted(userId, context = {}) {
+  const keys = queueKeys(context);
+  return redis.sismember(keys.admittedKey, userId);
+}
+
+async function clearQueuesForEvent(eventId) {
+  if (!eventId) return { deleted: 0 };
+  let cursor = '0';
+  let deleted = 0;
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `queue:*:${eventId}:*`, 'COUNT', 200);
+    cursor = nextCursor;
+    if (keys.length) {
+      await redis.del(...keys);
+      deleted += keys.length;
+    }
+  } while (cursor !== '0');
+  return { deleted };
 }
 
 async function openTicketing() {
@@ -430,61 +472,73 @@ async function cancelCloseSchedule() {
   return { success: true, message: '마감 예약이 취소되었습니다.' };
 }
 
-async function recoverQueueFromMariaDB(eventId) {
+async function recoverQueueFromMariaDB(eventId, context = {}) {
   if (!eventId) return { recovered: false, message: 'eventId 필요' };
 
-  const existingCount = await redis.zcard(QUEUE_KEY);
-  const existingStandby = await redis.zcard(STANDBY_KEY);
-  const existingAdmitted = await redis.scard(ADMITTED_KEY);
+  const hasSession = Boolean(context.sessionDate || context.sessionTime);
+  const keys = queueKeys(hasSession ? { ...context, eventId } : {});
+  const sessionClause = hasSession ? ' AND session_date = ? AND session_time = ?' : '';
+  const sessionParams = hasSession ? [keys.sessionDate, keys.sessionTime] : [];
+
+  const existingCount = await redis.zcard(keys.waitingKey);
+  const existingStandby = await redis.zcard(keys.standbyKey);
+  const existingAdmitted = await redis.scard(keys.admittedKey);
   if (existingCount + existingStandby + existingAdmitted > 0) {
     return { recovered: false, message: 'Redis 대기열에 이미 데이터가 있습니다', existing: { eligible: existingCount, standby: existingStandby, admitted: existingAdmitted } };
   }
 
   const eligible = await pool.query(
-    'SELECT user_id, queue_index FROM waiting_queue WHERE event_id = ? AND queue_type = ? AND status = ? ORDER BY queue_index',
-    [eventId, 'eligible', 'WAITING'],
+    `SELECT user_id, queue_index FROM waiting_queue WHERE event_id = ?${sessionClause} AND queue_type = ? AND status = ? ORDER BY queue_index`,
+    [eventId, ...sessionParams, 'eligible', 'WAITING'],
   );
   if (eligible.length > 0) {
     const pipeline = redis.pipeline();
     for (const row of eligible) {
-      pipeline.zadd(QUEUE_KEY, row.queue_index, row.user_id);
+      pipeline.zadd(keys.waitingKey, row.queue_index, row.user_id);
     }
     await pipeline.exec();
   }
 
   const standby = await pool.query(
-    'SELECT user_id, queue_index FROM waiting_queue WHERE event_id = ? AND queue_type = ? AND status = ? ORDER BY queue_index',
-    [eventId, 'standby', 'WAITING'],
+    `SELECT user_id, queue_index FROM waiting_queue WHERE event_id = ?${sessionClause} AND queue_type = ? AND status = ? ORDER BY queue_index`,
+    [eventId, ...sessionParams, 'standby', 'WAITING'],
   );
   if (standby.length > 0) {
     const pipeline = redis.pipeline();
     for (const row of standby) {
-      pipeline.zadd(STANDBY_KEY, row.queue_index, row.user_id);
+      pipeline.zadd(keys.standbyKey, row.queue_index, row.user_id);
     }
     await pipeline.exec();
   }
 
   const admitted = await pool.query(
-    'SELECT user_id FROM waiting_queue WHERE event_id = ? AND status IN (?, ?)',
-    [eventId, 'ADMITTED', 'PROMOTED'],
+    `SELECT user_id FROM waiting_queue WHERE event_id = ?${sessionClause} AND status IN (?, ?)`,
+    [eventId, ...sessionParams, 'ADMITTED', 'PROMOTED'],
   );
   if (admitted.length > 0) {
-    await redis.sadd(ADMITTED_KEY, ...admitted.map(r => r.user_id));
+    await redis.sadd(keys.admittedKey, ...admitted.map(r => r.user_id));
   }
 
   const maxRow = await pool.query(
-    'SELECT MAX(queue_index) as max_idx FROM waiting_queue WHERE event_id = ?',
-    [eventId],
+    `SELECT MAX(queue_index) as max_idx FROM waiting_queue WHERE event_id = ?${sessionClause}`,
+    [eventId, ...sessionParams],
   );
   const counter = maxRow[0]?.max_idx || 0;
   if (counter > 0) await redis.set(COUNTER_KEY, counter);
 
   const eventRow = await pool.query(
-    'SELECT total_seats FROM events WHERE event_id = ?',
+    'SELECT total_seats, sessions FROM events WHERE event_id = ?',
     [eventId],
   );
-  const totalSeats = eventRow[0]?.total_seats || 0;
-  if (totalSeats > 0) await redis.set(TOTAL_SEATS_KEY, totalSeats);
+  let totalSeats = eventRow[0]?.total_seats || 0;
+  if (hasSession) {
+    try {
+      const storedSessions = typeof eventRow[0]?.sessions === 'string' ? JSON.parse(eventRow[0].sessions) : eventRow[0]?.sessions;
+      const sessionCount = Array.isArray(storedSessions) && storedSessions.length ? storedSessions.length : 1;
+      totalSeats = Math.ceil(totalSeats / sessionCount);
+    } catch (_) {}
+  }
+  if (totalSeats > 0) await redis.set(keys.totalSeatsKey, totalSeats);
 
   console.log(`[Queue Recovery] ${eventId}: eligible=${eligible.length}, standby=${standby.length}, admitted=${admitted.length}, counter=${counter}, totalSeats=${totalSeats}`);
   return {
@@ -497,4 +551,4 @@ async function recoverQueueFromMariaDB(eventId) {
   };
 }
 
-module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule, scheduleStandbyClose, scheduleCloseTime, cancelCloseSchedule, recoverQueueFromMariaDB };
+module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, isUserAdmitted, clearQueuesForEvent, queueKeys, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, cancelSchedule, getSchedule, scheduleStandbyClose, scheduleCloseTime, cancelCloseSchedule, recoverQueueFromMariaDB };

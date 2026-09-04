@@ -1,6 +1,16 @@
 const redis = require('../config/redis');
 const queueService = require('../services/queueService');
 
+function getQueueContext(request) {
+  const body = request.body || {};
+  const query = request.query || {};
+  return {
+    eventId: body.eventId || query.eventId || '',
+    sessionDate: body.sessionDate || query.sessionDate || '',
+    sessionTime: body.sessionTime || query.sessionTime || '',
+  };
+}
+
 async function queueRoutes(fastify) {
 
   fastify.post('/queue/set-seats', async (request, reply) => {
@@ -8,7 +18,7 @@ async function queueRoutes(fastify) {
     if (!totalSeats || totalSeats < 1) {
       return reply.status(400).send({ error: '총 좌석 수(totalSeats)는 1 이상이어야 합니다.' });
     }
-    const result = await queueService.setTotalSeats(totalSeats);
+    const result = await queueService.setTotalSeats(totalSeats, getQueueContext(request));
     return reply.send(result);
   });
 
@@ -17,13 +27,13 @@ async function queueRoutes(fastify) {
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
     }
-    const result = await queueService.enter(userId);
+    const result = await queueService.enter(userId, getQueueContext(request));
     return reply.send(result);
   });
 
   fastify.get('/queue/position/:userId', async (request, reply) => {
     const { userId } = request.params;
-    const result = await queueService.getPosition(userId);
+    const result = await queueService.getPosition(userId, getQueueContext(request));
     if (result.status === 'not_found') {
       return reply.status(404).send(result);
     }
@@ -31,12 +41,12 @@ async function queueRoutes(fastify) {
   });
 
   fastify.post('/queue/admit', async (request, reply) => {
-    const result = await queueService.admitBatch();
+    const result = await queueService.admitBatch(getQueueContext(request));
     return reply.send(result);
   });
 
   fastify.get('/queue/standby/next', async (request, reply) => {
-    const result = await queueService.getNextStandby();
+    const result = await queueService.getNextStandby(getQueueContext(request));
     return reply.send(result);
   });
 
@@ -45,12 +55,12 @@ async function queueRoutes(fastify) {
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
     }
-    const result = await queueService.promoteStandby(userId);
+    const result = await queueService.promoteStandby(userId, getQueueContext(request));
     return reply.send(result);
   });
 
   fastify.get('/queue/stats', async (request, reply) => {
-    const result = await queueService.getStats();
+    const result = await queueService.getStats(getQueueContext(request));
     return reply.send(result);
   });
 
@@ -116,7 +126,7 @@ async function queueRoutes(fastify) {
   fastify.get('/queue/token/:userId', async (request, reply) => {
     const { getTokenInfo } = require('../services/tokenService');
     const { userId } = request.params;
-    const result = await getTokenInfo(userId);
+    const result = await getTokenInfo(userId, getQueueContext(request));
     return reply.send(result);
   });
 
@@ -124,9 +134,11 @@ async function queueRoutes(fastify) {
     const { getTokenInfo } = require('../services/tokenService');
     const { userId } = request.params;
 
-    const isAdmitted = await redis.sismember('queue:admitted', userId);
+    const context = getQueueContext(request);
+    const keys = queueService.queueKeys(context);
+    const isAdmitted = await redis.sismember(keys.admittedKey, userId);
     if (isAdmitted) {
-      const tokenInfo = await getTokenInfo(userId);
+      const tokenInfo = await getTokenInfo(userId, context);
       return reply.send({
         canEnter: true,
         status: 'admitted',
@@ -135,7 +147,7 @@ async function queueRoutes(fastify) {
       });
     }
 
-    const rank = await redis.zrank('queue:waiting', userId);
+    const rank = await redis.zrank(keys.waitingKey, userId);
     if (rank !== null) {
       return reply.send({
         canEnter: false,
@@ -146,7 +158,7 @@ async function queueRoutes(fastify) {
       });
     }
 
-    const standbyRank = await redis.zrank('queue:standby', userId);
+    const standbyRank = await redis.zrank(keys.standbyKey, userId);
     if (standbyRank !== null) {
       return reply.send({
         canEnter: false,
@@ -174,16 +186,18 @@ async function queueRoutes(fastify) {
     let removed = false;
     let from = '';
 
-    const eligibleRemoved = await redis.zrem('queue:waiting', userId);
+    const context = getQueueContext(request);
+    const keys = queueService.queueKeys(context);
+    const eligibleRemoved = await redis.zrem(keys.waitingKey, userId);
     if (eligibleRemoved > 0) { removed = true; from = 'eligible'; }
 
-    const standbyRemoved = await redis.zrem('queue:standby', userId);
+    const standbyRemoved = await redis.zrem(keys.standbyKey, userId);
     if (standbyRemoved > 0) { removed = true; from = 'standby'; }
 
-    const admittedRemoved = await redis.srem('queue:admitted', userId);
+    const admittedRemoved = await redis.srem(keys.admittedKey, userId);
     if (admittedRemoved > 0) { removed = true; from = 'admitted'; }
 
-    await revokeToken(userId);
+    await revokeToken(userId, context);
 
     if (removed) {
       return reply.send({ success: true, from, message: `${userId}가 대기열에서 이탈했습니다.` });

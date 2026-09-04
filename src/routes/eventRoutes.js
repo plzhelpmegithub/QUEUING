@@ -4,9 +4,11 @@ const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
 const { notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
 const { publishSeatEvent, EVENT_TYPE } = require('../services/eventService');
+const { buildSeatId } = require('../services/sessionContext');
 
 const EVENT_KEY = 'event:info';
 const EVENT_LIST_KEY = 'events:list';
+const EVENT_SEQ_KEY = 'event:seq';
 const SEAT_PREFIX = 'seat:';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
@@ -25,6 +27,36 @@ function assignZoneGeometry(sections) {
   });
 }
 
+// 이벤트 1건의 Redis 좌석/목록과 MariaDB 연동 데이터를 정리한다.
+// 배치 삭제에서도 이 함수를 순차 호출해 Redis·DB에 순간 부하가 몰리지 않게 한다.
+async function deleteEventData(eventId) {
+  const removed = await redis.hdel(EVENT_LIST_KEY, eventId);
+  if (removed === 0) {
+    return { success: false, eventId, statusCode: 404, message: '해당 이벤트가 없습니다.' };
+  }
+
+  const deletedSeats = await seatService.cleanupEventSeats(eventId);
+  await queueService.clearQueuesForEvent(eventId);
+  let dbSynced = true;
+  try {
+    await pool.query(`DELETE FROM wishlists WHERE event_id = ?`, [eventId]);
+    await pool.query(`DELETE FROM seats WHERE event_id = ?`, [eventId]);
+    await pool.query(`DELETE FROM reservations WHERE event_id = ?`, [eventId]);
+    await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
+  } catch (dbErr) {
+    dbSynced = false;
+    console.error('[Event] MariaDB 삭제 동기화 실패:', dbErr.message);
+  }
+
+  return {
+    success: true,
+    eventId,
+    deletedSeats: deletedSeats.deleted,
+    dbSynced,
+    message: dbSynced ? '이벤트가 삭제되었습니다.' : 'Redis에서는 삭제했지만 MariaDB 동기화에 실패했습니다.',
+  };
+}
+
 async function eventRoutes(fastify) {
 
   fastify.post('/event/create', async (request, reply) => {
@@ -37,52 +69,60 @@ async function eventRoutes(fastify) {
     }
 
     // 이벤트 ID를 좌석 생성보다 먼저 만들어서, 좌석 ID 자체에 이벤트 ID를 심어둠
-    // (evt-171...:VIP-001) — 안 그러면 서로 다른 공연이 같은 구역명(VIP 등)을
-    // 쓸 때 Redis 키가 겹쳐서 좌석 데이터가 섞이는 문제가 있었음
-    const eventId = 'evt-' + Date.now();
+    // — 안 그러면 서로 다른 공연이 같은 구역명(VIP 등)을 쓸 때 Redis 키가 겹침
+    const seq = await redis.incr(EVENT_SEQ_KEY);
+    const eventId = `evt-${seq}`;
 
-    let allSeatIds = [];
-    let totalSeatCount = 0;
-    let sectionSummary = [];
+    const eventSessions = Array.isArray(sessions) && sessions.length > 0
+      ? sessions
+        .filter((s) => s && (s.date || s.time))
+        .map((s) => ({ ...s, date: String(s.date || ''), time: String(s.time || '') }))
+      : [{ date: String(eventDate || ''), time: '' }];
+    if (eventSessions.length === 0) eventSessions.push({ date: String(eventDate || ''), time: '' });
 
+    const sectionDefinitions = [];
     if (sections && Array.isArray(sections)) {
       for (const section of sections) {
         if (!section.name || !section.seats || section.seats < 1) {
           return reply.status(400).send({ error: '각 section에 name과 seats(1 이상)가 필요합니다.' });
         }
-        const padLength = String(section.seats).length;
-        const seatIds = [];
-        for (let i = 1; i <= section.seats; i++) {
-          seatIds.push(`${eventId}:${section.name}-${String(i).padStart(padLength, '0')}`);
-        }
-        await seatService.initSeats(seatIds, section.name, section.price || 0);
-        allSeatIds.push(...seatIds);
-        totalSeatCount += section.seats;
-        sectionSummary.push({
+        sectionDefinitions.push({
           name: section.name,
-          seats: section.seats,
-          price: section.price || 0,
-          range: `${seatIds[0]} ~ ${seatIds[seatIds.length - 1]}`,
+          seats: Number(section.seats),
+          price: Number(section.price || 0),
         });
       }
     } else if (totalSeats && totalSeats >= 1) {
-      const padLength = String(totalSeats).length;
-      for (let i = 1; i <= totalSeats; i++) {
-        allSeatIds.push(`${eventId}:A-${String(i).padStart(padLength, '0')}`);
-      }
-      await seatService.initSeats(allSeatIds, 'A', price || 0);
-      totalSeatCount = totalSeats;
-      sectionSummary.push({
-        name: 'A',
-        seats: totalSeats,
-        price: price || 0,
-        range: `${allSeatIds[0]} ~ ${allSeatIds[allSeatIds.length - 1]}`,
-      });
+      sectionDefinitions.push({ name: 'A', seats: Number(totalSeats), price: Number(price || 0) });
     } else {
       return reply.status(400).send({ error: 'sections 배열 또는 totalSeats가 필요합니다.' });
     }
 
-    await queueService.setTotalSeats(totalSeatCount);
+    const seatsPerSession = sectionDefinitions.reduce((sum, section) => sum + section.seats, 0);
+    const totalEventSeatCount = seatsPerSession * eventSessions.length;
+    const firstSession = eventSessions[0];
+    const sectionSummary = sectionDefinitions.map((section) => {
+      const padLength = String(section.seats).length;
+      const firstSeat = buildSeatId(eventId, firstSession, section.name, 1, padLength);
+      const lastSeat = buildSeatId(eventId, firstSession, section.name, section.seats, padLength);
+      return { ...section, range: `${firstSeat} ~ ${lastSeat}` };
+    });
+
+    // 공연의 각 회차마다 동일한 좌석 배치를 별도 좌석 inventory로 만든다.
+    // 예: 3,322석 × 2회차 = 6,644개의 독립 좌석.
+    for (const session of eventSessions) {
+      for (const section of sectionDefinitions) {
+        const padLength = String(section.seats).length;
+        const seatIds = [];
+        for (let i = 1; i <= section.seats; i++) {
+          seatIds.push(buildSeatId(eventId, session, section.name, i, padLength));
+        }
+        await seatService.initSeats(seatIds, section.name, section.price, session);
+      }
+      await queueService.setTotalSeats(seatsPerSession, { eventId, sessionDate: session.date, sessionTime: session.time });
+    }
+    // 기존 관리자 시뮬레이션/레거시 API도 계속 동작하도록 기본 키에는 회차당 수용량을 유지한다.
+    await queueService.setTotalSeats(seatsPerSession);
     await queueService.openTicketing();
 
     const sectionsWithGeometry = resolvedSeatingType === 'arena'
@@ -96,7 +136,8 @@ async function eventRoutes(fastify) {
     if (runtime) extraFields.runtime = runtime;
     if (ageRating) extraFields.ageRating = ageRating;
     if (notices) extraFields.notices = notices;
-    if (sessions) extraFields.sessions = sessions;
+    extraFields.sessions = eventSessions;
+    extraFields.seatsPerSession = seatsPerSession;
     const hashExtras = {};
     for (const [k, v] of Object.entries(extraFields)) {
       hashExtras[k] = typeof v === 'object' ? JSON.stringify(v) : String(v);
@@ -106,7 +147,7 @@ async function eventRoutes(fastify) {
       eventName,
       eventDate: eventDate || '',
       venue: venue || '',
-      totalSeats: totalSeatCount.toString(),
+      totalSeats: totalEventSeatCount.toString(),
       sections: JSON.stringify(sectionsWithGeometry),
       seatingType: resolvedSeatingType,
       status: 'open',
@@ -121,9 +162,9 @@ async function eventRoutes(fastify) {
 
     try {
       await pool.query(
-        `INSERT INTO events (event_id, event_name, title, event_date, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NOW())`,
-        [eventId, eventName, eventName, eventDate || '', venue || '', totalSeatCount, resolvedSeatingType, JSON.stringify(sectionsWithGeometry), chosenEmoji, chosenColor],
+        `INSERT INTO events (event_id, event_name, title, event_date, sessions, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NOW())`,
+        [eventId, eventName, eventName, eventDate || '', JSON.stringify(eventSessions), venue || '', totalEventSeatCount, resolvedSeatingType, JSON.stringify(sectionsWithGeometry), chosenEmoji, chosenColor],
       );
     } catch (dbErr) {
       console.error('[Event] MariaDB 저장 실패:', dbErr.message);
@@ -134,7 +175,8 @@ async function eventRoutes(fastify) {
       eventName,
       eventDate: eventDate || '',
       venue: venue || '',
-      totalSeats: totalSeatCount,
+      totalSeats: totalEventSeatCount,
+      seatsPerSession,
       price: sectionSummary[0]?.price || 0,
       sections: sectionsWithGeometry,
       seatingType: resolvedSeatingType,
@@ -151,10 +193,12 @@ async function eventRoutes(fastify) {
       eventName,
       eventDate: eventDate || null,
       venue: venue || null,
-      totalSeats: totalSeatCount,
+      totalSeats: totalEventSeatCount,
+      seatsPerSession,
+      sessions: eventSessions,
       sections: sectionsWithGeometry,
       seatingType: resolvedSeatingType,
-      message: `"${eventName}" 생성 완료 — 총 ${totalSeatCount}석`,
+      message: `"${eventName}" 생성 완료 — ${eventSessions.length}회차, 총 ${totalEventSeatCount}석 (회차당 ${seatsPerSession}석)`,
     });
   });
 
@@ -168,6 +212,8 @@ async function eventRoutes(fastify) {
       eventDate: info.eventDate || null,
       venue: info.venue || null,
       totalSeats: parseInt(info.totalSeats, 10),
+      seatsPerSession: parseInt(info.seatsPerSession, 10) || parseInt(info.totalSeats, 10),
+      sessions: JSON.parse(info.sessions || '[]'),
       sections: JSON.parse(info.sections || '[]'),
       seatingType: info.seatingType || 'arena',
       status: info.status || 'open',
@@ -229,7 +275,7 @@ async function eventRoutes(fastify) {
       for (const pu of priceUpdates) {
         let cursor = '0';
         do {
-          const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${info.eventId}:${pu.section}-*`, 'COUNT', 200);
+          const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${info.eventId}:*${pu.section}-*`, 'COUNT', 200);
           cursor = nextCursor;
           const pipeline = redis.pipeline();
           for (const key of keys) {
@@ -315,6 +361,7 @@ async function eventRoutes(fastify) {
 
     const { deleted: cancelledSeats } = await seatService.cleanupEventSeats(info.eventId);
 
+    await queueService.clearQueuesForEvent(info.eventId);
     await redis.del('queue:waiting', 'queue:standby', 'queue:admitted', 'queue:counter');
 
     await publishSeatEvent(EVENT_TYPE.SOLD_OUT, {
@@ -368,6 +415,14 @@ async function eventRoutes(fastify) {
           eventDate: r.event_date || '',
           venue: r.venue || '',
           totalSeats: r.total_seats,
+          seatsPerSession: (() => {
+            try {
+              const parsed = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions;
+              const count = Array.isArray(parsed) && parsed.length ? parsed.length : 1;
+              return Math.ceil((r.total_seats || 0) / count);
+            } catch (_) { return r.total_seats || 0; }
+          })(),
+          sessions: (() => { try { return typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions || []; } catch (_) { return []; } })(),
           seatingType: r.seating_type || 'arena',
           sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
           status: r.status || 'open',
@@ -468,22 +523,44 @@ async function eventRoutes(fastify) {
     });
   });
 
+  // 최대 5개를 한 번에 받되, 내부 처리는 순차적으로 진행한다.
+  // 단일 삭제 API보다 빠르게 여러 건을 정리하면서도 DB/Redis 동시 요청 폭증은 피한다.
+  fastify.post('/events/batch-delete', async (request, reply) => {
+    const rawEventIds = request.body?.eventIds;
+    if (!Array.isArray(rawEventIds) || rawEventIds.length === 0) {
+      return reply.status(400).send({ success: false, message: '삭제할 eventIds 배열이 필요합니다.' });
+    }
+
+    const eventIds = [...new Set(rawEventIds.map((id) => String(id).trim()).filter(Boolean))];
+    if (eventIds.length > 5) {
+      return reply.status(400).send({ success: false, message: '한 번에 최대 5개 공연까지만 삭제할 수 있습니다.' });
+    }
+
+    const results = [];
+    for (const eventId of eventIds) {
+      try {
+        results.push(await deleteEventData(eventId));
+      } catch (err) {
+        console.error(`[Event] 배치 삭제 실패 (${eventId}):`, err.message);
+        results.push({ success: false, eventId, statusCode: 500, message: '삭제 처리 중 오류가 발생했습니다.' });
+      }
+    }
+
+    const deleted = results.filter((result) => result.success);
+    const failed = results.filter((result) => !result.success || result.dbSynced === false);
+    return reply.send({
+      success: failed.length === 0,
+      deletedCount: deleted.length,
+      failedCount: failed.length,
+      results,
+      message: failed.length === 0 ? `${deleted.length}개 공연이 삭제되었습니다.` : '일부 공연 삭제 또는 DB 동기화에 실패했습니다.',
+    });
+  });
+
   fastify.delete('/events/:eventId', async (request, reply) => {
-    const { eventId } = request.params;
-    const removed = await redis.hdel(EVENT_LIST_KEY, eventId);
-    if (removed === 0) {
-      return reply.status(404).send({ message: '해당 이벤트가 없습니다.' });
-    }
-    await seatService.cleanupEventSeats(eventId);
-    try {
-      await pool.query(`DELETE FROM wishlists WHERE event_id = ?`, [eventId]);
-      await pool.query(`DELETE FROM seats WHERE event_id = ?`, [eventId]);
-      await pool.query(`DELETE FROM reservations WHERE event_id = ?`, [eventId]);
-      await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
-    } catch (dbErr) {
-      console.error('[Event] MariaDB 삭제 동기화 실패:', dbErr.message);
-    }
-    return reply.send({ success: true, eventId, message: '이벤트가 삭제되었습니다.' });
+    const result = await deleteEventData(request.params.eventId);
+    if (!result.success) return reply.status(result.statusCode || 404).send(result);
+    return reply.send(result);
   });
 
   fastify.post('/events/seed', async (request, reply) => {
@@ -534,11 +611,36 @@ async function eventRoutes(fastify) {
     await redis.del('queue:waiting', 'queue:standby', 'queue:admitted', 'queue:counter');
     cleared.push('queue:waiting', 'queue:standby', 'queue:admitted', 'queue:counter');
 
+    let cursor = '0';
+    let scopedQueueCount = 0;
+    cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', 'queue:*:*:*', 'COUNT', 200);
+      cursor = next;
+      if (keys.length > 0) {
+        await redis.del(...keys);
+        scopedQueueCount += keys.length;
+      }
+    } while (cursor !== '0');
+    if (scopedQueueCount > 0) cleared.push(`session queue keys (${scopedQueueCount})`);
+
     await redis.del('event:sold-out', 'event:ticketing-status');
     cleared.push('event:sold-out', 'event:ticketing-status');
 
+    let scopedEventKeyCount = 0;
+    cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', 'event:*:*:*', 'COUNT', 200);
+      cursor = next;
+      const scopedKeys = keys.filter((key) => key.startsWith('event:sold-out:') || key.startsWith('event:ticketing-status:') || key.startsWith('event:total-seats:'));
+      if (scopedKeys.length > 0) {
+        await redis.del(...scopedKeys);
+        scopedEventKeyCount += scopedKeys.length;
+      }
+    } while (cursor !== '0');
+    if (scopedEventKeyCount > 0) cleared.push(`session event keys (${scopedEventKeyCount})`);
+
     let tokenCount = 0;
-    let cursor = '0';
     do {
       const [next, keys] = await redis.scan(cursor, 'MATCH', 'admission:*', 'COUNT', 200);
       cursor = next;
@@ -576,6 +678,13 @@ async function eventRoutes(fastify) {
             eventDate: r.event_date || '',
             venue: r.venue || '',
             totalSeats: r.total_seats,
+            sessions: (() => { try { return typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions || []; } catch (_) { return []; } })(),
+            seatsPerSession: (() => {
+              try {
+                const list = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions;
+                return Math.ceil((r.total_seats || 0) / (Array.isArray(list) && list.length ? list.length : 1));
+              } catch (_) { return r.total_seats || 0; }
+            })(),
             seatingType: r.seating_type || 'arena',
             sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
             status: r.status || 'open',
@@ -638,6 +747,13 @@ async function eventRoutes(fastify) {
             eventDate: r.event_date || '',
             venue: r.venue || '',
             totalSeats: r.total_seats,
+            sessions: (() => { try { return typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions || []; } catch (_) { return []; } })(),
+            seatsPerSession: (() => {
+              try {
+                const list = typeof r.sessions === 'string' ? JSON.parse(r.sessions) : r.sessions;
+                return Math.ceil((r.total_seats || 0) / (Array.isArray(list) && list.length ? list.length : 1));
+              } catch (_) { return r.total_seats || 0; }
+            })(),
             seatingType: r.seating_type || 'arena',
             sections: typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections || [],
             status: r.status || 'open',
@@ -667,6 +783,13 @@ async function eventRoutes(fastify) {
           eventDate: e.event_date || '',
           venue: e.venue || '',
           totalSeats: (e.total_seats || 0).toString(),
+          sessions: typeof e.sessions === 'string' ? e.sessions : JSON.stringify(e.sessions || []),
+          seatsPerSession: (() => {
+            try {
+              const list = typeof e.sessions === 'string' ? JSON.parse(e.sessions) : e.sessions;
+              return String(Math.ceil((e.total_seats || 0) / (Array.isArray(list) && list.length ? list.length : 1)));
+            } catch (_) { return String(e.total_seats || 0); }
+          })(),
           seatingType: e.seating_type || 'arena',
           status: e.status || 'open',
         });
@@ -683,7 +806,25 @@ async function eventRoutes(fastify) {
     }
 
     try {
-      results.queue = await queueService.recoverQueueFromMariaDB(targetEventId);
+      const targetRows = await pool.query('SELECT sessions FROM events WHERE event_id = ?', [targetEventId]);
+      let targetSessions = [];
+      try {
+        const stored = targetRows[0]?.sessions;
+        targetSessions = typeof stored === 'string' ? JSON.parse(stored) : stored || [];
+      } catch (_) {}
+      if (Array.isArray(targetSessions) && targetSessions.length > 0) {
+        const recovered = [];
+        for (const session of targetSessions) {
+          recovered.push(await queueService.recoverQueueFromMariaDB(targetEventId, {
+            eventId: targetEventId,
+            sessionDate: session.date || '',
+            sessionTime: session.time || '',
+          }));
+        }
+        results.queue = recovered;
+      } else {
+        results.queue = await queueService.recoverQueueFromMariaDB(targetEventId);
+      }
     } catch (err) {
       results.queue = { recovered: false, error: err.message };
     }

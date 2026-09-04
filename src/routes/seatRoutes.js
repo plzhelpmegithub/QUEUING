@@ -13,24 +13,24 @@ async function seatRoutes(fastify) {
   });
 
   fastify.post('/seats/hold', async (request, reply) => {
-    const { userId, seatId, token } = request.body || {};
+    const { userId, seatId, token, eventId, sessionDate, sessionTime } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
     }
     if (!token) {
       return reply.status(401).send({ error: 'Admission Token(token)은 필수입니다.' });
     }
-    const result = await seatService.holdSeat(userId, seatId, token);
+    const result = await seatService.holdSeat(userId, seatId, token, { eventId, sessionDate, sessionTime });
     const statusCode = result.success ? 200 : result.reason === 'no_token' || result.reason === 'expired' ? 401 : 409;
     return reply.status(statusCode).send(result);
   });
 
   fastify.post('/seats/confirm', async (request, reply) => {
-    const { userId, seatId } = request.body || {};
+    const { userId, seatId, eventId, sessionDate, sessionTime } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
     }
-    const result = await seatService.confirmSeat(userId, seatId);
+    const result = await seatService.confirmSeat(userId, seatId, { eventId, sessionDate, sessionTime });
     const statusCode = result.success ? 200 : 409;
     return reply.status(statusCode).send(result);
   });
@@ -62,18 +62,20 @@ async function seatRoutes(fastify) {
   });
 
   fastify.get('/seats/sold-out', async (request, reply) => {
-    const result = await seatService.isSoldOut();
+    const { eventId, sessionDate, sessionTime } = request.query || {};
+    const result = await seatService.isSoldOut({ eventId, sessionDate, sessionTime });
     return reply.send(result);
   });
 
   fastify.get('/seats/available', async (request, reply) => {
-    const result = await seatService.getAvailableCount();
+    const { eventId, sessionDate, sessionTime } = request.query || {};
+    const result = await seatService.getAvailableCount(eventId, { sessionDate, sessionTime });
     return reply.send(result);
   });
 
   fastify.get('/seats', async (request, reply) => {
-    const { eventId } = request.query || {};
-    const seats = await seatService.getAllSeats(eventId || undefined);
+    const { eventId, sessionDate, sessionTime } = request.query || {};
+    const seats = await seatService.getAllSeats(eventId || undefined, { sessionDate, sessionTime });
     return reply.send({ seats, count: seats.length });
   });
 

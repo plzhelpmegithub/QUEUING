@@ -75,6 +75,7 @@ async function initTable() {
       event_id VARCHAR(50) PRIMARY KEY,
       event_name VARCHAR(200) NOT NULL,
       event_date VARCHAR(50) DEFAULT '',
+      sessions JSON NULL,
       venue VARCHAR(200) DEFAULT '',
       total_seats INT NOT NULL DEFAULT 0,
       seating_type VARCHAR(20) DEFAULT 'arena',
@@ -117,6 +118,8 @@ async function initTable() {
       id INT AUTO_INCREMENT PRIMARY KEY,
       seat_id VARCHAR(100) NOT NULL DEFAULT '',
       event_id VARCHAR(50) NOT NULL DEFAULT '',
+      session_date VARCHAR(50) DEFAULT '',
+      session_time VARCHAR(10) DEFAULT '',
       section VARCHAR(20) DEFAULT '',
       price INT NOT NULL DEFAULT 0,
       status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE',
@@ -150,6 +153,8 @@ async function initTable() {
       id INT AUTO_INCREMENT PRIMARY KEY,
       user_id VARCHAR(50) NOT NULL,
       event_id VARCHAR(50) NOT NULL DEFAULT '',
+      session_date VARCHAR(50) DEFAULT '',
+      session_time VARCHAR(10) DEFAULT '',
       queue_type VARCHAR(20) NOT NULL DEFAULT 'eligible',
       queue_index INT NOT NULL DEFAULT 0,
       status VARCHAR(20) NOT NULL DEFAULT 'WAITING',
@@ -251,6 +256,8 @@ async function initTable() {
       seat_id VARCHAR(100) NOT NULL DEFAULT '',
       user_id VARCHAR(50) NOT NULL DEFAULT '',
       event_id VARCHAR(50) NOT NULL DEFAULT '',
+      session_date VARCHAR(50) DEFAULT '',
+      session_time VARCHAR(10) DEFAULT '',
       status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED',
       reserved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       cancelled_at DATETIME NULL,
@@ -282,6 +289,8 @@ function toItem(row) {
     seatId: row.seat_id,
     userId: row.user_id,
     eventId: row.event_id || '',
+    sessionDate: row.session_date || '',
+    sessionTime: row.session_time || '',
     status: row.status,
     reservedAt: row.reserved_at instanceof Date ? row.reserved_at.toISOString() : row.reserved_at,
     cancelledAt: row.cancelled_at instanceof Date ? row.cancelled_at.toISOString() : row.cancelled_at || null,
@@ -291,29 +300,29 @@ function toItem(row) {
 async function saveReservation(data) {
   const reservedAt = new Date();
   await pool.query(
-    `INSERT INTO reservations (seat_id, user_id, event_id, status, reserved_at) VALUES (?, ?, ?, ?, ?)`,
-    [data.seatId, data.userId, data.eventId || '', 'CONFIRMED', reservedAt],
+    `INSERT INTO reservations (seat_id, user_id, event_id, session_date, session_time, status, reserved_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [data.seatId, data.userId, data.eventId || '', data.sessionDate || '', data.sessionTime || '', 'CONFIRMED', reservedAt],
   );
   console.log(`[MariaDB] 예약 저장: ${data.seatId} → ${data.userId}`);
-  return { seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
+  return { seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', sessionDate: data.sessionDate || '', sessionTime: data.sessionTime || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
 }
 
 async function getReservationsBySeat(seatId) {
   const rows = await pool.query(
-    `SELECT seat_id, user_id, event_id, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
+    `SELECT seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
     [seatId],
   );
   return rows.map(toItem);
 }
 
 async function getAllReservations() {
-  const rows = await pool.query(`SELECT seat_id, user_id, event_id, status, reserved_at, cancelled_at FROM reservations`);
+  const rows = await pool.query(`SELECT seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations`);
   return rows.map(toItem);
 }
 
 async function getReservationsByUser(userId) {
   const rows = await pool.query(
-    `SELECT seat_id, user_id, event_id, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
+    `SELECT seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
     [userId],
   );
   return rows.map(toItem);

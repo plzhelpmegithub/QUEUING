@@ -5,6 +5,8 @@ const { startTimer, cancelTimer, getRemaining } = require('./timerService');
 const { publishSeatEvent, EVENT_TYPE } = require('./eventService');
 const { saveReservation, cancelReservation } = require('./dbService');
 const { syncToMariaDB } = require('./syncRetryService');
+const { normalizeSessionContext, getScopedKey, sessionFromSeat } = require('./sessionContext');
+const queueService = require('./queueService');
 
 const SEAT_PREFIX = 'seat:';
 const ADMITTED_KEY = 'queue:admitted';
@@ -23,9 +25,9 @@ async function ensureEventInMariaDB(eventId) {
   }
   const e = JSON.parse(cardStr);
   await pool.query(
-    `INSERT IGNORE INTO events (event_id, event_name, event_date, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-    [eventId, e.eventName || '', e.eventDate || '', e.venue || '', e.totalSeats || 0, e.seatingType || 'arena', JSON.stringify(e.sections || []), e.status || 'open', e.emoji || '', e.color || ''],
+    `INSERT IGNORE INTO events (event_id, event_name, event_date, sessions, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+    [eventId, e.eventName || '', e.eventDate || '', JSON.stringify(e.sessions || []), e.venue || '', e.totalSeats || 0, e.seatingType || 'arena', JSON.stringify(e.sections || []), e.status || 'open', e.emoji || '', e.color || ''],
   );
   console.log(`[Seat] MariaDB events 테이블에 ${eventId} 자동 동기화 완료`);
 }
@@ -37,7 +39,9 @@ const STATUS = {
   CANCELLED: 'CANCELLED',
 };
 
-async function initSeats(seatIds, section = '', price = 0) {
+async function initSeats(seatIds, section = '', price = 0, session = {}) {
+  const eventId = seatIds[0]?.split(':')[0] || '';
+  const sessionContext = normalizeSessionContext({ eventId, ...session });
   const pipeline = redis.pipeline();
   for (const id of seatIds) {
     const key = `${SEAT_PREFIX}${id}`;
@@ -47,16 +51,18 @@ async function initSeats(seatIds, section = '', price = 0) {
       heldAt: '',
       section: section,
       price: price.toString(),
+      eventId,
+      sessionDate: sessionContext.sessionDate,
+      sessionTime: sessionContext.sessionTime,
     });
   }
   await pipeline.exec();
 
-  const eventId = seatIds[0]?.split(':')[0] || '';
-  const values = seatIds.map(id => [id, eventId, section, price, 'AVAILABLE', '', null]);
-  const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+  const values = seatIds.map(id => [id, eventId, sessionContext.sessionDate, sessionContext.sessionTime, section, price, 'AVAILABLE', '', null]);
+  const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
   const flat = values.flat();
   await syncToMariaDB(
-    `INSERT IGNORE INTO seats (seat_id, event_id, section, price, status, held_by, held_at) VALUES ${placeholders}`,
+    `INSERT IGNORE INTO seats (seat_id, event_id, session_date, session_time, section, price, status, held_by, held_at) VALUES ${placeholders}`,
     flat,
     `seat:init ${eventId}:${section} (${seatIds.length}석)`,
   );
@@ -64,15 +70,21 @@ async function initSeats(seatIds, section = '', price = 0) {
   return { initialized: seatIds.length, section, price, seats: seatIds };
 }
 
-async function holdSeat(userId, seatId, admissionToken) {
+async function holdSeat(userId, seatId, admissionToken, requestedContext = {}) {
   const { verifyToken } = require('./tokenService');
+  const seatKey = `${SEAT_PREFIX}${seatId}`;
+  const seatInfo = await redis.hgetall(seatKey);
+  const inferredContext = sessionFromSeat(seatId, seatInfo);
+  const sessionContext = seatInfo.sessionDate || seatInfo.sessionTime
+    ? inferredContext
+    : normalizeSessionContext({ eventId: inferredContext.eventId, ...requestedContext });
 
-  const tokenResult = await verifyToken(admissionToken, userId);
+  const tokenResult = await verifyToken(admissionToken, userId, sessionContext);
   if (!tokenResult.valid) {
     return { success: false, reason: tokenResult.reason, message: tokenResult.message };
   }
 
-  const isAdmitted = await redis.sismember(ADMITTED_KEY, userId);
+  const isAdmitted = await queueService.isUserAdmitted(userId, sessionContext);
   if (!isAdmitted) {
     return { success: false, reason: 'not_admitted', message: '입장이 허용되지 않은 사용자입니다.' };
   }
@@ -84,7 +96,6 @@ async function holdSeat(userId, seatId, admissionToken) {
   }
 
   try {
-    const seatKey = `${SEAT_PREFIX}${seatId}`;
     const status = await redis.hget(seatKey, 'status');
 
     if (!status) {
@@ -123,10 +134,10 @@ async function holdSeat(userId, seatId, admissionToken) {
 
 async function releaseSeat(userId, seatId) {
   const seatKey = `${SEAT_PREFIX}${seatId}`;
-  const [status, heldBy] = await Promise.all([
-    redis.hget(seatKey, 'status'),
-    redis.hget(seatKey, 'heldBy'),
-  ]);
+  const seatInfo = await redis.hgetall(seatKey);
+  const status = seatInfo.status;
+  const heldBy = seatInfo.heldBy;
+  const sessionContext = sessionFromSeat(seatId, seatInfo);
 
   if (status !== STATUS.HELD) {
     return { success: false, reason: 'not_held', message: '선점 상태가 아닌 좌석입니다.' };
@@ -137,11 +148,13 @@ async function releaseSeat(userId, seatId) {
 
   await cancelTimer(seatId);
 
-  const nextUsers = await redis.zrange('queue:standby', 0, 0);
-  if (nextUsers.length > 0) {
-    const nextUser = nextUsers[0];
-    await redis.zrem('queue:standby', nextUser);
-    await redis.sadd(ADMITTED_KEY, nextUser);
+  const next = await queueService.getNextStandby(sessionContext);
+  if (next.userId) {
+    const nextUser = next.userId;
+    const promoted = await queueService.promoteStandby(nextUser, sessionContext);
+    if (!promoted.success) {
+      return { success: false, reason: 'standby_promote_failed', message: promoted.message };
+    }
     await redis.hset(seatKey, { status: STATUS.HELD, heldBy: nextUser, heldAt: Date.now().toString() });
     await startTimer(seatId, nextUser);
     await publishSeatEvent(EVENT_TYPE.HELD, {
@@ -176,7 +189,7 @@ async function releaseSeat(userId, seatId) {
   };
 }
 
-async function getAllSeats(eventId) {
+async function getAllSeats(eventId, context = {}) {
   if (!eventId) {
     const info = await redis.hgetall(EVENT_KEY);
     eventId = info && info.eventId ? info.eventId : null;
@@ -202,10 +215,20 @@ async function getAllSeats(eventId) {
   }
   const results = await pipeline.exec();
 
-  return keys.map((key, i) => ({
+  const seats = keys.map((key, i) => ({
     seatId: key.replace(SEAT_PREFIX, ''),
     ...results[i][1],
   }));
+
+  const hasRequestedSession = Boolean(context.sessionDate || context.date || context.sessionTime || context.time);
+  if (!hasRequestedSession) return seats;
+  const requested = normalizeSessionContext({ eventId, ...context });
+  const filtered = seats.filter((seat) => (
+    (seat.sessionDate || '') === requested.sessionDate
+    && (seat.sessionTime || '') === requested.sessionTime
+  ));
+  // 기존 공연은 회차 컬럼 없이 공연 전체에 하나의 좌석 목록만 사용했다.
+  return filtered.length > 0 ? filtered : seats.filter((seat) => !seat.sessionDate && !seat.sessionTime);
 }
 
 async function cleanupEventSeats(eventId) {
@@ -226,12 +249,11 @@ async function cleanupEventSeats(eventId) {
   return { deleted };
 }
 
-async function confirmSeat(userId, seatId) {
+async function confirmSeat(userId, seatId, requestedContext = {}) {
   const seatKey = `${SEAT_PREFIX}${seatId}`;
-  const [status, heldBy] = await Promise.all([
-    redis.hget(seatKey, 'status'),
-    redis.hget(seatKey, 'heldBy'),
-  ]);
+  const seatInfo = await redis.hgetall(seatKey);
+  const status = seatInfo.status;
+  const heldBy = seatInfo.heldBy;
 
   if (status !== STATUS.HELD) {
     return { success: false, reason: 'not_held', message: '선점 상태가 아닌 좌석입니다.' };
@@ -242,9 +264,13 @@ async function confirmSeat(userId, seatId) {
 
   // MariaDB에 예매 기록 저장 (Redis 상태 변경보다 먼저 — DB 저장이 실패하면
   // Redis를 롤백할 필요 없이 held 상태가 유지되므로 재시도가 가능)
-  const eventId = seatId.split(':')[0] || '';
+  const inferredContext = sessionFromSeat(seatId, seatInfo);
+  const sessionContext = seatInfo.sessionDate || seatInfo.sessionTime
+    ? inferredContext
+    : normalizeSessionContext({ eventId: inferredContext.eventId, ...requestedContext });
+  const eventId = sessionContext.eventId;
   await ensureEventInMariaDB(eventId);
-  await saveReservation({ seatId, userId, eventId });
+  await saveReservation({ seatId, userId, eventId, sessionDate: sessionContext.sessionDate, sessionTime: sessionContext.sessionTime });
 
   await syncToMariaDB(
     `UPDATE seats SET status = 'SOLD' WHERE seat_id = ?`,
@@ -257,14 +283,14 @@ async function confirmSeat(userId, seatId) {
   await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
 
   const { revokeToken } = require('./tokenService');
-  await revokeToken(userId);
+  await revokeToken(userId, sessionContext);
 
-  const allSeats = await getAllSeats(eventId);
+  const allSeats = await getAllSeats(eventId, sessionContext);
   const remaining = allSeats.filter(s => s.status === STATUS.AVAILABLE || s.status === STATUS.HELD);
   if (remaining.length === 0) {
-    await redis.set(SOLD_OUT_KEY, '1');
+    await redis.set(getScopedKey(SOLD_OUT_KEY, sessionContext), '1');
 
-    await redis.set('event:ticketing-status', 'sold_out');
+    await redis.set(getScopedKey('event:ticketing-status', sessionContext), 'sold_out');
     console.log('[Ticketing] 전석 매진 → sold_out (standby 대기 접수 계속 가능)');
 
     await publishSeatEvent(EVENT_TYPE.SOLD_OUT, {
@@ -289,10 +315,10 @@ async function getSeatTimer(seatId) {
 
 async function cancelSeat(userId, seatId) {
   const seatKey = `${SEAT_PREFIX}${seatId}`;
-  const [status, heldBy] = await Promise.all([
-    redis.hget(seatKey, 'status'),
-    redis.hget(seatKey, 'heldBy'),
-  ]);
+  const seatInfo = await redis.hgetall(seatKey);
+  const status = seatInfo.status;
+  const heldBy = seatInfo.heldBy;
+  const sessionContext = sessionFromSeat(seatId, seatInfo);
 
   if (status !== STATUS.SOLD) {
     return { success: false, reason: 'not_sold', message: '판매 완료 상태가 아닌 좌석입니다.' };
@@ -307,7 +333,8 @@ async function cancelSeat(userId, seatId) {
     heldAt: '',
   });
 
-  await redis.del(SOLD_OUT_KEY);
+  await redis.del(getScopedKey(SOLD_OUT_KEY, sessionContext));
+  await redis.del(getScopedKey('event:ticketing-status', sessionContext));
   await publishSeatEvent(EVENT_TYPE.CANCELLED, { seatId, userId });
   await cancelReservation(seatId, userId);
 
@@ -325,8 +352,8 @@ async function cancelSeat(userId, seatId) {
   };
 }
 
-async function isSoldOut() {
-  const flag = await redis.get(SOLD_OUT_KEY);
+async function isSoldOut(context = {}) {
+  const flag = await redis.get(getScopedKey(SOLD_OUT_KEY, context));
   const soldOut = flag === '1';
   return {
     soldOut,
@@ -336,8 +363,8 @@ async function isSoldOut() {
   };
 }
 
-async function getAvailableCount() {
-  const allSeats = await getAllSeats();
+async function getAvailableCount(eventId, context = {}) {
+  const allSeats = await getAllSeats(eventId, context);
   const available = allSeats.filter(s => s.status === STATUS.AVAILABLE);
   const held = allSeats.filter(s => s.status === STATUS.HELD);
   const sold = allSeats.filter(s => s.status === STATUS.SOLD);
@@ -359,13 +386,14 @@ async function recoverSeatsFromMariaDB(eventId) {
   }
 
   const rows = await pool.query(
-    'SELECT seat_id, status, held_by, held_at, section, price FROM seats WHERE event_id = ?',
+    'SELECT seat_id, status, held_by, held_at, section, price, session_date, session_time FROM seats WHERE event_id = ?',
     [eventId],
   );
   if (rows.length === 0) return { recovered: false, message: 'MariaDB에 좌석 데이터 없음' };
 
   const pipeline = redis.pipeline();
   let available = 0, held = 0, sold = 0;
+  const sessionStats = new Map();
   for (const row of rows) {
     const key = `${SEAT_PREFIX}${row.seat_id}`;
     const status = row.status || STATUS.AVAILABLE;
@@ -375,15 +403,34 @@ async function recoverSeatsFromMariaDB(eventId) {
       heldAt: row.held_at ? new Date(row.held_at).getTime().toString() : '',
       section: row.section || '',
       price: (row.price || 0).toString(),
+      eventId,
+      sessionDate: row.session_date || '',
+      sessionTime: row.session_time || '',
     });
     if (status === STATUS.AVAILABLE) available++;
     else if (status === STATUS.HELD) held++;
     else if (status === STATUS.SOLD) sold++;
+    const sessionKey = `${row.session_date || ''}|${row.session_time || ''}`;
+    const stats = sessionStats.get(sessionKey) || { date: row.session_date || '', time: row.session_time || '', available: 0, held: 0 };
+    if (status === STATUS.AVAILABLE) stats.available++;
+    else if (status === STATUS.HELD) stats.held++;
+    sessionStats.set(sessionKey, stats);
   }
   await pipeline.exec();
 
-  if (available === 0 && held === 0) {
-    await redis.set(SOLD_OUT_KEY, '1');
+  for (const stats of sessionStats.values()) {
+    if (stats.available === 0 && stats.held === 0) {
+      await redis.set(getScopedKey(SOLD_OUT_KEY, {
+        eventId,
+        sessionDate: stats.date,
+        sessionTime: stats.time,
+      }), '1');
+      await redis.set(getScopedKey('event:ticketing-status', {
+        eventId,
+        sessionDate: stats.date,
+        sessionTime: stats.time,
+      }), 'sold_out');
+    }
   }
 
   console.log(`[Seat Recovery] ${eventId}: ${rows.length}석 복구 (available=${available}, held=${held}, sold=${sold})`);

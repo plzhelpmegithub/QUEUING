@@ -122,7 +122,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /event/create` | 공연 생성. 섹션 기반(VIP/R/S/A석 구역 좌표 자동 계산) 또는 단순 생성 지원. Redis + MariaDB 이중 저장 |
+| `POST /event/create` | 공연 생성. 이벤트 ID는 Redis `event:seq` INCR로 자동 증가 순번 발급(`evt-1`, `evt-2`, ...). `sessions: [{ date, time }]`가 여러 개면 회차마다 독립 좌석 inventory를 만들며, `totalSeats`는 전체 회차 합계, `seatsPerSession`은 회차당 좌석 수로 반환 |
 | `GET /event/info` | 공연 정보 조회 (Redis 우선, MariaDB 폴백) |
 | `PATCH /event/update` | 공연 정보 수정 + 알림 발송 |
 | `POST /event/cancel` | 공연 취소. 좌석 전체 정리, 대기열 초기화, 취소 알림 |
@@ -130,6 +130,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정 |
 | `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제 (자동 마감) |
 | `DELETE /events/:eventId` | 이벤트 삭제 |
+| `POST /events/batch-delete` | 최대 5개 이벤트를 순차 삭제하며 Redis 좌석과 MariaDB 관련 데이터를 함께 정리 |
 | `POST /events/seed` | 데모용 더미 이벤트 5개 생성 |
 
 ---
@@ -138,9 +139,9 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /queue/enter` | 대기열 진입. 3단계 티켓팅 상태(open/sold_out/closed)에 따라 eligible 또는 standby 배정 |
-| `GET /queue/position/:userId` | 현재 대기 순번 조회 |
-| `POST /queue/admit` | 상위 100명 일괄 입장 허용 + Admission Token 발급 |
+| `POST /queue/enter` | 대기열 진입. `eventId`, `sessionDate`, `sessionTime`을 함께 보내면 해당 회차 전용 대기열로 처리 |
+| `GET /queue/position/:userId` | 현재 대기 순번 조회. 회차 query(`eventId`, `sessionDate`, `sessionTime`) 지원 |
+| `POST /queue/admit` | 해당 회차 대기열의 상위 100명 일괄 입장 허용 + 회차 전용 Admission Token 발급 |
 | `GET /queue/standby` | standby 목록 조회 |
 | `POST /queue/standby` | standby 대기열에 직접 추가 |
 | `GET /queue/stats` | 대기열 통계 (eligible/standby/admitted 인원 수) |
@@ -162,14 +163,14 @@ mariadb 라이브러리 기반 커넥션 풀.
 | 엔드포인트 | 설명 |
 |---|---|
 | `POST /seats/init` | 좌석 초기화 (Redis Hash 생성) |
-| `POST /seats/hold` | 좌석 선점. Admission Token 검증 + 분산 락 + 타이머 시작 |
+| `POST /seats/hold` | 좌석 선점. 좌석 ID에 포함된 회차와 Admission Token을 검증한 뒤 분산 락·타이머 시작 |
 | `POST /seats/confirm` | 결제 확정. MariaDB reservations 저장, 토큰 무효화, 매진 체크 |
 | `POST /seats/cancel` | 좌석 취소. available 복구, B팀 재판매 트리거 |
 | `POST /seats/release` | 좌석 해제 + standby 자동 배정 |
 | `GET /seats/timer/:seatId` | 남은 결제 시간 조회 |
 | `GET /seats/sold-out` | 매진 여부 확인 |
 | `GET /seats/available` | 상태별 좌석 수 집계 |
-| `GET /seats` | 전체 좌석 목록 (Redis SCAN) |
+| `GET /seats` | 좌석 목록 (Redis SCAN). `eventId`, `sessionDate`, `sessionTime` query를 주면 선택한 회차 좌석만 반환 |
 | `GET /reservations` | 예약 기록 조회 (MariaDB) |
 | `GET /reservations/:seatId` | 특정 좌석 예약 정보 |
 
@@ -249,6 +250,8 @@ Redis 기반 대기열 관리의 핵심 로직.
 - `scheduleTicketing()`: 자동 오픈/마감 타이머 설정
 - `scheduleStandbyClose()`: standby 마감 시간 예약
 
+`eventId`, `sessionDate`, `sessionTime`을 전달한 요청은 `queue:waiting:{eventId}:{sessionKey}`처럼 회차별 Redis 키를 사용한다. 회차별 대기열과 Admission Token이 서로 섞이지 않으며, 컨텍스트를 생략한 기존 관리/테스트 API는 기존 전역 키를 계속 사용한다.
+
 ---
 
 ### src/services/seatService.js — 좌석 서비스
@@ -257,7 +260,9 @@ Redis Hash 기반 좌석 상태 머신.
 
 **상태 흐름:** `available → held → sold`
 
-**Redis 키:** `seat:{seatId}` (Hash: status, heldBy, heldAt, section, price, row, col 등)
+**Redis 키:** `seat:{eventId}:{sessionKey}:{section-seat}` (Hash: status, heldBy, heldAt, section, price, sessionDate, sessionTime 등)
+
+한 공연에 여러 `sessions`가 있으면 동일한 배치를 회차별로 반복 생성한다. 따라서 올림픽홀 3,322석 공연이 2회차이면 Redis와 MariaDB에 6,644석이 생성되고, 각 회차의 `/seats` 조회는 선택한 날짜·시간의 3,322석만 반환한다.
 
 **주요 함수:**
 - `holdSeat()`: Admission Token 검증 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작. 토큰은 무효화하지 않음(좌석 변경 허용)
@@ -265,7 +270,7 @@ Redis Hash 기반 좌석 상태 머신.
 - `cancelSeat()`: available 복구 + B팀 재판매 트리거 (POST to `192.168.0.191:8000`)
 - `releaseSeat()`: available 복구 + standby 자동 배정
 - `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 일괄 삭제
-- `getAllSeats()`: Redis SCAN으로 전체 좌석 조회
+- `getAllSeats()`: Redis SCAN으로 좌석을 조회하며 회차 컨텍스트가 있으면 해당 회차만 반환
 
 ---
 
@@ -451,6 +456,9 @@ MariaDB 테이블 생성 및 reservations CRUD.
 | `backups` | 스냅샷 백업 |
 | `reservations` | 예약 확정 기록 |
 
+`events.sessions`에는 공연 회차 목록을 JSON으로 저장하고, `seats`, `waiting_queue`, `reservations`에는 `session_date`·`session_time`을 저장해 날짜가 다른 회차의 좌석·대기열·예약 기록을 분리한다.
+기존 운영 테이블에 이 컬럼을 추가하는 `ALTER TABLE`은 API가 자동 실행하지 않으므로, 운영 DB 스키마에 필요한 컬럼을 사전에 직접 준비해야 한다.
+
 reservations CRUD 함수: `saveReservation()`, `getReservations()`, `getReservationBySeat()`
 
 ---
@@ -483,16 +491,16 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 
 ```
 1. 공연 생성 (관리자)
-   POST /event/create → Redis + MariaDB 저장, 좌석 초기화
+   POST /event/create → Redis + MariaDB 저장, 회차별 좌석 inventory 초기화
 
 2. 티켓팅 오픈
    POST /admin/ticketing/open → event:ticketing-status = "open"
 
 3. 대기열 진입 (사용자)
-   POST /queue/enter → queue:waiting Sorted Set에 추가 (멤버십 우선순위 적용)
+   POST /queue/enter → 선택 회차의 queue:waiting Sorted Set에 추가 (멤버십 우선순위 적용)
 
 4. 입장 허용 (관리자 또는 자동)
-   POST /queue/admit → 상위 100명 → queue:admitted + Admission Token 발급
+   POST /queue/admit → 선택 회차의 상위 100명 → queue:admitted + 회차 전용 Admission Token 발급
 
 5. 좌석 선점
    POST /seats/hold → Token 검증 → 분산 락 → held 상태 → 결제 타이머 시작

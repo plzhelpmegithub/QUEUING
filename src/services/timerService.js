@@ -5,6 +5,8 @@ const { publishSeatEvent, EVENT_TYPE } = require('./eventService');
 const { timerExpirations } = require('./metricsService');
 const { createAllocation, markExpired } = require('./cancelAllocationService');
 const { syncToMariaDB } = require('./syncRetryService');
+const { sessionFromSeat } = require('./sessionContext');
+const queueService = require('./queueService');
 
 const TIMER_PREFIX = 'timer:seat:';
 const SEAT_PREFIX = 'seat:';
@@ -56,20 +58,20 @@ async function initExpiryListener() {
     console.log(`[Timer] ${seatId} 만료 — 결제 시간 초과`);
 
     const seatKey = `${SEAT_PREFIX}${seatId}`;
-    const status = await redis.hget(seatKey, 'status');
+    const seatInfo = await redis.hgetall(seatKey);
+    const status = seatInfo.status;
 
     if (status === 'HELD') {
-      const heldBy = await redis.hget(seatKey, 'heldBy');
+      const heldBy = seatInfo.heldBy;
       timerExpirations.inc();
 
-      const STANDBY_KEY = 'queue:standby';
-      const ADMITTED_KEY = 'queue:admitted';
-      const nextUsers = await redis.zrange(STANDBY_KEY, 0, 0);
+      const sessionContext = sessionFromSeat(seatId, seatInfo);
+      const next = await queueService.getNextStandby(sessionContext);
 
-      if (nextUsers.length > 0) {
-        const nextUser = nextUsers[0];
-        await redis.zrem(STANDBY_KEY, nextUser);
-        await redis.sadd(ADMITTED_KEY, nextUser);
+      if (next.userId) {
+        const nextUser = next.userId;
+        const promoted = await queueService.promoteStandby(nextUser, sessionContext);
+        if (!promoted.success) return;
 
         await redis.hset(seatKey, {
           status: 'HELD',
@@ -88,7 +90,7 @@ async function initExpiryListener() {
 
         const holdDuration = await getCurrentHoldDuration();
         try {
-          const eventId = seatId.split(':')[0] || '';
+          const eventId = sessionContext.eventId;
           await createAllocation(nextUser, seatId, eventId, holdDuration);
           await markExpired(heldBy, seatId);
         } catch (allocErr) {
