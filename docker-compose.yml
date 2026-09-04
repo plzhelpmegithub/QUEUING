@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack_main
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=ses
+      - DEFAULT_REGION=ap-northeast-2
+      # [핵심] LocalStack SES가 생성한 메일을 Mailpit 컨테이너의 SMTP 포트(1025)로 전달합니다.
+#      - SMTP_HOST=mailpit:1025
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - localstack-net
+    depends_on:
+      - mailpit
+
+  mailpit:
+    image: axllent/mailpit
+    container_name: mailpit_server
+    ports:
+      - "8025:8025" # 웹 UI 포트 (이메일 확인용)
+      - "1025:1025" # SMTP 포트 (LocalStack과의 통신용)
+    networks:
+      - localstack-net
+
+networks:
+  localstack-net:
+    driver: bridge
