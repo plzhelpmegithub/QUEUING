@@ -24,6 +24,8 @@ const GRID_CELL = 50;
 
 const SEAT_FILL = '#7C4DFF';
 const SEAT_BORDER = '#5E35D8';
+const MINE_FILL = '#E31B23';
+const MINE_BORDER = '#B5121B';
 const BAND_COLOR = '#9E9E9E';
 
 function hexToRgba(hex, alpha) {
@@ -533,7 +535,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   const statusChips = readOnly
     ? `<span class="vm-legend__item"><span class="vm-legend__dot" style="background:${SEAT_FILL};border-color:${SEAT_BORDER}"></span>좌석 배치도</span>`
     : `<span class="vm-legend__item">선택 가능 (구역별 색상은 우측 목록 참고)</span>
-       <span class="vm-legend__item"><span class="vm-legend__dot" style="background:var(--color-primary);border-color:var(--color-primary-dark)"></span>내 좌석</span>
+       <span class="vm-legend__item"><span class="vm-legend__dot" style="background:${MINE_FILL};border-color:${MINE_BORDER}"></span>내 좌석</span>
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:#F0A030;border-color:#C88010"></span>선택중</span>
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:#BCBCBC;border-color:#999"></span>매진</span>`;
 
@@ -739,11 +741,11 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
         ctx.arc(0, 0, md / 2 + 2, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
-        ctx.fillStyle = SEAT_FILL;
+        ctx.fillStyle = MINE_FILL;
         ctx.beginPath();
         ctx.arc(0, 0, md / 2, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.strokeStyle = MINE_BORDER;
         ctx.lineWidth = 1.5;
         ctx.stroke();
         const cs = md * 0.3;
@@ -824,11 +826,11 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
         ctx.arc(s._x, s._y, mr + 3, 0, 6.2832);
         ctx.fill();
         ctx.shadowBlur = 0;
-        ctx.fillStyle = color;
+        ctx.fillStyle = MINE_FILL;
         ctx.beginPath();
         ctx.arc(s._x, s._y, mr, 0, 6.2832);
         ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.strokeStyle = MINE_BORDER;
         ctx.lineWidth = 2.5;
         ctx.stroke();
         const cs = mr * 0.55;
