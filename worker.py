@@ -40,9 +40,6 @@ def time_to_timestamp(dt):
     return int(time.mktime(dt.timetuple()))
 
 def send_resale_email(receiver_email: str, name: str, private_link: str):
-    """
-    Mailpit(SMTP)을 통해 5분 제한 티켓팅 링크를 이메일로 발송하는 함수
-    """
     try:
         msg = MIMEMultipart()
         msg['From'] = SENDER_EMAIL
@@ -61,7 +58,6 @@ def send_resale_email(receiver_email: str, name: str, private_link: str):
         
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
-        # Mailpit으로 직접 SMTP 전송 (인증 불필요)
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.sendmail(SENDER_EMAIL, receiver_email, msg.as_string())
             
@@ -76,7 +72,7 @@ def process_resale_queue_job():
         with connection.cursor() as cursor:
             now = datetime.datetime.now()
             
-            # 1. 만료된 링크 일괄 처리 (cancel_allocations 스키마 반영)
+            # 1. 만료된 링크 일괄 처리 (status = 'ACTIVE' 이고 시간이 지난 경우)
             cursor.execute(
                 """
                 UPDATE cancel_allocations 
@@ -90,19 +86,19 @@ def process_resale_queue_job():
                 print(f"[{now}] ⏰ 만료된 링크 {expired_count}건을 EXPIRED 처리했습니다.")
             
             # 2. 현재 ACTIVE 유저 확인
-            cursor.execute("SELECT id FROM cancel_allocations WHERE status = 'ACTIVE' LIMIT 1")
+            cursor.execute("SELECT allocation_id FROM cancel_allocations WHERE status = 'ACTIVE' LIMIT 1")
             active_user = cursor.fetchone()
             
-            # 3. 활성 유저가 없다면 멤버십 가입된 PENDING 유저 선점 (비관적 락 FOR UPDATE 및 memberships 조인 적용)
+            # 3. 활성 유저가 없다면 멤버십 가입된 PENDING 유저 선점 (allocation_id 기준 정렬)
             if not active_user:
                 cursor.execute(
                     """
-                    SELECT c.id, c.user_id, u.email, u.name 
+                    SELECT c.allocation_id, c.user_id, u.email, u.name 
                     FROM cancel_allocations c
                     INNER JOIN memberships m ON c.user_id = m.user_id
                     INNER JOIN users u ON c.user_id = u.user_id
                     WHERE c.status = 'PENDING' 
-                    ORDER BY c.id ASC 
+                    ORDER BY c.allocation_id ASC 
                     LIMIT 1 
                     FOR UPDATE
                     """
@@ -111,7 +107,7 @@ def process_resale_queue_job():
                 
                 if next_target:
                     user_id = next_target['user_id']
-                    target_id = next_target['id']
+                    target_id = next_target['allocation_id']
                     receiver_email = next_target['email']
                     name = next_target['name']
                     
@@ -129,7 +125,7 @@ def process_resale_queue_job():
                         """
                         UPDATE cancel_allocations 
                         SET status = 'ACTIVE', expires_at = %s 
-                        WHERE id = %s
+                        WHERE allocation_id = %s
                         """,
                         (expire_time, target_id)
                     )
@@ -137,7 +133,6 @@ def process_resale_queue_job():
                     private_link = f"http://www.queuing.kr/resale/ticket?token={private_token}"
                     print(f"[{now}] 🔒 [동시성 락] 멤버십 대상 다음 순번 [{name}({user_id})] 활성화 완료!")
                     
-                    # Mailpit 이메일 발송 함수 호출
                     send_resale_email(receiver_email, name, private_link)
                 else:
                     print(f"[{now}] ⏳ 대기 중인 멤버십 대상자가 없습니다.")
