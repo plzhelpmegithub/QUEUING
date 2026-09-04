@@ -18,7 +18,7 @@ const state = {
   sessionExpiresAt: null, // mock login-session TTL, so "세션 만료" is a real, demonstrable state
   sessionJustExpired: false,
   notifications: [], // { id, title, body, createdAt, read }
-  admissionTokens: {}, // concertId -> { token, expiresAt } — issued by the real queue-service once admitted, required by /seats/hold
+  admissionTokens: {}, // concertId:date:time -> { token, expiresAt } — issued by the real queue-service once admitted, required by /seats/hold
   seatSelectDeadline: null, // ms epoch — global "좌석선택제한시간" shown in the header from entering zones through payment/complete
 };
 
@@ -41,6 +41,18 @@ function saveAuth() {
 
 function clearAuth() {
   try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
+}
+
+// 계정 전환 시 이전 사용자의 브라우저 메모리가 새 사용자 화면에 섞이지 않도록
+// 서버에서 사용자별 데이터를 다시 가져오는 항목만 초기화한다.
+function clearAccountScopedState() {
+  state.bookings = [];
+  state.interests.clear();
+  state.cancelQueues = {};
+  state.notifications = [];
+  state.currentOrder = null;
+  state.selectedSessions = {};
+  state.admissionTokens = {};
 }
 
 // Restore session on module load
@@ -88,9 +100,11 @@ export function login({
   joinedAt,
 }) {
   const resolvedRole = rawRole || (isAdmin ? 'ADMIN' : isMonitor ? 'MONITOR' : 'USER');
+  const nextUserId = userId || (email || 'guest').split('@')[0];
+  if (!state.user || state.user.userId !== nextUserId) clearAccountScopedState();
   state.user = {
     name: name || '게스트',
-    userId: userId || (email || 'guest').split('@')[0],
+    userId: nextUserId,
     email: email || 'guest@queuing.app',
     isAdmin: isAdmin || resolvedRole === 'ADMIN',
     isMonitor: isMonitor || resolvedRole === 'MONITOR',
@@ -162,6 +176,7 @@ export function isMonitor() {
 }
 
 export function logout() {
+  clearAccountScopedState();
   state.user = null;
   state.sessionExpiresAt = null;
   state.membership = null;
@@ -189,6 +204,7 @@ export function consumeSessionExpiredFlag() {
 
 export function expireSession() {
   if (!state.user) return;
+  clearAccountScopedState();
   state.user = null;
   state.sessionExpiresAt = null;
   state.membership = null;
@@ -317,26 +333,34 @@ export function clearCurrentOrder() {
 }
 
 export function addBooking(booking) {
-  state.bookings.unshift(booking);
+  const ownedBooking = {
+    ...booking,
+    ownerUserId: booking.ownerUserId || state.user?.userId || null,
+  };
+  state.bookings.unshift(ownedBooking);
   addNotification({
-    title: booking.status === 'unpaid' ? '입금 대기 중인 예매가 있어요' : '예매가 확정되었습니다',
+    title: ownedBooking.status === 'unpaid' ? '입금 대기 중인 예매가 있어요' : '예매가 확정되었습니다',
     body:
-      booking.status === 'unpaid'
-        ? `예매번호 ${booking.bookingId} · 가상계좌로 입금을 완료해주세요.`
-        : `예매번호 ${booking.bookingId} 결제가 정상적으로 완료되었습니다.`,
+      ownedBooking.status === 'unpaid'
+        ? `예매번호 ${ownedBooking.bookingId} · 가상계좌로 입금을 완료해주세요.`
+        : `예매번호 ${ownedBooking.bookingId} 결제가 정상적으로 완료되었습니다.`,
   });
   emit();
-  return booking;
+  return ownedBooking;
 }
 
 // Reconstructing booking history from the real backend (GET /reservations/user/:userId)
 // on mypage load — unlike addBooking(), this doesn't fire a "예매 완료" notification,
 // since it's re-displaying past bookings rather than reacting to one just made.
 export function addBookingSilently(booking) {
-  if (state.bookings.some((b) => b.bookingId === booking.bookingId)) return booking;
-  state.bookings.push(booking);
+  const currentUserId = state.user?.userId;
+  if (!currentUserId) return booking;
+  if (booking.ownerUserId && booking.ownerUserId !== currentUserId) return booking;
+  const ownedBooking = { ...booking, ownerUserId: currentUserId };
+  if (state.bookings.some((b) => b.bookingId === ownedBooking.bookingId)) return ownedBooking;
+  state.bookings.push(ownedBooking);
   emit();
-  return booking;
+  return ownedBooking;
 }
 
 export function hasBookingForSeat(seatId) {
@@ -346,22 +370,27 @@ export function hasBookingForSeat(seatId) {
 // Admission Token issued by the real queue-service once the queue admits this user —
 // /seats/hold requires it. Kept per concert since a user could be admitted into
 // more than one concert's queue in the same session.
-export function setAdmissionToken(concertId, tokenInfo) {
-  state.admissionTokens[concertId] = tokenInfo;
+function admissionTokenKey(concertId, session) {
+  if (!session?.date && !session?.time) return concertId;
+  return `${concertId}:${session.date || 'date'}:${session.time || 'time'}`;
 }
 
-export function getAdmissionToken(concertId) {
-  const t = state.admissionTokens[concertId];
+export function setAdmissionToken(concertId, tokenInfo, session) {
+  state.admissionTokens[admissionTokenKey(concertId, session)] = tokenInfo;
+}
+
+export function getAdmissionToken(concertId, session) {
+  const t = state.admissionTokens[admissionTokenKey(concertId, session)];
   if (!t) return null;
   if (t.expiresAt && Date.now() > new Date(t.expiresAt).getTime()) {
-    delete state.admissionTokens[concertId];
+    delete state.admissionTokens[admissionTokenKey(concertId, session)];
     return null;
   }
   return t;
 }
 
-export function clearAdmissionToken(concertId) {
-  delete state.admissionTokens[concertId];
+export function clearAdmissionToken(concertId, session) {
+  delete state.admissionTokens[admissionTokenKey(concertId, session)];
 }
 
 // Header-level "좌석선택제한시간" timer — starts the moment the user reaches the

@@ -6,7 +6,7 @@ import { openModal } from '../components/modal.js';
 import { showSoldOutModal } from '../components/soldOutModal.js';
 import { navigate } from '../router.js';
 import { connectSeatSocketWithRetry } from '../utils/realtimeChat.js';
-import { fetchRealSeats, holdSeatApi, releaseSeatApi } from '../utils/backendApi.js';
+import { fetchRealSeats, holdSeatApi, releaseSeatApi, releaseSeatBeacon } from '../utils/backendApi.js';
 import {
   setCurrentOrder,
   getSelectedSession,
@@ -166,6 +166,14 @@ export const seatSelectPage = {
     let soldOutHandled = false;
     let seatMapCtrl = null;
     let sim = null;
+
+    function onPageHide() {
+      if (!mySeat) return;
+      const user = getState().user;
+      if (user) releaseSeatBeacon(user.userId, mySeat.id);
+    }
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
 
     function paintTension(stats) {
       const remaining = stats.available;
@@ -482,10 +490,11 @@ export const seatSelectPage = {
     }
 
     return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onPageHide);
       sim.stop();
       if (seatSocketCtrl) seatSocketCtrl.close();
       if (holdTimer) clearInterval(holdTimer);
-      // 페이지 이탈 시 서버에 선점 해제 (선점 중인 좌석이 있을 때)
       if (mySeat) {
         const user = getState().user;
         if (user) releaseSeatApi(user.userId, mySeat.id).catch(() => {});

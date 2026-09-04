@@ -4,7 +4,7 @@
 import { formatNumber } from '../utils/format.js';
 import { mountRocketProgress } from '../components/rocketProgress.js';
 import { navigate } from '../router.js';
-import { getSelectedSession, getState, setAdmissionToken } from '../state/store.js';
+import { getSelectedSession, getState, setAdmissionToken, setSelectedSession } from '../state/store.js';
 
 // How often we self-trigger /queue/admit — in a real deployment an operator/cron
 // would call this periodically; this frontend has no such automation yet, so it
@@ -37,7 +37,16 @@ export const queuePage = {
           return;
         }
 
-        const session = getSelectedSession(c.eventId);
+        let session = getSelectedSession(c.eventId);
+        if (!session && Array.isArray(c.sessions) && c.sessions[0]) {
+          session = { date: c.sessions[0].date || '', time: c.sessions[0].time || '' };
+          setSelectedSession(c.eventId, session);
+        }
+        const queueContext = {
+          eventId: c.eventId,
+          sessionDate: session?.date || '',
+          sessionTime: session?.time || '',
+        };
 
         container.innerHTML = `
           <section class="queue-page container">
@@ -144,7 +153,8 @@ export const queuePage = {
         }
 
         function pollPosition() {
-          fetch(`/queue/position/${encodeURIComponent(userId)}`)
+          const query = new URLSearchParams(queueContext);
+          fetch(`/queue/position/${encodeURIComponent(userId)}?${query.toString()}`)
             .then((r) => r.json())
             .then((pos) => {
               if (settled) return;
@@ -169,12 +179,16 @@ export const queuePage = {
         }
 
         function tryAdmit() {
-          return fetch('/queue/admit', { method: 'POST' })
+          return fetch('/queue/admit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(queueContext),
+          })
             .then((r) => r.json())
             .then((admitResult) => {
               const tokenInfo = admitResult.tokens?.[userId];
               if (tokenInfo?.token) {
-                setAdmissionToken(c.eventId, tokenInfo);
+                setAdmissionToken(c.eventId, tokenInfo, session);
                 enterConfirmed();
               }
             })
@@ -204,7 +218,7 @@ export const queuePage = {
             return;
           }
           if (enterResult.token) {
-            setAdmissionToken(c.eventId, enterResult);
+            setAdmissionToken(c.eventId, enterResult, session);
             enterConfirmed();
             return;
           }
@@ -217,7 +231,7 @@ export const queuePage = {
           return fetch('/queue/enter', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId }),
+            body: JSON.stringify({ userId, ...queueContext }),
           })
             .then((r) => r.json())
             .then(handleEnterResult)

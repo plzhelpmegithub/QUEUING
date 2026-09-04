@@ -411,18 +411,24 @@ function computeOlympicHallLayout(sections, seats) {
 
   // Floor석은 원본 CSV 좌표 대신 배경 이미지의 초록색 영역 안에 균일한
   // 격자로 배치한다. API에서 생성된 Floor 좌석 수만큼만 렌더링한다.
-  const floorApiSeats = bySection.Floor || [];
+  const floorApiSeats = (bySection.Floor || []).slice().sort((a, b) => {
+    const na = String(a.id || a.seatId || '').match(/-(\d+)$/);
+    const nb = String(b.id || b.seatId || '').match(/-(\d+)$/);
+    return (na ? Number(na[1]) : 0) - (nb ? Number(nb[1]) : 0);
+  });
   const floorLimit = OH_FLOOR_SEAT_COUNT;
   const floorCount = Math.min(floorApiSeats.length, floorLimit);
   for (let i = 0; i < floorCount; i++) {
     const seat = floorApiSeats[i];
+    const seatId = String(seat.id || seat.seatId || '');
+    const numMatch = seatId.match(/-(\d+)$/);
     const point = getEvenFloorPoint(i, floorCount);
     seat._x = point.x;
     seat._y = point.y;
     seat._sw = OH_SEAT_W;
     seat._sh = OH_SEAT_H;
     seat._angle = 0;
-    seat._displayNum = i + 1;
+    seat._displayNum = numMatch ? Number(numMatch[1]) : i + 1;
     seat._block = 'Floor';
     positioned.push(seat);
   }

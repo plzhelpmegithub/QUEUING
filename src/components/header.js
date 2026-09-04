@@ -116,7 +116,7 @@ function render() {
     <div class="container">
       <div class="site-header__left">
         <a href="#/" class="site-header__logo">
-          <img src="/images/queuing-logo.png" alt="QUEUING" class="site-header__mark" />
+          <img src="/images/queuing-logo-header.png" alt="QUEUING" class="site-header__mark" />
         </a>
       </div>
       <div class="site-header__actions">
@@ -130,14 +130,20 @@ function render() {
     <div class="container">
       <div class="site-header__left">
         <a href="#/" class="site-header__logo">
-          <img src="/images/queuing-logo.png" alt="QUEUING" class="site-header__mark" />
+          <img src="/images/queuing-logo-header.png" alt="QUEUING" class="site-header__mark" />
         </a>
-        <nav class="site-header__nav">
-          ${NAV_ITEMS.map(
-            (item) =>
-              `<a href="#/${item.path}" data-path="${item.path}" class="${item.match.test(currentPath) ? 'active' : ''}">${item.label}</a>`
-          ).join('')}
-        </nav>
+        <div class="site-header__nav-shell">
+          <nav class="site-header__nav">
+            ${NAV_ITEMS.map(
+              (item) =>
+                `<a href="#/${item.path}" data-path="${item.path}" class="${item.match.test(currentPath) ? 'active' : ''}">${item.label}</a>`
+            ).join('')}
+          </nav>
+          <form class="site-header__search" data-header-search role="search">
+            <input type="search" name="search" placeholder="공연 검색" autocomplete="off" aria-label="공연 검색" />
+            <button type="submit" aria-label="공연 검색">⌕</button>
+          </form>
+        </div>
       </div>
       <div class="site-header__actions">
         ${seatTimerHtml}
@@ -227,6 +233,14 @@ function render() {
       profileOpen = false;
       if (notifOpen) markAllNotificationsRead();
       render();
+    });
+  }
+  const searchForm = rootEl.querySelector('[data-header-search]');
+  if (searchForm) {
+    searchForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const searchTerm = searchForm.elements.search.value.trim();
+      navigate(searchTerm ? `concerts?search=${encodeURIComponent(searchTerm)}` : 'concerts');
     });
   }
   const profileToggle = rootEl.querySelector('[data-profile-toggle]');

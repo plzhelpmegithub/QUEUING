@@ -1,4 +1,4 @@
-// 홈 페이지 — 추천·인기 공연 카드, 이달의 콘서트 캘린더, 관심 공연 토글을 표시.
+// 홈 페이지 — LP 히어로, 관심 등록 수 기준 HOT 공연, 오픈 예정/전체 공연을 표시.
 
 import { formatNumber, formatPrice } from '../utils/format.js';
 import { mountCalendar } from '../components/calendar.js';
@@ -13,10 +13,107 @@ function statusBadge(status) {
   return `<span class="badge badge-red">예매중</span>`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[char]);
+}
+
+function getOpenAt(event) {
+  return event.ticketOpenAt || event.bookingOpenAt || null;
+}
+
+function isUpcoming(event) {
+  const openAt = getOpenAt(event);
+  const timestamp = openAt ? new Date(openAt).getTime() : NaN;
+  return Number.isFinite(timestamp)
+    && timestamp > Date.now()
+    && event.status !== 'closed'
+    && event.status !== 'cancelled';
+}
+
+function formatOpenAt(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '예매 오픈 일정 확인 필요';
+  return `예매 오픈 ${date.toLocaleString('ko-KR', {
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`;
+}
+
+function ticketPrices(event) {
+  return getTicketPriceRows(event)
+    .map(({ grade, price }) => `${escapeHtml(grade)}석 ${formatPrice(price)}`)
+    .join(' · ') || '-';
+}
+
+function backgroundStyle(event) {
+  const imageUrl = getConcertImage(event.eventName || event.eventId);
+  return `url('${imageUrl}') center/cover no-repeat, linear-gradient(135deg,${event.color || '#667eea,#764ba2'})`;
+}
+
+function hotCardHtml(event, index, interestCount) {
+  const name = escapeHtml(event.eventName || event.eventId || '공연');
+  const date = escapeHtml(event.eventDate || '-');
+  const venue = escapeHtml(event.venue || '-');
+  const totalSeats = formatNumber(event.totalSeats || 0);
+  return `
+    <article class="hot-card" data-event-card="${escapeHtml(event.eventId)}" style="animation-delay:${index * 0.07}s">
+      <div class="hot-card__bg" style="background:${backgroundStyle(event)}"></div>
+      <div class="hot-card__rank">${index + 1}</div>
+      <button type="button" class="badge hot-card__heart" data-heart="${escapeHtml(event.eventId)}" aria-label="관심 공연 ${name}">${isInterested(event.eventId) ? '♥' : '♡'}</button>
+      <div class="hot-card__overlay"></div>
+      <div class="hot-card__info">
+        <div class="hot-card__artist">관심 ${formatNumber(interestCount)}명</div>
+        <div class="hot-card__title">${name}</div>
+        <div class="hot-card__detail">
+          공연일 &nbsp;${date}<br/>
+          공연장 &nbsp;${venue}<br/>
+          총 좌석 &nbsp;${totalSeats}석<br/>
+          티켓 가격 &nbsp;${ticketPrices(event)}
+        </div>
+        ${isUpcoming(event) ? '<span class="badge badge-gray">예매예정</span>' : statusBadge(event.status)}
+      </div>
+    </article>`;
+}
+
+function posterCardHtml(event, index, interestCount, upcoming = false) {
+  const name = escapeHtml(event.eventName || event.eventId || '공연');
+  const date = escapeHtml(event.eventDate || '-');
+  const venue = escapeHtml(event.venue || '-');
+  const eventId = escapeHtml(event.eventId);
+  const imageUrl = getConcertImage(event.eventName || event.eventId);
+  const openInfo = upcoming
+    ? formatOpenAt(getOpenAt(event))
+    : `${date} · ${venue}`;
+
+  return `
+    <article class="home-poster-card fade-in" style="animation-delay:${(index || 0) * 0.05}s">
+      <div class="home-poster-card__media" data-event-open="${eventId}">
+        <img src="${imageUrl}" alt="${name} 포스터" loading="lazy" />
+        <div class="home-poster-card__badges">
+          ${upcoming ? '<span class="badge badge-gray">오픈 예정</span>' : statusBadge(event.status)}
+        </div>
+        <button type="button" class="home-poster-card__heart" data-heart="${eventId}" aria-label="관심 공연 ${name}">${isInterested(event.eventId) ? '♥' : '♡'}</button>
+      </div>
+      <div class="home-poster-card__body">
+        <h3>${name}</h3>
+        <p>${escapeHtml(openInfo)}</p>
+        <span>관심 ${formatNumber(interestCount)}명</span>
+      </div>
+    </article>`;
+}
+
 export const homePage = {
   render(container) {
-    // 일단 뼈대 먼저 렌더링 — LP 히어로/HOT 공연 둘 다 실제 /events 데이터로 채워지므로
-    // 그때까지는 로딩 상태만 표시
+    // LP 히어로·캘린더·공연 섹션의 자리를 먼저 만들고 실제 /events 데이터로 채운다.
     container.innerHTML = `
       <section class="hero-section">
         <div class="container hero-grid">
@@ -47,11 +144,29 @@ export const homePage = {
       <section class="hot-section">
         <div class="container">
           <div class="eyebrow">LIVE NOW</div>
-          <h2 class="section-title">실시간 HOT 공연</h2>
-          <p class="section-sub">지금 가장 많은 관심을 받고 있는 공연이에요</p>
+          <h2 class="section-title">요즘 HOT 공연</h2>
+          <p class="section-sub">요즘 가장 많은 관심을 받고 있는 공연이에요</p>
           <div class="hot-grid" id="hot-grid">
             <p style="color:#666">공연 목록 불러오는 중...</p>
           </div>
+        </div>
+      </section>
+
+      <section class="home-secondary-section" data-upcoming-section hidden>
+        <div class="container">
+          <div class="eyebrow">COMING SOON</div>
+          <h2 class="section-title">오픈 예정</h2>
+          <p class="section-sub">예매 오픈을 기다리고 있는 공연이에요</p>
+          <div class="home-poster-grid" id="upcoming-grid"></div>
+        </div>
+      </section>
+
+      <section class="home-secondary-section home-secondary-section--muted" data-explore-section hidden>
+        <div class="container">
+          <div class="eyebrow">EXPLORE</div>
+          <h2 class="section-title">콘서트 둘러보기</h2>
+          <p class="section-sub">등록된 공연 정보를 한눈에 살펴보세요</p>
+          <div class="home-poster-grid home-poster-grid--explore" id="explore-grid"></div>
         </div>
       </section>
     `;
@@ -139,7 +254,112 @@ export const homePage = {
       onSelectConcert: (id) => navigate(`concert/${id}`),
     });
 
-    // ---- API에서 이벤트 불러오기 (HOT 공연 그리드 + LP 히어로 + 캘린더가 전부 이걸 씀) ----
+    const hotGrid = container.querySelector('#hot-grid');
+    const upcomingSection = container.querySelector('[data-upcoming-section]');
+    const upcomingGrid = container.querySelector('#upcoming-grid');
+    const exploreSection = container.querySelector('[data-explore-section]');
+    const exploreGrid = container.querySelector('#explore-grid');
+
+    let interestCounts = new Map();
+    let interestCountRequest = 0;
+    let interestRefreshTimer = null;
+
+    function rankedEvents() {
+      return latestRealEvents
+        .map((event, originalIndex) => ({
+          event,
+          originalIndex,
+          interestCount: interestCounts.get(event.eventId) || 0,
+        }))
+        .sort((a, b) => b.interestCount - a.interestCount || a.originalIndex - b.originalIndex);
+    }
+
+    function wireEventCards(scope) {
+      scope.querySelectorAll('[data-event-card]').forEach((el) => {
+        el.addEventListener('click', () => navigate(`concert/${el.dataset.eventCard}`));
+      });
+      scope.querySelectorAll('[data-event-open]').forEach((el) => {
+        el.addEventListener('click', () => navigate(`concert/${el.dataset.eventOpen}`));
+      });
+      scope.querySelectorAll('[data-heart]').forEach((el) => {
+        el.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const eventId = el.dataset.heart;
+          const wasInterested = isInterested(eventId);
+          const currentCount = interestCounts.get(eventId) || 0;
+          interestCounts.set(eventId, Math.max(0, currentCount + (wasInterested ? -1 : 1)));
+          toggleInterest(eventId);
+          renderEventSections();
+          // 관심 등록/해제 요청이 DB에 반영된 뒤 서버 수를 다시 읽는다.
+          if (interestRefreshTimer) clearTimeout(interestRefreshTimer);
+          interestRefreshTimer = setTimeout(() => {
+            interestRefreshTimer = null;
+            refreshInterestCounts(latestRealEvents);
+          }, 350);
+        });
+      });
+    }
+
+    function renderEventSections() {
+      if (!latestRealEvents.length) {
+        hotGrid.innerHTML = '<p style="color:#666">등록된 공연이 없습니다.</p>';
+        upcomingSection.hidden = true;
+        exploreSection.hidden = true;
+        return;
+      }
+
+      const ranked = rankedEvents();
+      const hotEvents = ranked.slice(0, 5);
+      hotGrid.innerHTML = hotEvents
+        .map(({ event, interestCount }, index) => hotCardHtml(event, index, interestCount))
+        .join('');
+      wireEventCards(hotGrid);
+
+      const upcomingEvents = latestRealEvents
+        .filter(isUpcoming)
+        .sort((a, b) => new Date(getOpenAt(a)).getTime() - new Date(getOpenAt(b)).getTime());
+      upcomingSection.hidden = upcomingEvents.length === 0;
+      if (upcomingEvents.length) {
+        upcomingGrid.innerHTML = upcomingEvents
+          .map((event, index) => posterCardHtml(event, index, interestCounts.get(event.eventId) || 0, true))
+          .join('');
+        wireEventCards(upcomingGrid);
+      }
+
+      const excludedIds = new Set([
+        ...hotEvents.map(({ event }) => event.eventId),
+        ...upcomingEvents.map((event) => event.eventId),
+      ]);
+      const exploreEvents = latestRealEvents.filter((event) => !excludedIds.has(event.eventId));
+      exploreSection.hidden = exploreEvents.length === 0;
+      if (exploreEvents.length) {
+        exploreGrid.innerHTML = exploreEvents
+          .map((event, index) => posterCardHtml(event, index, interestCounts.get(event.eventId) || 0))
+          .join('');
+        wireEventCards(exploreGrid);
+      }
+    }
+
+    function refreshInterestCounts(events) {
+      if (!events.length) return Promise.resolve();
+      const requestId = ++interestCountRequest;
+      return Promise.all(events.map(async (event) => {
+        try {
+          const response = await fetch(`/wishlist/count/${encodeURIComponent(event.eventId)}`);
+          if (!response.ok) throw new Error('interest count request failed');
+          const data = await response.json();
+          return [event.eventId, Number(data.count) || 0];
+        } catch {
+          return [event.eventId, interestCounts.get(event.eventId) || 0];
+        }
+      })).then((counts) => {
+        if (requestId !== interestCountRequest) return;
+        counts.forEach(([eventId, count]) => interestCounts.set(eventId, count));
+        renderEventSections();
+      });
+    }
+
+    // ---- API에서 이벤트 불러오기 (히어로 + 캘린더 + 홈의 세 공연 섹션이 전부 이걸 씀) ----
     let latestRealEvents = [];
     fetch('/events')
       .then((res) => res.json())
@@ -149,49 +369,12 @@ export const homePage = {
         setupHero(events);
         if (calendarApi) calendarApi.setEvents(buildCalendarEvents(latestRealEvents));
 
-        const grid = container.querySelector('#hot-grid');
-        if (events.length === 0) {
-          grid.innerHTML = '<p style="color:#666">등록된 공연이 없습니다.</p>';
-          return;
-        }
-        grid.innerHTML = events.map((e, i) => {
-          const imgUrl = getConcertImage(e.eventName || e.eventId);
-          const ticketPrices = getTicketPriceRows(e)
-            .map(({ grade, price }) => `${grade}석 ${formatPrice(price)}`)
-            .join(' · ') || '-';
-          return `
-          <div class="hot-card" data-id="${e.eventId}" style="animation-delay:${i * 0.07}s">
-            <div class="hot-card__bg" style="background:url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})"></div>
-            <div class="hot-card__rank">${i + 1}</div>
-            <button type="button" class="badge hot-card__heart" data-heart="${e.eventId}">${isInterested(e.eventId) ? '♥' : '♡'}</button>
-            <div class="hot-card__overlay"></div>
-            <div class="hot-card__info">
-              <div class="hot-card__artist">${e.eventName}</div>
-              <div class="hot-card__title">${e.eventDate || ''}</div>
-              <div class="hot-card__detail">
-                공연장 &nbsp;${e.venue || '-'}<br/>
-                총 좌석 &nbsp;${e.totalSeats || '-'}석<br/>
-                티켓 가격 &nbsp;${ticketPrices}
-              </div>
-              ${statusBadge(e.status)}
-            </div>
-          </div>`;
-        }).join('');
-
-        // 카드 클릭 이벤트
-        grid.querySelectorAll('.hot-card').forEach((card) => {
-          card.addEventListener('click', () => navigate(`concert/${card.dataset.id}`));
-        });
-        // 관심 공연(하트) 토글 — 카드 클릭(예매 상세 이동)으로 안 번지게 stopPropagation
-        grid.querySelectorAll('[data-heart]').forEach((el) => {
-          el.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleInterest(el.dataset.heart);
-          });
-        });
+        events.forEach((event) => interestCounts.set(event.eventId, 0));
+        renderEventSections();
+        refreshInterestCounts(events);
       })
       .catch(() => {
-        container.querySelector('#hot-grid').innerHTML = '<p style="color:#e31b23">공연 목록을 불러오지 못했습니다.</p>';
+        hotGrid.innerHTML = '<p style="color:#e31b23">공연 목록을 불러오지 못했습니다.</p>';
         infoEl.innerHTML = `<p style="color:#e31b23;">공연 정보를 불러오지 못했습니다.</p>`;
       });
 
@@ -209,6 +392,7 @@ export const homePage = {
       if (rotateTimer) clearInterval(rotateTimer);
       if (swapTimer1) clearTimeout(swapTimer1);
       if (swapTimer2) clearTimeout(swapTimer2);
+      if (interestRefreshTimer) clearTimeout(interestRefreshTimer);
     };
   },
 };

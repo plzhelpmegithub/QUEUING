@@ -70,11 +70,34 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
   // handing off to payment.js.
   const activeHolds = [];
 
-  Promise.all([
-    fetch('/events').then((r) => r.json()),
-    fetch(`/seats?eventId=${encodeURIComponent(eventId)}`).then((r) => r.json()),
-  ])
-    .then(([eventsData, seatsData]) => {
+  fetch('/events')
+    .then((r) => r.json())
+    .then((eventsData) => {
+      const event = (eventsData.events || []).find((e) => e.eventId === eventId);
+      if (!event) return { eventsData, seatsData: { seats: [] }, selectedSession: null };
+
+      const eventSessions = formatStoredSessions(event.sessions) || generateEventSessions(event.eventDate);
+      const bookedDates = new Set(getState().bookings
+        .filter((b) => b.concertId === eventId && (b.status === 'confirmed' || b.status === 'unpaid'))
+        .map((b) => b.session?.date)
+        .filter(Boolean));
+      const availableSessions = eventSessions.filter((s) => !bookedDates.has(s.date));
+      const storedSession = getSelectedSession(eventId);
+      const selectedSession = storedSession && !bookedDates.has(storedSession.date)
+        ? storedSession
+        : availableSessions[0] || eventSessions[0] || null;
+      if (selectedSession && (!storedSession || storedSession.date !== selectedSession.date || storedSession.time !== selectedSession.time)) {
+        setSelectedSession(eventId, { date: selectedSession.date, time: selectedSession.time });
+      }
+
+      const params = new URLSearchParams({ eventId });
+      if (selectedSession?.date) params.set('sessionDate', selectedSession.date);
+      if (selectedSession?.time) params.set('sessionTime', selectedSession.time);
+      return fetch(`/seats?${params.toString()}`)
+        .then((r) => r.json())
+        .then((seatsData) => ({ eventsData, seatsData, selectedSession }));
+    })
+    .then(({ eventsData, seatsData, selectedSession }) => {
       if (destroyed) return;
       const c = (eventsData.events || []).find((e) => e.eventId === eventId);
       if (!c) {
@@ -105,7 +128,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           };
         })
         : storedLayout;
-      let session = getSelectedSession(c.eventId);
+      let session = selectedSession || getSelectedSession(c.eventId);
       const eventSessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
 
       const myBookings = getState().bookings.filter(
@@ -142,6 +165,10 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       }
 
       if (session && bookedDates.has(session.date)) {
+        session = { date: availableSessions[0].date, time: availableSessions[0].time };
+        setSelectedSession(c.eventId, session);
+      }
+      if (!session && availableSessions[0]) {
         session = { date: availableSessions[0].date, time: availableSessions[0].time };
         setSelectedSession(c.eventId, session);
       }
@@ -211,6 +238,22 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         return;
       }
 
+      // 좌석 선택 지도 아래 가격 범례는 실제 구역명(A1, B1...)이 아니라
+      // VIP/R/S/A 등급별로 한 번씩만 표시한다. 같은 등급에 여러 구역이
+      // 있어도 사용자가 확인해야 하는 가격은 등급 가격 하나이므로 첫
+      // 구역의 색상과 가격을 대표값으로 사용한다.
+      const gradeOrder = ['VIP', 'R', 'S', 'A'];
+      const gradePriceRows = [];
+      const seenGrades = new Set();
+      sections.forEach((section) => {
+        const zone = zoneMeta[section.id];
+        const grade = String(zone?.grade || '').replace(/석$/, '').trim();
+        if (!zone || !gradeOrder.includes(grade) || seenGrades.has(grade)) return;
+        seenGrades.add(grade);
+        gradePriceRows.push({ grade, price: zone.price, color: zone.color });
+      });
+      gradePriceRows.sort((a, b) => gradeOrder.indexOf(a.grade) - gradeOrder.indexOf(b.grade));
+
       // 예매 대기열을 통과해 이 화면(좌석 선택)에 들어온 순간부터 결제/완료
       // 화면까지 계속 보이는 전역 제한시간 — 헤더(header.js)가 그려줌.
       startSeatSelectTimer();
@@ -257,8 +300,8 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         </div>
         <div class="container mt-16">
           <div class="zone-legend">
-            ${Object.entries(zoneMeta)
-              .map(([name, z]) => `<span><span class="zone-legend__dot" style="background:${z.color}"></span>${name} · ${z.grade}석 · ${formatPrice(z.price)}</span>`)
+            ${gradePriceRows
+              .map(({ grade, price, color }) => `<span><span class="zone-legend__dot" style="background:${color}"></span>${grade}석 · ${formatPrice(price)}</span>`)
               .join('')}
           </div>
         </div>
@@ -297,15 +340,13 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             });
             mySeats = [];
             activeHolds.length = 0;
-            seatMapApi.updateStatuses(flatSeats);
           }
           session = { date: s.date, time: s.time };
           setSelectedSession(c.eventId, session);
-          const dateEl = container.querySelector('[data-session-date]');
-          if (dateEl) dateEl.textContent = formatSessionLabel(session, c.eventDate);
-          container.querySelectorAll('[data-session-tab]').forEach((b, i) => b.classList.toggle('active', i === idx));
-          renderRailEmpty();
           showToast({ title: '공연 일정이 변경되었습니다', body: s.label, type: 'success' });
+          // 회차마다 별도 좌석 inventory를 사용하므로 탭을 바꾸면 해당
+          // 회차의 좌석과 대기열 토큰을 다시 불러온다.
+          navigate(`zones/${c.eventId}`);
         });
       });
 
@@ -327,12 +368,16 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const ADMIT_MAX_TRIES = 8;
 
       function pollForToken(userId, triesLeft) {
-        return fetch('/queue/admit', { method: 'POST' })
+        return fetch('/queue/admit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eventId: c.eventId, sessionDate: session?.date || '', sessionTime: session?.time || '' }),
+        })
           .then((r) => r.json())
           .then((admitResult) => {
             const tokenInfo = admitResult.tokens?.[userId];
             if (tokenInfo?.token) {
-              setAdmissionToken(c.eventId, tokenInfo);
+              setAdmissionToken(c.eventId, tokenInfo, session);
               return tokenInfo.token;
             }
             if (triesLeft <= 0) throw new Error('token_unavailable');
@@ -343,17 +388,17 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       }
 
       function ensureAdmissionToken(userId) {
-        const existing = getAdmissionToken(c.eventId);
+        const existing = getAdmissionToken(c.eventId, session);
         if (existing?.token) return Promise.resolve(existing.token);
         return fetch('/queue/enter', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId }),
+          body: JSON.stringify({ userId, eventId: c.eventId, sessionDate: session?.date || '', sessionTime: session?.time || '' }),
         })
           .then((r) => r.json())
           .then((enterResult) => {
             if (enterResult.token) {
-              setAdmissionToken(c.eventId, enterResult);
+              setAdmissionToken(c.eventId, enterResult, session);
               return enterResult.token;
             }
             return pollForToken(userId, ADMIT_MAX_TRIES);
@@ -366,13 +411,20 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       // not the cached one. These are exactly the verifyToken() failure reasons
       // that mean "this token is no longer usable" (vs. "unavailable"/"lock_failed",
       // which are about the seat, not the token).
-      const STALE_TOKEN_REASONS = new Set(['no_token', 'expired', 'revoked', 'invalid', 'user_mismatch', 'mismatch']);
+      const STALE_TOKEN_REASONS = new Set(['no_token', 'expired', 'revoked', 'invalid', 'user_mismatch', 'mismatch', 'session_mismatch']);
 
       function attemptHold(userId, seatId, token) {
         return fetch('/seats/hold', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, seatId, token }),
+          body: JSON.stringify({
+            userId,
+            seatId,
+            token,
+            eventId: c.eventId,
+            sessionDate: session?.date || '',
+            sessionTime: session?.time || '',
+          }),
         }).then((r) => r.json().then((data) => ({ ok: r.ok, data })));
       }
 
@@ -427,7 +479,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             // Cached token turned out to be stale (already used for an earlier
             // hold, expired, etc.) — clear it, get a fresh one, and retry once.
             if (!result.ok && STALE_TOKEN_REASONS.has(result.data.reason)) {
-              clearAdmissionToken(c.eventId);
+              clearAdmissionToken(c.eventId, session);
               return ensureAdmissionToken(userId).then((token) => attemptHold(userId, id, token));
             }
             return result;
@@ -605,7 +657,10 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const mySeatIds = new Set();
       let allSoldOutShown = false;
       function pollSeats() {
-        fetch(`/seats?eventId=${encodeURIComponent(c.eventId)}`)
+        const seatQuery = new URLSearchParams({ eventId: c.eventId });
+        if (session?.date) seatQuery.set('sessionDate', session.date);
+        if (session?.time) seatQuery.set('sessionTime', session.time);
+        fetch(`/seats?${seatQuery.toString()}`)
           .then((r) => r.json())
           .then((data) => {
             const seats2 = data.seats || [];

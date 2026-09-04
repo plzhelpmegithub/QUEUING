@@ -295,11 +295,12 @@ function refreshEventsList(container) {
       eventsCache = data.events || [];
       if (eventsCache.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="text-secondary">생성된 공연이 없습니다.</td></tr>';
+        updateBulkDeleteButton(container);
         return;
       }
       tbody.innerHTML = eventsCache
         .map(
-          (e, i) => `
+        (e, i) => `
         <tr>
           <td class="num-mono">${i + 1}</td>
           <td>${e.eventName}</td>
@@ -316,6 +317,7 @@ function refreshEventsList(container) {
         )
         .join('');
       paintOpenStatuses(container);
+      updateBulkDeleteButton(container);
       tbody.querySelectorAll('[data-set-open-time]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const ev = eventsCache.find((x) => x.eventId === btn.dataset.setOpenTime);
@@ -334,21 +336,64 @@ function refreshEventsList(container) {
           if (!confirm(`"${name}" 공연을 삭제할까요? (좌석 데이터도 함께 삭제됩니다)`)) return;
           btn.disabled = true;
           fetch(`/events/${btn.dataset.deleteEvent}`, { method: 'DELETE' })
-            .then((res) => res.json())
-            .then(() => {
-              showToast({ title: '공연이 삭제되었습니다', body: name });
+            .then(async (res) => {
+              const result = await res.json();
+              if (!res.ok || !result.success) throw new Error(result.message || '삭제 실패');
+              return result;
+            })
+            .then((result) => {
+              showToast({
+                title: result.dbSynced === false ? '공연은 삭제됐지만 DB 동기화 실패' : '공연이 삭제되었습니다',
+                body: name,
+                type: result.dbSynced === false ? 'default' : 'success',
+              });
               refreshEventsList(container);
             })
-            .catch(() => {
-              showToast({ title: '삭제 중 오류가 발생했습니다' });
+            .catch((err) => {
+              showToast({ title: '삭제 중 오류가 발생했습니다', body: err.message });
               btn.disabled = false;
             });
         });
       });
     })
     .catch(() => {
-      tbody.innerHTML = '<tr><td colspan="6" class="text-red">목록을 불러오지 못했습니다.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="text-red">목록을 불러오지 못했습니다.</td></tr>';
+      updateBulkDeleteButton(container);
     });
+}
+
+function updateBulkDeleteButton(container) {
+  const button = container.querySelector('[data-bulk-delete]');
+  if (!button) return;
+  button.disabled = eventsCache.length === 0;
+  button.textContent = '5개씩 삭제';
+}
+
+async function deleteEventsSequentially(events) {
+  const results = [];
+  for (const event of events) {
+    const response = await fetch(`/events/${encodeURIComponent(event.eventId)}`, { method: 'DELETE' });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) {
+      throw new Error(result.message || `${event.eventName} 삭제에 실패했습니다.`);
+    }
+    results.push(result);
+  }
+  return { success: true, deletedCount: results.length, results };
+}
+
+async function deleteEventsInBatch(events) {
+  const response = await fetch('/events/batch-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ eventIds: events.map((event) => event.eventId) }),
+  });
+  const result = await response.json().catch(() => ({}));
+
+  // 운영 API가 이전 버전이면 새 배치 라우트가 없을 수 있으므로 기존 단일 삭제 API로 전환한다.
+  if (response.status === 404) return deleteEventsSequentially(events);
+  if (!response.ok) throw new Error(result.message || '일괄 삭제 요청에 실패했습니다.');
+  return result;
 }
 
 // datetime-local input이 기대하는 "로컬시각 그대로" 문자열(YYYY-MM-DDTHH:mm:ss)로 변환
@@ -624,6 +669,7 @@ export const adminPage = {
         <div class="admin-status">
           <button type="button" class="btn btn-primary btn-sm" data-open-create-event>+ 공연 생성</button>
           <button type="button" class="btn btn-outline btn-sm" data-random-create-event>📋 포스터 공연 생성</button>
+          <button type="button" class="btn btn-outline btn-sm" data-bulk-delete disabled>5개씩 삭제</button>
           <button type="button" class="btn btn-outline btn-sm" data-redis-reset style="border-color:#e67e22;color:#e67e22;">Redis 초기화</button>
           <button type="button" class="btn btn-outline btn-sm" data-redis-recover style="border-color:#27ae60;color:#27ae60;">DB→Redis 복구</button>
         </div>
@@ -642,6 +688,35 @@ export const adminPage = {
 
     refreshEventsList(container);
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
+
+    container.querySelector('[data-bulk-delete]').addEventListener('click', () => {
+      const targets = eventsCache.slice(0, 5);
+      if (!targets.length) return;
+
+      const names = targets.map((event) => event.eventName).join('\n');
+      if (!confirm(`공연 목록의 앞에서부터 ${targets.length}개 공연을 삭제할까요?\n\n${names}\n\n좌석·관심·예매 데이터도 함께 삭제됩니다.`)) return;
+
+      const button = container.querySelector('[data-bulk-delete]');
+      button.disabled = true;
+      button.textContent = '삭제 중...';
+      deleteEventsInBatch(targets)
+        .then((result) => {
+          const failed = (result.results || []).filter((item) => !item.success || item.dbSynced === false);
+          if (failed.length) {
+            showToast({
+              title: `${result.deletedCount || 0}개 삭제 완료 · ${failed.length}개 확인 필요`,
+              body: failed.map((item) => `${item.eventId}: ${item.message}`).join(' / '),
+            });
+          } else {
+            showToast({ title: `${result.deletedCount || targets.length}개 공연이 삭제되었습니다`, type: 'success' });
+          }
+          refreshEventsList(container);
+        })
+        .catch((err) => {
+          showToast({ title: '일괄 삭제 중 오류가 발생했습니다', body: err.message });
+          refreshEventsList(container);
+        });
+    });
 
     container.querySelector('[data-open-create-event]').addEventListener('click', () => {
       openCreateEventModal(() => refreshEventsList(container));

@@ -328,7 +328,13 @@ export const paymentPage = {
                 fetch('/seats/confirm', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ userId, seatId: s.id }),
+                  body: JSON.stringify({
+                    userId,
+                    seatId: s.id,
+                    eventId: c.eventId,
+                    sessionDate: order.session?.date || '',
+                    sessionTime: order.session?.time || '',
+                  }),
                 }).then((r) => r.json().then((data) => ({ ok: r.ok, data })))
               )
             ).then((results) => results.find((r) => !r.ok || !r.data.success) || results[0])

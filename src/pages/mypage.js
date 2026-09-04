@@ -248,6 +248,9 @@ export const myPage = {
       fetch(`/reservations/user/${encodeURIComponent(userId)}`)
         .then((r) => r.json())
         .then(({ reservations }) => {
+          // 계정 전환 중 이전 계정의 조회 응답이 늦게 도착해도 새 계정에
+          // 예매내역을 섞어 넣지 않는다.
+          if (getState().user?.userId !== userId) return;
           const missing = (reservations || []).filter(
             (r) =>
               !hasBookingForSeat(r.seatId) &&
@@ -256,6 +259,7 @@ export const myPage = {
           if (!missing.length) return;
           return Promise.all([fetch('/events').then((r) => r.json()), fetch('/seats').then((r) => r.json())]).then(
             ([eventsData, seatsData]) => {
+              if (getState().user?.userId !== userId) return;
               const seatById = new Map((seatsData.seats || []).map((s) => [s.seatId, s]));
               missing.forEach((r) => {
                 const eventId = r.seatId.split(':')[0];
@@ -267,6 +271,7 @@ export const myPage = {
                 const isCancelled = r.status === 'CANCELLED';
                 addBookingSilently({
                   bookingId: `R-${r.seatId}`,
+                  ownerUserId: userId,
                   concertId: eventId,
                   session: null,
                   zone: { id: section, label: `${section}구역` },
