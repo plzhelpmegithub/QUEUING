@@ -292,9 +292,9 @@ export const concertDetailPage = {
           artist: c.eventName,
         });
 
-        // 예매 오픈 시각: 관리자가 이 공연에 직접 지정한 시각(c.ticketOpenAt —
-        // 어드민 "오픈 시간 설정" 기능, admin.js)이 있으면 그걸 우선 쓰고, 없으면
-        // 기존 글로벌 예약 스케줄(/admin/ticketing/schedule)을 그대로 따른다.
+        // 예매 오픈 시각은 이 공연 카드에 저장된 c.ticketOpenAt만 사용한다.
+        // 다른 공연의 글로벌 예약 스케줄을 fallback으로 사용하면 한 공연의
+        // 오픈 예약이 오픈 시간이 없는 다른 공연에도 표시되는 문제가 생긴다.
         // 카운트다운은 [예매하기] 버튼 안에 직접 표시(별도 문구 영역 없음)하고,
         // 남은 시간과 무관하게 오픈 시각이 정해져 있으면 항상 보여준다 — 예전엔
         // "5분 이내일 때만 노출"이라 10분 후 오픈처럼 5분보다 긴 대기에서는
@@ -324,17 +324,6 @@ export const concertDetailPage = {
         if (c.ticketOpenAt) {
           const openAtMs = new Date(c.ticketOpenAt).getTime();
           if (!Number.isNaN(openAtMs)) startOpenCountdown(openAtMs);
-        } else {
-          fetch('/admin/ticketing/schedule')
-            .then((r) => r.json())
-            .then((sched) => {
-              if (destroyed) return;
-              if (!sched.scheduled || !sched.openAt) return;
-              const openAtMs = new Date(sched.openAt).getTime();
-              if (Number.isNaN(openAtMs)) return;
-              startOpenCountdown(openAtMs);
-            })
-            .catch(() => {});
         }
       })
       .catch(() => {

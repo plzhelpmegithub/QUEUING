@@ -1,3 +1,44 @@
+## [2026-09-06 10:55] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/payment.js]**: 결제 페이지에서 결제하지 않고 이탈할 때 붙잡고 있던 좌석 선점을 해제하도록 추가. SPA 라우팅 이탈은 `releaseSeatApi()`, 브라우저 닫기/새로고침은 `releaseSeatBeacon()`으로 처리하며, 결제 확정 또는 제한시간 만료(백엔드 TTL 자동 해제) 시에는 중복 해제 요청을 보내지 않도록 `settled` 플래그로 구분.
+- **[README.md]**: payment.js의 좌석 해제 동작과 관련 API 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 좌석 선택 페이지에서 나가면 선점이 정상적으로 풀리지만, 결제 페이지에서 결제하지 않고 나가면 좌석이 계속 "선택중(HELD)" 상태로 남아있음.
+- **원인(Cause):** `seatSelect.js`는 페이지 이탈 시 `releaseSeatApi()`/`releaseSeatBeacon()`을 호출하는 cleanup 로직이 있었지만, `payment.js`에는 카운트다운 정리(`stopCd`)만 있을 뿐 좌석 해제 로직이 전혀 없었음. 제한시간 만료 시에만 로컬 주문 상태를 지웠고, 사용자가 그 전에 임의로 페이지를 벗어나는 경우는 처리하지 않았음.
+- **해결(Solution):** `payment.js`에 `seatSelect.js`와 동일한 패턴을 적용. 결제 대상 실좌석(`realSeats`) 목록을 계산해두고, `pagehide`/`beforeunload`에는 `releaseSeatBeacon()`을, 페이지 unmount(라우터 cleanup)에는 `releaseSeatApi()`를 호출하도록 추가. 결제 성공 또는 타임아웃 시 `settled = true`로 표시해 이미 확정/만료된 좌석에 불필요한 해제 요청을 보내지 않도록 함.
+
+## [2026-09-04 17:30] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/seatMap.js]**: 올림픽홀 좌석 지도도 축소 상태에서 개별 좌석을 숨기도록 LOD 기준을 0.4로 통일. 배치도는 유지하고 기준 배율 이상 확대했을 때만 좌석을 표시·선택하도록 복구.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 좌석 배치 재구성 후 좌석 선점 페이지를 열자 줌 아웃 상태에서도 올림픽홀 개별 좌석이 바로 표시됨.
+- **원인(Cause):** 올림픽홀에만 LOD 임계값 0.12를 적용해 초기 화면의 일반적인 줌 배율이 임계값을 항상 넘었음.
+- **해결(Solution):** 모든 공연장에 `SEAT_LOD_ZOOM_THRESHOLD = 0.4`를 적용해 줌 아웃 시 좌석을 숨기고 확대 시 좌석을 표시하도록 수정.
+
+## [2026-09-04 17:10] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/concertDetail.js]**: 공연 상세 페이지의 예매 오픈 카운트다운을 현재 공연의 `ticketOpenAt`만 사용하도록 수정. 오픈 시간이 없는 공연이 다른 공연의 전역 스케줄을 따라가지 않도록 변경.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 윤하 공연의 오픈 시간을 설정하면 같은 목록에 있던 악뮤 공연도 사용자 화면에서 오픈 예정으로 표시됨.
+- **원인(Cause):** 개별 오픈 시간이 없는 공연 상세 페이지가 전역 예약 스케줄을 fallback으로 읽고 있었음.
+- **해결(Solution):** 공연별 오픈 시간이 저장된 경우에만 해당 공연의 카운트다운을 표시하고, 값이 없으면 즉시 예매 상태를 유지하도록 수정.
+
+## [2026-09-04 16:58] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 포스터 공연의 오픈 시간 모달에서 아직 값이 없는 이벤트에 공연별 기본 오픈 시간을 표시하도록 수정. 현재 공연 목록 순서를 기준으로 1분씩 간격을 두어 여러 이벤트가 같은 기본 오픈 시간으로 저장되지 않게 함.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 포스터 공연을 여러 개 생성한 뒤 오픈 시간을 설정하면 각 이벤트의 오픈 시간이 동일하게 저장됨.
+- **원인(Cause):** `ticketOpenAt`이 없는 모든 이벤트의 입력 기본값이 모달을 연 시각 기준 `현재 시각 + 5분`으로 고정되어 있었음.
+- **해결(Solution):** 이벤트 목록의 위치를 이용해 첫 이벤트부터 5분 후, 6분 후, 7분 후처럼 이벤트별 기본값을 다르게 생성. 이미 저장된 오픈 시간은 그대로 유지하고, 빠른 설정 버튼을 사용한 명시적 값은 사용자의 선택을 따름.
+
 ## [2026-09-04 05:10] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -229,3 +270,28 @@
 - **증상(Issue):** 여러 공연일이 있는 공연에서 한 회차의 좌석 상태가 다른 회차 화면에 영향을 줄 수 있음.
 - **원인(Cause):** 프론트엔드가 `/seats`를 공연 ID만으로 조회하고 회차 선택값은 화면 표시용으로만 사용함.
 - **해결(Solution):** `/seats`, `/queue/enter`, `/queue/admit` 등에 선택 회차를 전달하고 회차 탭 변경 시 해당 회차 inventory를 재조회하도록 수정.
+## [2026-09-06 14:13] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/cancelQueue.js]**: 임의 대기번호·랜덤 취소표 Pool 시뮬레이션을 제거하고 실제 대기열·멤버십·Secret Link·Redis 좌석 현황을 조회하도록 변경.
+- **[src/pages/privateLink.js]**: 서버가 발급한 할당 좌석과 `expiresAt`을 사용하고, 링크 만료 시 다음 대기자 재배정 API를 호출하도록 변경.
+- **[src/pages/cancelSeatSelect.js]**: 전체 가상 좌석 선택 대신 서버가 배정한 좌석만 `/cancel-queue/hold`로 선점하도록 변경. 결제 화면 이탈 시 `/seats/release` 호출.
+- **[src/pages/payment.js]**: 취소표도 `/seats/confirm`을 호출해 실제 Redis 좌석과 MariaDB reservations에 확정 저장하도록 변경. Secret Link 만료 시 선점 해제·할당 만료를 처리.
+- **[src/utils/backendApi.js]**: 취소표 대기열·Pool·선점·만료 API 호출 유틸리티 추가.
+- **[src/state/store.js]**: 서버에서 확인한 취소표 대기 상태를 화면용 캐시로 저장하는 함수 추가.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `cancel-ticketing.html`에 해당하는 화면은 있었지만 대기번호·좌석·Pool·결제 결과가 브라우저 로컬 상태에만 남음.
+- **원인(Cause):** 취소표 전용 페이지들이 `joinCancelQueue()`, `ensureCancelPool()` 등 데모용 상태를 사용하고 취소표 결제에서는 좌석 확정을 건너뜀.
+- **해결(Solution):** `POST /queue/enter` → `GET /cancel-queue/status` → `POST /cancel-queue/hold` → `POST /seats/confirm` 순서의 실제 API 흐름으로 교체하고, 서버 할당 만료 시 다음 사용자에게 좌석을 재배정하도록 연결.
+## [2026-09-06 14:18] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/soldOutModal.js]**: 매진 안내 시 로컬 대기번호 대신 `POST /cancel-queue/join` 결과로 실제 standby 번호를 표시.
+- **[src/pages/cancelQueue.js]**: 취소표 대기열 진입을 일반 `/queue/enter`가 아닌 취소표 전용 API로 변경.
+- **[src/utils/backendApi.js]**: 취소표 standby 등록 API 호출 함수 `joinCancelQueueApi()` 추가.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 이미 일반 예매 대기열에 있거나 입장 허용된 사용자는 취소표 대기 등록이 누락될 수 있었음.
+- **원인(Cause):** 매진 안내에서 로컬 상태만 갱신하고 실제 standby 이동 API를 호출하지 않았음.
+- **해결(Solution):** 매진 안내와 취소표 대기열 화면 모두 전용 standby 등록 API를 호출해 서버 순번을 기준으로 표시.

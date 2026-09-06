@@ -145,6 +145,7 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 ## 배포 시 주의
 
 - `vite.config.js`의 프록시 설정이 운영 환경과 일치하는지 확인할 것
+- 운영 `nginx.conf`의 API 프록시 location 정규식에 `/cancel-queue`를 포함할 것. 누락되면 취소표 API 요청이 SPA `index.html`로 fall back되어 JSON 조회가 실패한다.
 - 빌드: `npm run build` → `dist/` 디렉토리를 Nginx에 배포
 - 좌석 좌표 변경 시 `olympicHallSeats.js`만 수정하면 됨 (seatMap.js의 변환 로직은 변경 불필요)
 
@@ -161,12 +162,12 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 
 ### src/pages/admin.js
 - **목적:** 관리자 공연 생성·오픈 시간 설정·삭제 화면을 제공.
-- **주요 기능:** 선택 체크박스 없이 `5개씩 삭제` 버튼을 누르면 현재 공연 목록의 앞에서부터 최대 5개를 확인 후 삭제한다. 공연이 5개보다 적으면 남은 공연을 모두 삭제한다. 배치 API가 구버전인 운영 서버에서는 기존 단일 삭제 API를 순차 호출하는 대체 경로를 사용한다.
+- **주요 기능:** 선택 체크박스 없이 `5개씩 삭제` 버튼을 누르면 현재 공연 목록의 앞에서부터 최대 5개를 확인 후 삭제한다. 공연이 5개보다 적으면 남은 공연을 모두 삭제한다. 배치 API가 구버전인 운영 서버에서는 기존 단일 삭제 API를 순차 호출하는 대체 경로를 사용한다. 아직 오픈 시간이 없는 공연은 오픈 시간 모달을 열 때 공연 목록 순서별로 서로 다른 기본 시각을 표시하여, 여러 포스터 공연이 같은 `현재 시각 + 5분`으로 저장되지 않도록 한다.
 
 ### src/pages/payment.js
 - **목적:** 결제 전 구매자 정보와 좌석 확정 흐름을 처리.
-- **주요 기능:** 사용자가 입력한 전화번호가 저장된 회원 전화번호와 다를 때만 확인창을 표시하고, 확인 시 전화번호만 회원정보에 저장한 뒤 결제를 진행한다. 이메일은 구매 연락처로만 사용한다.
-- **API 명세 / 라우팅 규칙:** 회원정보 변경 요청은 `PATCH /auth/profile`에 `userId`와 `phone`만 전달할 수 있다.
+- **주요 기능:** 사용자가 입력한 전화번호가 저장된 회원 전화번호와 다를 때만 확인창을 표시하고, 확인 시 전화번호만 회원정보에 저장한 뒤 결제를 진행한다. 일반 예매와 취소표 모두 `/seats/confirm`으로 좌석을 SOLD 처리하고 MariaDB reservations에 확정 저장한다. 취소표는 서버 Secret Link 만료시각을 결제 마감으로 사용한다.
+- **API 명세 / 라우팅 규칙:** 회원정보 변경 요청은 `PATCH /auth/profile`에 `userId`와 `phone`만 전달한다. 결제 확정은 좌석마다 `POST /seats/confirm`, 페이지 이탈·만료 시 `POST /seats/release`, 취소표 할당 만료 시 `POST /cancel-queue/expire`를 사용한다. 브라우저 종료는 `releaseSeatBeacon()`으로 선점 좌석을 해제한다.
 
 ### src/pages/seatSelect.js
 - **목적:** 좌석 선택 페이지. 실시간 좌석 상태 표시, 좌석 선점(hold), 결제 진행 흐름을 처리.
@@ -175,8 +176,23 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 
 ### src/utils/backendApi.js
 - **목적:** A파트 REST API 호출 유틸리티. Vite 프록시를 통해 CORS 없이 호출.
-- **주요 기능:** `fetchRealSeats()` 좌석 조회, `holdSeatApi()` 선점, `releaseSeatApi()` 해제(fetch), `releaseSeatBeacon()` 해제(sendBeacon), `confirmSeatApi()` 결제 확정.
-- **API 명세 / 라우팅 규칙:** 모든 요청에 3초 타임아웃 적용. `releaseSeatBeacon()`은 `navigator.sendBeacon()`으로 `Blob(application/json)`을 전송하여 페이지 종료 시에도 전송 보장.
+- **주요 기능:** 일반 좌석 API와 함께 취소표 대기열 진입·상태 조회, 서버 Pool 조회, Secret Link 좌석 선점, 할당 만료 API를 제공한다.
+- **API 명세 / 라우팅 규칙:** `joinCancelQueueApi()`는 `POST /cancel-queue/join`, `fetchCancelQueueStatus()`는 `GET /cancel-queue/status/:eventId/:userId`, `fetchCancelPool()`은 `GET /cancel-queue/pool/:eventId`, `holdCancelSeat()`는 `POST /cancel-queue/hold`, `expireCancelAllocation()`은 `POST /cancel-queue/expire`를 호출한다. 모든 요청에 3초 타임아웃을 적용하며 `releaseSeatBeacon()`은 `navigator.sendBeacon()`으로 페이지 종료 시에도 전송한다.
+
+### src/pages/cancelQueue.js
+- **목적:** 로그인 사용자의 취소표 대기열과 Secret Link 발급 상태를 표시.
+- **주요 기능:** 서버 대기열에 실제 진입한 뒤 대기순번·멤버십·활성 할당을 2초 주기로 조회한다. 취소표 현황은 Redis 좌석 상태를 3초 주기로 조회하며, 임의 대기번호·Pool 시뮬레이션을 사용하지 않는다.
+- **API 명세 / 라우팅 규칙:** `POST /queue/enter`, `GET /cancel-queue/status/:eventId/:userId`, `GET /cancel-queue/pool/:eventId` 사용. Secret Link 발급 시 서버 `expiresAt`을 기준으로 5분 카운트다운을 표시한다.
+
+### src/pages/privateLink.js
+- **목적:** 서버에서 발급한 취소표 Secret Link의 입장과 만료를 처리.
+- **주요 기능:** 사용자·공연별 활성 할당을 서버에서 확인하고, 할당된 좌석과 서버 만료시각만 사용한다. 만료 시 `/cancel-queue/expire`를 호출해 다음 대기자에게 재배정을 요청한다.
+- **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/expire` 사용. 유효한 할당이 없으면 취소표 대기열로 되돌린다.
+
+### src/pages/cancelSeatSelect.js
+- **목적:** Secret Link 보유자에게 서버가 배정한 취소표 좌석을 보여주고 선점.
+- **주요 기능:** `/seats`에서 배정 좌석의 실제 상태를 확인하고, 배정된 좌석만 선택 가능하게 한다. 선택 시 서버 선점을 완료한 뒤 결제 주문으로 전달하며, 결제 화면으로 이동하지 않고 이탈하면 좌석을 해제한다.
+- **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `GET /seats`, `POST /cancel-queue/hold`, `POST /seats/release` 사용. 회차 정보는 할당에 저장된 `sessionDate`·`sessionTime`을 우선 사용한다.
 
 ### src/pages/home.js
 - **목적:** 메인 히어로와 공연 탐색 섹션을 제공.
@@ -184,11 +200,11 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 
 ### src/pages/zoneSelect.js
 - **목적:** 대기열 통과 후 공연 좌석 지도와 좌석 선택 영역을 제공.
-- **주요 기능:** 선택한 공연 회차의 날짜·시간을 `/seats` 조회와 대기열·Admission Token 요청에 함께 전달한다. 회차 탭을 바꾸면 해당 회차의 좌석 inventory를 다시 불러온다. 좌석 지도 아래 가격 범례는 실제 구역명(A1, B1 등)을 반복하지 않고, VIP·R·S·A 등급별 가격을 한 번씩만 표시한다.
+- **주요 기능:** 선택한 공연 회차의 날짜·시간을 `/seats` 조회와 대기열·Admission Token 요청에 함께 전달한다. 회차 탭을 바꾸면 해당 회차의 좌석 inventory를 다시 불러온다. 좌석 지도는 줌 배율이 0.4 미만이면 개별 좌석을 숨기고 배치도만 표시하며, 확대하면 좌석을 표시하고 선택할 수 있다. 좌석 지도 아래 가격 범례는 실제 구역명(A1, B1 등)을 반복하지 않고, VIP·R·S·A 등급별 가격을 한 번씩만 표시한다.
 
 ### src/pages/queue.js
 - **목적:** 선택한 공연 회차의 대기열 진입과 입장 승인을 표시.
-- **주요 기능:** `eventId`, `sessionDate`, `sessionTime`을 모든 대기열 순번·입장 승인 요청에 포함해 날짜가 다른 공연 회차가 서로 같은 대기열을 사용하지 않도록 한다.
+- **주요 기능:** `eventId`, `sessionDate`, `sessionTime`을 모든 대기열 순번·입장 승인 요청에 포함해 날짜가 다른 공연 회차가 서로 같은 대기열을 사용하지 않도록 한다. 이벤트별 오픈 시간이 없는 공연은 다른 공연의 전역 오픈 예약을 물려받지 않고 즉시 예매 흐름으로 진입한다.
 
 ### src/components/header.js / src/pages/concertsList.js
 - **목적:** 공통 헤더 검색과 공연 목록 검색을 처리.

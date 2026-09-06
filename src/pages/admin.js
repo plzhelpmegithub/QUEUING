@@ -402,6 +402,24 @@ function toDatetimeLocalValue(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
+// 오픈 시간이 아직 없는 공연마다 서로 다른 기본 시각을 제공한다.
+// 기존에는 모든 공연이 모달을 연 시점 기준 "5분 후"를 사용해 같은 시각으로 저장될 수 있었다.
+function getDefaultOpenTimeOffsetMinutes(event) {
+  const eventIndex = eventsCache.findIndex((cachedEvent) => cachedEvent.eventId === event?.eventId);
+  if (eventIndex >= 0) return 5 + eventIndex;
+
+  const eventId = String(event?.eventId || event?.eventName || 'event');
+  let hash = 0;
+  for (let index = 0; index < eventId.length; index += 1) {
+    hash = (hash * 31 + eventId.charCodeAt(index)) | 0;
+  }
+  return 5 + (Math.abs(hash) % 55);
+}
+
+function getDefaultOpenTime(event) {
+  return new Date(Date.now() + getDefaultOpenTimeOffsetMinutes(event) * 60000);
+}
+
 function applyOpenTime(eventId, ticketOpenAt, successTitle, onSaved) {
   setEventOpenTime(eventId, ticketOpenAt)
     .then((result) => {
@@ -421,9 +439,10 @@ function applyOpenTime(eventId, ticketOpenAt, successTitle, onSaved) {
 // 프리셋 버튼은 클릭 한 번으로 바로 저장까지 되도록 해서(모달을 다시 안 열어도 됨)
 // 반복 테스트가 빠르게 되도록 함.
 function openSetOpenTimeModal(event, onSaved) {
+  const defaultOffsetMinutes = getDefaultOpenTimeOffsetMinutes(event);
   const prefill = event.ticketOpenAt
     ? toDatetimeLocalValue(new Date(event.ticketOpenAt))
-    : toDatetimeLocalValue(new Date(Date.now() + 5 * 60000));
+    : toDatetimeLocalValue(getDefaultOpenTime(event));
 
   openModal({
     title: `예매 오픈 시간 설정 — ${event.eventName}`,
@@ -431,6 +450,7 @@ function openSetOpenTimeModal(event, onSaved) {
       <div class="field">
         <label>예매 오픈 일시</label>
         <input type="datetime-local" step="1" data-open-time-input value="${prefill}" />
+        ${event.ticketOpenAt ? '' : `<small class="field-help">기본값은 공연별로 ${defaultOffsetMinutes}분 후로 다르게 설정됩니다.</small>`}
       </div>
       <div class="field" style="margin-bottom:0;">
         <label>빠른 설정 (테스트용 — 클릭 즉시 저장)</label>

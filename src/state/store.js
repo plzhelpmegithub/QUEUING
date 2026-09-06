@@ -467,6 +467,18 @@ export function getCancelQueue(concertId) {
   return state.cancelQueues[concertId] || null;
 }
 
+// 서버에서 조회한 취소표 대기 상태를 화면 전환 간에도 유지한다.
+// 순번의 원본은 항상 API이며, 이 값은 마지막으로 확인한 화면 표시용 캐시다.
+export function setCancelQueueEntry(concertId, entry) {
+  if (!concertId || !entry) return null;
+  state.cancelQueues[concertId] = {
+    ...(state.cancelQueues[concertId] || {}),
+    ...entry,
+  };
+  emit();
+  return state.cancelQueues[concertId];
+}
+
 export function ensureCancelPool(concertId) {
   if (!state.cancelPools[concertId]) {
     state.cancelPools[concertId] = { VIP: 3, R: 9, S: 17 };

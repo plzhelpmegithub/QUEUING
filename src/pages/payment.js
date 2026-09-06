@@ -5,11 +5,12 @@ import { formatPrice, uid } from '../utils/format.js';
 import { mountCountdown } from '../components/countdown.js';
 import { mountRefundSummary } from '../components/refundPolicy.js';
 import { openModal, closeModal } from '../components/modal.js';
-import { getState, clearCurrentOrder, addBooking, consumeCancelPool, clearSeatSelectTimer, updateProfileOnServer } from '../state/store.js';
+import { getState, clearCurrentOrder, addBooking, clearSeatSelectTimer, updateProfileOnServer } from '../state/store.js';
 import { showToast } from '../components/toast.js';
 import { navigate } from '../router.js';
+import { expireCancelAllocation, releaseSeatApi, releaseSeatBeacon } from '../utils/backendApi.js';
 
-const CANCEL_DEADLINE_MS = 24 * 60 * 60 * 1000;
+const CANCEL_DEADLINE_MS = 5 * 60 * 1000;
 const HOLD_MS = 8 * 60 * 1000 + 42 * 1000; // fallback if an order ever arrives without holdDeadline
 const PHONE_RE = /^01[016789]-\d{3,4}-\d{4}$/;
 
@@ -49,7 +50,7 @@ export const paymentPage = {
     // cancel(취소표) 플로우는 여전히 좌석 1개(order.seat)만 다루고, regular(일반
     // 예매) 플로우는 최대 4매까지 담긴 order.seats 배열을 다룬다 — 이후 로직은
     // 전부 이 통합된 seats 배열 하나만 보고 동작하도록 정규화한다.
-    const seats = order ? (type === 'cancel' ? [order.seat] : order.seats || []) : [];
+    const seats = order ? (type === 'cancel' ? [order.seat || order.seats?.[0]].filter(Boolean) : order.seats || []) : [];
 
     if (!order || seats.length === 0) {
       container.innerHTML = `
@@ -99,7 +100,9 @@ export const paymentPage = {
     };
 
     function renderPayment(c) {
-    const deadline = type === 'cancel' ? order.securedAt + CANCEL_DEADLINE_MS : order.holdDeadline || order.securedAt + HOLD_MS;
+    const deadline = type === 'cancel'
+      ? new Date(order.cancelDeadline || order.cancelAllocation?.expiresAt || order.securedAt + CANCEL_DEADLINE_MS).getTime()
+      : order.holdDeadline || order.securedAt + HOLD_MS;
     const sessionDate = order.session?.date ? order.session.date.replaceAll('-', '.') : c.eventDate || '';
     const sessionTime = order.session?.time || '';
     const discount = 0;
@@ -107,6 +110,21 @@ export const paymentPage = {
     const finalPrice = seatsTotal - discount;
     let virtualAccount = null;
     let expired = false;
+    // 결제하지 않고 페이지를 벗어나면(뒤로가기, 헤더 이동 등) 붙잡고 있던 좌석을
+    // 즉시 해제한다 — 좌석선택 페이지를 나갈 때 선점이 풀리는 것과 동일한 동작.
+    // 결제가 실제로 완료되었거나(seat가 이미 SOLD로 확정됨) 타임아웃으로 만료된
+    // 경우(백엔드 TTL로 이미 자동 해제됨)는 다시 해제 요청을 보낼 필요가 없으므로
+    // settled로 막는다.
+    let settled = false;
+    const realSeats = seats.filter((s) => typeof s.id === 'string' && s.id.includes(':'));
+    function onPageHide() {
+      if (settled || !realSeats.length) return;
+      const user = getState().user;
+      if (!user) return;
+      realSeats.forEach((s) => releaseSeatBeacon(user.userId, s.id));
+    }
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
 
     container.innerHTML = `
       <div class="container payment-body">
@@ -262,25 +280,36 @@ export const paymentPage = {
       payBtn.disabled = expired || !e.target.checked;
     });
 
-    const cdStop = mountCountdown(container.querySelector('[data-deadline]'), {
+    const stopCountdown = mountCountdown(container.querySelector('[data-deadline]'), {
       targetMs: deadline,
       format: type === 'cancel' ? 'deadline' : 'mmss',
-      onComplete:
-        type === 'cancel'
-          ? undefined
-          : () => {
+      onComplete: () => {
               if (expired) return;
               expired = true;
+              settled = true;
               payBtn.disabled = true;
               agreeBox.disabled = true;
+              const currentUserId = getState().user?.userId || getState().user?.email;
+              const releasePromises = currentUserId
+                ? realSeats.map((s) => releaseSeatApi(currentUserId, s.id).catch(() => null))
+                : [];
+              const expirePromise = Promise.all(releasePromises).then(() => (
+                type === 'cancel' && currentUserId && order.cancelAllocation
+                  ? expireCancelAllocation(currentUserId, c.eventId, order.cancelAllocation.seatId, {
+                      sessionDate: order.cancelAllocation.sessionDate || order.session?.date || '',
+                      sessionTime: order.cancelAllocation.sessionTime || order.session?.time || '',
+                    }).catch(() => null)
+                  : null
+              ));
+              expirePromise.catch(() => {});
               clearCurrentOrder();
               clearSeatSelectTimer();
               openModal({
                 title: '제한시간이 초과되었습니다',
-                bodyHtml: `<p>좌석 선택 제한시간 내에 결제하기를 누르지 않아 예매가 취소되었습니다.<br/>좌석은 자동으로 해제되었습니다. 다시 시도해주세요.</p>`,
-                footerHtml: `<button type="button" class="btn btn-primary btn-block" data-modal-close data-goto-zones>구역 다시 선택하기</button>`,
+                bodyHtml: `<p>${type === 'cancel' ? '취소표 Secret Link의 제한시간이 초과되었습니다.' : '좌석 선택 제한시간 내에 결제하기를 누르지 않아 예매가 취소되었습니다.'}<br/>좌석은 자동으로 해제되고 다음 대기자에게 넘어갑니다.</p>`,
+                footerHtml: `<button type="button" class="btn btn-primary btn-block" data-modal-close data-goto-zones>${type === 'cancel' ? '취소표 대기열로' : '구역 다시 선택하기'}</button>`,
               });
-              document.querySelector('[data-goto-zones]')?.addEventListener('click', () => navigate(`zones/${c.eventId}`));
+              document.querySelector('[data-goto-zones]')?.addEventListener('click', () => navigate(type === 'cancel' ? `cancel-queue/${c.eventId}` : `zones/${c.eventId}`));
             },
     });
 
@@ -315,12 +344,8 @@ export const paymentPage = {
       payBtn.disabled = true;
 
       const continueToPayment = () => {
-        // Real seats (selected through zoneSelect.js) carry an id like
-        // "evt-...:VIP-001" and were actually held via /seats/hold — confirm each
-        // one against the backend so it lands in MariaDB (one call per seat, since
-        // /seats/confirm only takes a single seatId). Seats from the mock
-        // cancel-ticket pool (cancelSeatSelect.js) aren't backend-tracked, so
-        // there's nothing to confirm there — just keep the existing local flow.
+         // 일반 예매와 취소표 모두 /seats/hold를 거친 좌석은
+         // /seats/confirm으로 MariaDB reservations에 확정 저장한다.
         const realSeats = seats.filter((s) => typeof s.id === 'string' && s.id.includes(':') && !!userId);
         const confirmCall = realSeats.length
           ? Promise.all(
@@ -348,6 +373,7 @@ export const paymentPage = {
               return;
             }
 
+            settled = true;
             const bookingId = uid('A');
             addBooking({
               bookingId,
@@ -363,9 +389,6 @@ export const paymentPage = {
               vbankDeadline: method === 'vbank' ? Date.now() + 24 * 60 * 60 * 1000 : null,
               paidAt: Date.now(),
             });
-            if (type === 'cancel') {
-              consumeCancelPool(c.eventId, seats[0].grade);
-            }
             clearCurrentOrder();
             clearSeatSelectTimer();
             navigate(`complete/${bookingId}`);
@@ -417,7 +440,15 @@ export const paymentPage = {
       continueToPayment();
     });
 
-    return cdStop;
+    return function cleanupPayment() {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onPageHide);
+      stopCountdown();
+      if (!settled && realSeats.length) {
+        const user = getState().user;
+        if (user) realSeats.forEach((s) => releaseSeatApi(user.userId, s.id).catch(() => {}));
+      }
+    };
     }
   },
 };

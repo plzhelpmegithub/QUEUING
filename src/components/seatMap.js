@@ -584,7 +584,10 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
   let animRunning = false;
   let destroyed = false;
 
-  const seatLodThreshold = layout.isOlympicHall ? 0.12 : SEAT_LOD_ZOOM_THRESHOLD;
+  // 좌석 배치가 좌표 기반 올림픽홀이라도 축소 상태에서는 개별 좌석을 숨긴다.
+  // 올림픽홀만 0.12로 낮추면 초기 화면부터 좌석이 모두 보여 LOD 기능이
+  // 사실상 비활성화되므로, 모든 공연장에 동일한 0.4 기준을 적용한다.
+  const seatLodThreshold = SEAT_LOD_ZOOM_THRESHOLD;
 
   const zoomMin = Math.min(ZOOM_MIN, Math.min(
     viewport.clientWidth / layout.canvasW,

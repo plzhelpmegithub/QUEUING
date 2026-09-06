@@ -16,6 +16,51 @@ async function getJson(path) {
   }
 }
 
+async function postJson(path, body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function enterQueueApi(userId, context = {}) {
+  return postJson('/queue/enter', { userId, ...context });
+}
+
+export async function joinCancelQueueApi(userId, context = {}) {
+  return postJson('/cancel-queue/join', { userId, ...context });
+}
+
+export async function fetchCancelQueueStatus(eventId, userId, context = {}) {
+  const params = new URLSearchParams(context);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return getJson(`/cancel-queue/status/${encodeURIComponent(eventId)}/${encodeURIComponent(userId)}${suffix}`);
+}
+
+export async function fetchCancelPool(eventId, context = {}) {
+  const params = new URLSearchParams(context);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return getJson(`/cancel-queue/pool/${encodeURIComponent(eventId)}${suffix}`);
+}
+
+export async function holdCancelSeat(userId, eventId, seatId, context = {}) {
+  return postJson('/cancel-queue/hold', { userId, eventId, seatId, ...context });
+}
+
+export async function expireCancelAllocation(userId, eventId, seatId, context = {}) {
+  return postJson('/cancel-queue/expire', { userId, eventId, seatId, ...context });
+}
+
 // GET /seats — A파트의 seatService.getAllSeats()를 그대로 노출한 API.
 // 반환되는 seatId는 "evt-171...:VIP-001" 형태로 이벤트 ID가 접두사로 붙어 있음.
 // 여러 이벤트의 좌석이 섞여서 올 수 있으므로(A가 아직 단일 활성 이벤트 구조라
