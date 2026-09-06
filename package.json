@@ -16,6 +16,7 @@
     "@aws-sdk/client-sns": "^3.700.0",
     "prom-client": "^15.1.0",
     "jsonwebtoken": "^9.0.0",
-    "bcryptjs": "^2.4.3"
+    "bcryptjs": "^2.4.3",
+    "@node-rs/argon2": "^2.0.2"
   }
 }

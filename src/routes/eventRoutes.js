@@ -508,24 +508,18 @@ async function eventRoutes(fastify) {
     await redis.hset(EVENT_LIST_KEY, eventId, JSON.stringify(card));
 
     const info = await redis.hgetall(EVENT_KEY);
-    let schedule = null;
     if (info && info.eventId === eventId) {
       if (card.ticketOpenAt) {
         await redis.hset(EVENT_KEY, 'ticketOpenAt', card.ticketOpenAt);
       } else {
         await redis.hdel(EVENT_KEY, 'ticketOpenAt');
       }
-
-      // 현재 활성 이벤트라면 오픈 예정 시간에 맞춰 Redis 스케줄과
-      // 메모리 타이머를 함께 갱신한다. null이면 즉시 오픈으로 복귀한다.
-      schedule = await queueService.restoreTicketingSchedule(card.ticketOpenAt);
     }
 
     return reply.send({
       success: true,
       eventId,
       ticketOpenAt: card.ticketOpenAt,
-      schedule,
       message: card.ticketOpenAt
         ? `예매 오픈 시간이 ${card.ticketOpenAt}로 설정되었습니다.`
         : '예매 오픈 시간 제한이 해제되었습니다.',
@@ -555,10 +549,8 @@ async function eventRoutes(fastify) {
     if (info && info.eventId === eventId) {
       if (card.ticketCloseAt) {
         await redis.hset(EVENT_KEY, 'ticketCloseAt', card.ticketCloseAt);
-        await queueService.scheduleCloseTime(card.ticketCloseAt);
       } else {
         await redis.hdel(EVENT_KEY, 'ticketCloseAt');
-        await queueService.cancelCloseSchedule();
       }
     }
 

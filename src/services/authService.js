@@ -1,17 +1,37 @@
+const { hash: argon2Hash, verify: argon2Verify, Algorithm } = require('@node-rs/argon2');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/mariadb');
 
 const TABLE_NAME = 'users';
 
+const ARGON2_OPTIONS = {
+  algorithm: Algorithm.Argon2id,
+  memoryCost: 19456,
+  timeCost: 2,
+  parallelism: 1,
+  outputLen: 32,
+};
+
 function asBoolean(value) {
   return value === true || value === 1 || value === '1';
+}
+
+function isBcryptHash(hash) {
+  return typeof hash === 'string' && hash.startsWith('$2');
+}
+
+async function verifyPassword(password, storedHash) {
+  if (isBcryptHash(storedHash)) {
+    return bcrypt.compare(password, storedHash);
+  }
+  return argon2Verify(storedHash, password);
 }
 
 async function initUsersTable() {
   try {
     const existing = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, ['admin@queuing.kr']);
     if (existing.length === 0) {
-      const hashedPw = await bcrypt.hash('admin1234', 10);
+      const hashedPw = await argon2Hash('admin1234', ARGON2_OPTIONS);
       await pool.query(
         `INSERT INTO ${TABLE_NAME} (user_id, password, role, email) VALUES (?, ?, ?, ?)`,
         ['admin@queuing.kr', hashedPw, 'admin', 'admin@queuing.kr'],
@@ -20,7 +40,7 @@ async function initUsersTable() {
     }
     const monitorExisting = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, ['monitor@queuing.kr']);
     if (monitorExisting.length === 0) {
-      const hashedPw = await bcrypt.hash('monitor1234', 10);
+      const hashedPw = await argon2Hash('monitor1234', ARGON2_OPTIONS);
       await pool.query(
         `INSERT INTO ${TABLE_NAME} (user_id, password, role, email) VALUES (?, ?, ?, ?)`,
         ['monitor@queuing.kr', hashedPw, 'monitor', 'monitor@queuing.kr'],
@@ -42,7 +62,7 @@ async function register(userId, password, email, role = 'user', profile = {}) {
     console.error('[Auth] 중복 확인 실패:', err.message);
   }
 
-  const hashedPw = await bcrypt.hash(password, 10);
+  const hashedPw = await argon2Hash(password, ARGON2_OPTIONS);
 
   try {
     await pool.query(
@@ -70,9 +90,15 @@ async function login(userId, password) {
       return { success: false, message: '존재하지 않는 아이디입니다.' };
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await verifyPassword(password, user.password);
     if (!isMatch) {
       return { success: false, message: '비밀번호가 올바르지 않습니다.' };
+    }
+
+    if (isBcryptHash(user.password)) {
+      const upgraded = await argon2Hash(password, ARGON2_OPTIONS);
+      await pool.query(`UPDATE ${TABLE_NAME} SET password = ? WHERE user_id = ?`, [upgraded, userId]);
+      console.log(`[Auth] bcrypt → argon2id 해시 마이그레이션: ${userId}`);
     }
 
     console.log(`[Auth] 로그인 성공: ${userId} (${user.role})`);
@@ -130,7 +156,7 @@ async function updateProfile(userId, patch = {}) {
     }
     if (patch.password) {
       assignments.push('password = ?');
-      values.push(await bcrypt.hash(patch.password, 10));
+      values.push(await argon2Hash(patch.password, ARGON2_OPTIONS));
     }
 
     if (assignments.length > 0) {

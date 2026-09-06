@@ -148,28 +148,39 @@ async function releaseSeat(userId, seatId) {
 
   await cancelTimer(seatId);
 
-  const next = await queueService.getNextStandby(sessionContext);
-  if (next.userId) {
-    const nextUser = next.userId;
-    const promoted = await queueService.promoteStandby(nextUser, sessionContext);
-    if (!promoted.success) {
-      return { success: false, reason: 'standby_promote_failed', message: promoted.message };
+  // 취소표 Secret Link로 선점한 좌석은 먼저 available로 돌린 뒤
+  // cancelAllocationService가 할당 만료와 다음 사용자 배정을 순서대로 처리한다.
+  // 여기서 곧바로 standby를 승격하면 링크 기록 없이 좌석만 넘어가는 경쟁 상태가 생긴다.
+  let hasActiveCancelAllocation = false;
+  try {
+    const allocation = await require('./cancelAllocationService').getActiveAllocation(userId, sessionContext.eventId);
+    hasActiveCancelAllocation = allocation?.seatId === seatId;
+  } catch (_) {}
+
+  if (!hasActiveCancelAllocation) {
+    const next = await queueService.getNextStandby(sessionContext);
+    if (next.userId) {
+      const nextUser = next.userId;
+      const promoted = await queueService.promoteStandby(nextUser, sessionContext);
+      if (!promoted.success) {
+        return { success: false, reason: 'standby_promote_failed', message: promoted.message };
+      }
+      await redis.hset(seatKey, { status: STATUS.HELD, heldBy: nextUser, heldAt: Date.now().toString() });
+      await startTimer(seatId, nextUser);
+      await publishSeatEvent(EVENT_TYPE.HELD, {
+        seatId,
+        userId: nextUser,
+        reason: 'standby_auto_assign',
+        message: `${userId} 선점 해제 → ${nextUser}에게 자동 배정`,
+      });
+      return {
+        success: true,
+        seatId,
+        status: STATUS.HELD,
+        reassignedTo: nextUser,
+        message: '선점을 해제했고, 대기 중이던 다음 사용자에게 배정되었습니다.',
+      };
     }
-    await redis.hset(seatKey, { status: STATUS.HELD, heldBy: nextUser, heldAt: Date.now().toString() });
-    await startTimer(seatId, nextUser);
-    await publishSeatEvent(EVENT_TYPE.HELD, {
-      seatId,
-      userId: nextUser,
-      reason: 'standby_auto_assign',
-      message: `${userId} 선점 해제 → ${nextUser}에게 자동 배정`,
-    });
-    return {
-      success: true,
-      seatId,
-      status: STATUS.HELD,
-      reassignedTo: nextUser,
-      message: '선점을 해제했고, 대기 중이던 다음 사용자에게 배정되었습니다.',
-    };
   }
 
   await redis.hset(seatKey, { status: STATUS.AVAILABLE, heldBy: '', heldAt: '' });
@@ -285,6 +296,14 @@ async function confirmSeat(userId, seatId, requestedContext = {}) {
   const { revokeToken } = require('./tokenService');
   await revokeToken(userId, sessionContext);
 
+  // 취소표 좌석도 일반 예매와 동일하게 백엔드에서 확정하고,
+  // 해당 Secret Link 할당을 RESPONDED로 마감한다.
+  try {
+    await require('./cancelAllocationService').markResponded(userId, seatId, eventId);
+  } catch (err) {
+    console.error('[CancelAlloc] 예매 확정 상태 반영 실패:', err.message);
+  }
+
   const allSeats = await getAllSeats(eventId, sessionContext);
   const remaining = allSeats.filter(s => s.status === STATUS.AVAILABLE || s.status === STATUS.HELD);
   if (remaining.length === 0) {
@@ -344,10 +363,23 @@ async function cancelSeat(userId, seatId) {
     `seat:cancel ${seatId}`,
   );
 
+  let allocation = null;
+  try {
+    allocation = await require('./cancelAllocationService').allocateNextForSeat(
+      sessionContext.eventId,
+      seatId,
+      sessionContext,
+    );
+  } catch (err) {
+    // 좌석 자체의 취소 성공을 취소표 배정 실패 때문에 되돌리지는 않는다.
+    console.error('[CancelAlloc] 다음 대기자 자동 배정 실패:', err.message);
+  }
+
   return {
     success: true,
     seatId,
     status: STATUS.AVAILABLE,
+    allocation,
     message: '좌석이 취소되었습니다. 취소표 대기자에게 기회가 부여됩니다.',
   };
 }

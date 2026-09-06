@@ -61,12 +61,35 @@ async function initExpiryListener() {
     const seatInfo = await redis.hgetall(seatKey);
     const status = seatInfo.status;
 
-    if (status === 'HELD') {
-      const heldBy = seatInfo.heldBy;
-      timerExpirations.inc();
+      if (status === 'HELD') {
+        const heldBy = seatInfo.heldBy;
+        timerExpirations.inc();
 
-      const sessionContext = sessionFromSeat(seatId, seatInfo);
-      const next = await queueService.getNextStandby(sessionContext);
+        const sessionContext = sessionFromSeat(seatId, seatInfo);
+        const cancelAllocations = require('./cancelAllocationService');
+        const activeAllocation = await cancelAllocations.getActiveAllocation(heldBy, sessionContext.eventId);
+
+        // 취소표 Secret Link 사용자의 선점 만료는 일반 대기열 자동 승격과
+        // 분리한다. 먼저 할당을 만료시키고 좌석을 available로 만든 뒤,
+        // 다음 멤버십 사용자에게 새 링크를 발급한다.
+        if (activeAllocation?.seatId === seatId) {
+          await markExpired(heldBy, seatId, sessionContext.eventId);
+          await redis.hset(seatKey, { status: 'AVAILABLE', heldBy: '', heldAt: '' });
+          await syncToMariaDB(
+            `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id = ?`,
+            [seatId],
+            `timer:cancel-allocation-expire ${seatId}`,
+          );
+          await publishSeatEvent(EVENT_TYPE.RELEASED, {
+            seatId,
+            userId: heldBy,
+            reason: 'cancel_allocation_expired',
+          });
+          await cancelAllocations.allocateNextForSeat(sessionContext.eventId, seatId, sessionContext);
+          return;
+        }
+
+        const next = await queueService.getNextStandby(sessionContext);
 
       if (next.userId) {
         const nextUser = next.userId;
@@ -91,8 +114,8 @@ async function initExpiryListener() {
         const holdDuration = await getCurrentHoldDuration();
         try {
           const eventId = sessionContext.eventId;
-          await createAllocation(nextUser, seatId, eventId, holdDuration);
-          await markExpired(heldBy, seatId);
+          await createAllocation(nextUser, seatId, eventId, holdDuration, sessionContext);
+          await markExpired(heldBy, seatId, eventId);
         } catch (allocErr) {
           console.error('[Timer] cancel_allocation 기록 실패:', allocErr.message);
         }

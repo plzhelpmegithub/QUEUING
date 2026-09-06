@@ -30,7 +30,7 @@ api/
     │   ├── backupRoutes.js             # 백업/복구
     │   └── cancelQueueRoutes.js        # 취소표 대기열
     └── services/
-        ├── authService.js              # 인증 로직 (bcrypt)
+        ├── authService.js              # 인증 로직 (argon2id + bcrypt 하위호환)
         ├── queueService.js             # 대기열 핵심 로직
         ├── seatService.js              # 좌석 상태 머신
         ├── eventService.js             # Redis Pub/Sub 이벤트 발행
@@ -62,7 +62,8 @@ api/
 | `ioredis` | Redis 클라이언트 |
 | `mariadb` | MariaDB 커넥션 풀 |
 | `jsonwebtoken` | Admission Token (JWT) 발급/검증 |
-| `bcryptjs` | 비밀번호 해싱 |
+| `@node-rs/argon2` | 비밀번호 해싱 (argon2id, Rust 네이티브 바인딩) |
+| `bcryptjs` | 비밀번호 해싱 (기존 해시 하위호환) |
 | `prom-client` | Prometheus 메트릭 수집 |
 | `@aws-sdk/client-ses` | 이메일 알림 (AWS SES) |
 | `@aws-sdk/client-sns` | SMS 알림 (AWS SNS) |
@@ -113,9 +114,9 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /auth/register` | 회원가입. 이메일/비밀번호 유효성 검사 후 bcrypt 해싱하여 MariaDB 저장 |
-| `POST /auth/login` | 로그인. bcrypt 비교 후 사용자 정보 반환 |
-| `PATCH /auth/profile` | 회원정보 수정. 이름·전화번호·비밀번호·마케팅 수신 동의를 저장하며 이메일은 수정하지 않음 |
+| `POST /auth/register` | 회원가입. 이메일/비밀번호 유효성 검사 후 argon2id 해싱하여 MariaDB 저장 |
+| `POST /auth/login` | 로그인. argon2id 비교 후 사용자 정보 반환. 기존 bcrypt 해시는 자동으로 argon2id로 마이그레이션 |
+| `PATCH /auth/profile` | 회원정보 수정. 이름·전화번호·비밀번호·마케팅 수신 동의를 저장하며 이메일은 수정하지 않음. 비밀번호 변경 시 argon2id 해싱 |
 | `GET /auth/users` | 전체 사용자 목록 조회 (관리자용) |
 
 ---
@@ -129,8 +130,8 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `PATCH /event/update` | 공연 정보 수정 + 알림 발송 |
 | `POST /event/cancel` | 공연 취소. 좌석 전체 정리, 대기열 초기화, 취소 알림 |
 | `GET /events` | 이벤트 목록 조회 (MariaDB 폴백) |
-| `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정/해제. Redis 캐시와 MariaDB `events.ticket_open_at`에 함께 저장하며, 현재 활성 이벤트이면 자동 오픈 스케줄도 등록 |
-| `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제 (자동 마감) |
+| `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정/해제. Redis 이벤트 카드(`events:list`)와 MariaDB `events.ticket_open_at`에 함께 저장. 전역 `event:ticketing-status`나 스케줄 타이머를 변경하지 않음 — 대기열 진입 시 `enter()` 함수가 해당 이벤트 카드의 `ticketOpenAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
+| `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제. 이벤트 카드(`events:list`)에만 저장하며 전역 `event:ticketing-status`를 변경하지 않음 — `enter()` 함수가 해당 이벤트 카드의 `ticketCloseAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
 | `DELETE /events/:eventId` | 이벤트 삭제 |
 | `POST /events/batch-delete` | 최대 5개 이벤트를 순차 삭제하며 Redis 좌석과 MariaDB 관련 데이터를 함께 정리 |
 | `POST /events/seed` | 데모용 더미 이벤트 5개 생성 |
@@ -218,9 +219,13 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
+| `POST /cancel-queue/join` | 일반 예매 대기/입장 상태를 정리하고 회차별 standby 취소표 대기열에 등록 |
 | `GET /cancel-queue/status/:eventId/:userId` | 사용자 취소표 대기 종합 상태 (대기 순번 + 멤버십 + Secret Link) |
 | `POST /cancel-queue/allocate` | 취소표 발생 시 standby 1순위에게 Secret Link 발급 (멤버십 필수) |
 | `POST /cancel-queue/allocate-next` | 비회원 스킵하며 순차적으로 멤버십 회원 찾아 발급 |
+| `POST /cancel-queue/hold` | Secret Link 보유자가 배정된 좌석을 Admission Token으로 선점 |
+| `POST /cancel-queue/expire` | Secret Link 만료 처리 후 같은 좌석을 다음 대기자에게 재배정 |
+| `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
 | `GET /cancel-queue/history/:eventId` | 이벤트별 할당 내역 조회 |
 
@@ -228,10 +233,13 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 ### src/services/authService.js — 인증 서비스
 
-- `initUsersTable()`: users 테이블 생성 + 기본 관리자 계정 생성 (`admin@queuing.kr` / `admin1234`)
-- `register()`: 이메일/비밀번호 유효성 검사, bcrypt 해싱 후 저장
-- `login()`: bcrypt 비교 인증
+- `initUsersTable()`: users 테이블 생성 + 기본 관리자·모니터링 계정 생성 (argon2id 해싱)
+- `register()`: 이메일/비밀번호 유효성 검사, argon2id 해싱 후 저장
+- `login()`: argon2id 비교 인증. 기존 bcrypt 해시(`$2` prefix)는 로그인 성공 시 자동으로 argon2id로 재해싱하여 마이그레이션
+- `updateProfile()`: 회원정보 수정. 비밀번호 변경 시 argon2id 해싱
 - `listUsers()`: 전체 사용자 목록 (비밀번호 제외)
+
+**argon2id 설정:** `@node-rs/argon2` 사용, memoryCost=19456, timeCost=2, parallelism=1, outputLen=32
 
 ---
 
@@ -246,11 +254,12 @@ Redis 기반 대기열 관리의 핵심 로직.
 | `queue:standby` | Sorted Set | 취소표 대기열 |
 | `queue:admitted` | Set | 입장 허용된 사용자 |
 | `queue:counter` | String | 대기 번호 카운터 |
-| `event:ticketing-status` | String | 티켓팅 상태 (open/sold_out/closed) |
+| `event:ticketing-status` | String | 이벤트 ID가 없는 레거시 요청용 전역 티켓팅 상태 (open/sold_out/closed). 이벤트별 요청은 `event:ticketing-status:<eventId>:<sessionKey>` 사용 |
 | `event:schedule` | Hash | 예약 오픈 시각과 자동 마감 설정 |
 
 **주요 함수:**
 - `enter()`: 대기열 진입. 티켓팅 상태에 따라 eligible 또는 standby 배정. 멤버십 레벨당 score -50 우선순위 부여. 중복 진입 방지. 이미 admitted인데 토큰이 없는 경우(결제 확정으로 소모 또는 만료) admitted에서 제거 후 대기열 맨 뒤로 재배정
+- `enterStandby()`: 매진 후 사용자를 일반 예매 상태에서 회차별 standby 취소표 대기열로 이동시키고 MariaDB 동기화
 - `admitBatch()`: eligible 상위 100명을 admitted로 이동 + JWT Admission Token 발급
 - `scheduleTicketing()`: 자동 오픈/마감 타이머 설정
 - `restoreTicketingSchedule()`: Redis 초기화·복구 후 저장된 오픈 시각을 기준으로 스케줄과 메모리 타이머를 재등록. 이미 오픈 시각이 지났으면 즉시 `open` 상태로 복구
@@ -293,8 +302,8 @@ Redis Hash 기반 좌석 상태 머신.
 **주요 함수:**
 - `holdSeat()`: Admission Token 검증 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작. 토큰은 무효화하지 않음(좌석 변경 허용)
 - `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분)
-- `cancelSeat()`: available 복구 + B팀 재판매 트리거 (POST to `192.168.0.191:8000`)
-- `releaseSeat()`: available 복구 + standby 자동 배정
+- `cancelSeat()`: available 복구 + 다음 멤버십 standby 사용자에게 취소표 Secret Link 자동 발급 + B팀 재판매 트리거
+- `releaseSeat()`: 일반 좌석은 standby 자동 배정, 취소표 Secret Link 선점 좌석은 available 복구 후 할당 만료 로직으로 다음 사용자 재배정
 - `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 일괄 삭제
 - `getAllSeats()`: Redis SCAN으로 좌석을 조회하며 회차 컨텍스트가 있으면 해당 회차만 반환
 
@@ -462,6 +471,10 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 - `expireAllOverdue()`: 만료 시간 지난 할당 일괄 EXPIRED 처리
 - `getActiveAllocation()`: 사용자의 활성 할당 조회
 - `getAllocationHistory()`: 이벤트별 전체 할당 내역
+- `allocateNextForSeat()`: 비회원 standby를 건너뛰고 다음 멤버십 사용자에게 5분 Secret Link 발급
+- `expireAllocation()`: 활성 할당을 만료시키고 같은 좌석을 다음 대기자에게 재배정
+
+할당에는 `event_id`, `session_date`, `session_time`을 함께 저장해 회차별 Admission Token과 좌석을 분리한다. 판매 좌석 취소(`POST /seats/cancel`)가 성공하면 다음 멤버십 대기자에게 자동 할당하며, 취소표 예매 확정(`POST /seats/confirm`) 시 할당을 `RESPONDED`로 변경한다.
 
 ---
 
@@ -483,7 +496,7 @@ MariaDB 테이블 생성 및 reservations CRUD.
 | `reservations` | 예약 확정 기록 |
 
 `events.sessions`에는 공연 회차 목록을 JSON으로 저장하고, `seats`, `waiting_queue`, `reservations`에는 `session_date`·`session_time`을 저장해 날짜가 다른 회차의 좌석·대기열·예약 기록을 분리한다.
-기존 운영 테이블에 이 컬럼을 추가하는 `ALTER TABLE`은 API가 자동 실행하지 않으므로, 운영 DB 스키마에 필요한 컬럼을 사전에 직접 준비해야 한다.
+`initTable()`은 `CREATE TABLE IF NOT EXISTS` 이후 `addColumns()`로 이 컬럼들에 대해 `ALTER TABLE ... ADD COLUMN`을 실행하므로, 회차 기능 추가 이전부터 존재하던 운영 테이블에도 서버 재시작 시 자동으로 반영된다 (이미 컬럼이 있으면 에러를 무시하고 넘어간다).
 
 reservations CRUD 함수: `saveReservation()`, `getReservations()`, `getReservationBySeat()`
 

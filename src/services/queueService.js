@@ -11,6 +11,7 @@ const STANDBY_KEY = 'queue:standby';
 const TOTAL_SEATS_KEY = 'event:total-seats';
 const TICKETING_STATUS_KEY = 'event:ticketing-status';
 const HOLD_DURATION_KEY = 'event:hold-duration';
+const EVENT_LIST_KEY = 'events:list';
 
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 100;
 
@@ -38,7 +39,40 @@ async function enter(userId, context = {}) {
   const eventInfo = await redis.hgetall('event:info');
   const currentEventId = context.eventId || eventInfo?.eventId || '';
   const keys = queueKeys(requestedContext ? { ...context, eventId: currentEventId } : {});
-  const ticketingStatus = (await redis.get(keys.statusKey)) || (requestedContext ? await redis.get(TICKETING_STATUS_KEY) : null);
+
+  // 이벤트 컨텍스트가 있는 요청은 해당 이벤트 카드의 오픈 시간만 사용한다.
+  // 전역 event:schedule/event:ticketing-status를 fallback으로 사용하면
+  // 윤하의 오픈 예약이 악뮤처럼 다른 이벤트에도 적용될 수 있다.
+  if (requestedContext && currentEventId) {
+    const eventCard = await redis.hget(EVENT_LIST_KEY, currentEventId);
+    if (eventCard) {
+      try {
+        const parsedCard = JSON.parse(eventCard);
+        const openTime = parsedCard.ticketOpenAt ? new Date(parsedCard.ticketOpenAt).getTime() : NaN;
+        if (Number.isFinite(openTime) && openTime > Date.now()) {
+          return {
+            status: 'closed',
+            code: 'ticketing_not_open',
+            openAt: parsedCard.ticketOpenAt,
+            message: `예매 오픈 전입니다. ${parsedCard.ticketOpenAt}부터 예매할 수 있습니다.`,
+          };
+        }
+        const closeTime = parsedCard.ticketCloseAt ? new Date(parsedCard.ticketCloseAt).getTime() : NaN;
+        if (Number.isFinite(closeTime) && closeTime <= Date.now()) {
+          return {
+            status: 'closed',
+            code: 'ticketing_closed',
+            closeAt: parsedCard.ticketCloseAt,
+            message: `예매가 마감되었습니다. (${parsedCard.ticketCloseAt} 마감)`,
+          };
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 명시적인 이벤트 요청은 이벤트 전용 상태만 확인한다.
+  // 전역 상태는 eventId 없는 레거시 요청에서만 사용한다.
+  const ticketingStatus = (await redis.get(keys.statusKey)) || (!requestedContext ? await redis.get(TICKETING_STATUS_KEY) : null);
   if (ticketingStatus === 'closed') {
     return { status: 'closed', message: '현재 티켓팅이 마감되었습니다. 더 이상 대기열에 진입할 수 없습니다.' };
   }
@@ -106,7 +140,7 @@ async function enter(userId, context = {}) {
     }
   } catch (_) {}
 
-  const currentStatus = (await redis.get(keys.statusKey)) || (requestedContext ? await redis.get(TICKETING_STATUS_KEY) : null);
+  const currentStatus = (await redis.get(keys.statusKey)) || (!requestedContext ? await redis.get(TICKETING_STATUS_KEY) : null);
 
   if (currentStatus === 'sold_out' || ticket > totalSeats) {
     await redis.zadd(keys.standbyKey, ticket, userId);
@@ -145,6 +179,74 @@ async function enter(userId, context = {}) {
       message: `대기열에 등록되었습니다. (${position + 1}번째)`,
     };
   }
+}
+
+async function enterStandby(userId, context = {}) {
+  const { revokeToken } = require('./tokenService');
+  const keys = queueKeys(context);
+  const currentStatus = await redis.get(keys.statusKey);
+
+  if (currentStatus && currentStatus !== 'sold_out') {
+    return { status: 'closed', code: 'not_sold_out', message: '현재 취소표 대기 접수 상태가 아닙니다.' };
+  }
+  if (!currentStatus && keys.eventId) {
+    const seatService = require('./seatService');
+    const counts = await seatService.getAvailableCount(keys.eventId, {
+      sessionDate: keys.sessionDate,
+      sessionTime: keys.sessionTime,
+    });
+    if (counts.available > 0 || counts.held > 0) {
+      return { status: 'closed', code: 'not_sold_out', message: '아직 취소표 대기 접수 상태가 아닙니다.' };
+    }
+  }
+
+  const existingStandby = await redis.zscore(keys.standbyKey, userId);
+  if (existingStandby !== null) {
+    const rank = await redis.zrank(keys.standbyKey, userId);
+    const totalStandby = await redis.zcard(keys.standbyKey);
+    return {
+      status: 'waiting',
+      type: 'standby',
+      standbyPosition: rank + 1,
+      totalStandby,
+      ticket: parseInt(existingStandby, 10),
+      message: '이미 취소표 대기열에 등록되어 있습니다.',
+    };
+  }
+
+  // 일반 예매에서 입장 허용된 사용자가 매진 후 취소표를 신청할 수 있도록
+  // 기존 일반 대기열 상태를 정리하고 standby 전용 순번을 발급한다.
+  await redis.zrem(keys.waitingKey, userId);
+  await redis.srem(keys.admittedKey, userId);
+  await revokeToken(userId, keys);
+
+  const ticket = await redis.incr(keys.counterKey);
+  await redis.zadd(keys.standbyKey, ticket, userId);
+  const rank = await redis.zrank(keys.standbyKey, userId);
+  const totalStandby = await redis.zcard(keys.standbyKey);
+
+  await syncToMariaDB(
+    `UPDATE waiting_queue SET status = 'CANCELLED', updated_at = NOW()
+     WHERE user_id = ? AND event_id = ? AND session_date = ? AND session_time = ?
+     AND queue_type = 'eligible' AND status IN ('WAITING', 'ADMITTED')`,
+    [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+    `queue:move-to-standby ${userId}`,
+  );
+  await syncToMariaDB(
+    `INSERT INTO waiting_queue (user_id, event_id, session_date, session_time, queue_type, queue_index, status)
+     VALUES (?, ?, ?, ?, 'standby', ?, 'WAITING')`,
+    [userId, keys.eventId, keys.sessionDate, keys.sessionTime, ticket],
+    `queue:enter:standby ${userId}`,
+  );
+
+  return {
+    status: 'waiting',
+    type: 'standby',
+    standbyPosition: rank + 1,
+    totalStandby,
+    ticket,
+    message: `취소표 대기 ${rank + 1}번째로 등록되었습니다.`,
+  };
 }
 
 async function getPosition(userId, context = {}) {
@@ -225,6 +327,21 @@ async function getNextStandby(context = {}) {
     return { userId: null, message: '취소표 대기자가 없습니다.' };
   }
   return { userId: users[0], message: `다음 대기자: ${users[0]}` };
+}
+
+async function skipStandby(userId, context = {}) {
+  const keys = queueKeys(context);
+  const removed = await redis.zrem(keys.standbyKey, userId);
+  if (removed > 0) {
+    await syncToMariaDB(
+      `UPDATE waiting_queue SET status = 'SKIPPED', updated_at = NOW()
+       WHERE user_id = ? AND event_id = ? AND session_date = ? AND session_time = ?
+       AND queue_type = 'standby' AND status = 'WAITING'`,
+      [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+      `queue:skip-standby ${userId}`,
+    );
+  }
+  return { success: removed > 0, userId, removed };
 }
 
 async function promoteStandby(userId, context = {}) {
@@ -579,4 +696,4 @@ async function recoverQueueFromMariaDB(eventId, context = {}) {
   };
 }
 
-module.exports = { setTotalSeats, enter, getPosition, admitBatch, getNextStandby, promoteStandby, getStats, isUserAdmitted, clearQueuesForEvent, queueKeys, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, restoreTicketingSchedule, cancelSchedule, getSchedule, scheduleStandbyClose, scheduleCloseTime, cancelCloseSchedule, recoverQueueFromMariaDB };
+module.exports = { setTotalSeats, enter, enterStandby, getPosition, admitBatch, getNextStandby, skipStandby, promoteStandby, getStats, isUserAdmitted, clearQueuesForEvent, queueKeys, openTicketing, closeTicketing, getTicketingStatus, setHoldDuration, getHoldDuration, scheduleTicketing, restoreTicketingSchedule, cancelSchedule, getSchedule, scheduleStandbyClose, scheduleCloseTime, cancelCloseSchedule, recoverQueueFromMariaDB };
