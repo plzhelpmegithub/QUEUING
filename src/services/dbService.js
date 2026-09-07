@@ -185,6 +185,7 @@ async function initTable() {
     "status VARCHAR(20) NOT NULL DEFAULT 'WAITING'",
     "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
     "updated_at DATETIME NULL",
+    "membership_at_join TINYINT(1) NOT NULL DEFAULT 0",
   ]);
 
   await pool.query(`
