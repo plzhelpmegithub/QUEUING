@@ -6,125 +6,460 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# AWS 및 LocalStack 설정 (SQS 전송용)
-ENDPOINT = os.getenv("AWS_ENDPOINT_URL", "http://127.0.0.1:4566")
-REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2")
 
-sqs = boto3.client(
-    'sqs', 
-    endpoint_url=ENDPOINT, 
-    region_name=REGION, 
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "test"), 
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "test")
+# ============================================================
+# AWS / LocalStack 설정
+# ============================================================
+
+ENDPOINT = os.getenv(
+    "AWS_ENDPOINT_URL",
+    "http://127.0.0.1:4566"
 )
 
-QUEUE_NAME = 'resale-queue' # KEDA, Terraform과 통일된 큐 이름
+REGION = os.getenv(
+    "AWS_DEFAULT_REGION",
+    "ap-northeast-2"
+)
+
+sqs = boto3.client(
+    "sqs",
+    endpoint_url=ENDPOINT,
+    region_name=REGION,
+    aws_access_key_id=os.getenv(
+        "AWS_ACCESS_KEY_ID",
+        "test"
+    ),
+    aws_secret_access_key=os.getenv(
+        "AWS_SECRET_ACCESS_KEY",
+        "test"
+    )
+)
+
+
+# ============================================================
+# SQS Queue
+# ============================================================
+
+QUEUE_NAME = "resale-queue"
+
+
+# ============================================================
+# MySQL 연결
+# ============================================================
 
 def get_db_connection():
-    """MySQL 데이터베이스 연결 생성"""
     return pymysql.connect(
         host=os.getenv("MYSQL_HOST", "localhost"),
+        port=int(os.getenv("MYSQL_PORT", "3306")),
         user=os.getenv("MYSQL_USER", "root"),
-        password=os.getenv("MYSQL_PASSWORD", "password"),
-        database=os.getenv("MYSQL_DB", "queuing_db"),
-        cursorclass=pymysql.cursors.DictCursor
+        password=os.getenv("MYSQL_PASSWORD", "1"),
+        database=os.getenv("MYSQL_DATABASE", "queuing_db"),
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False
     )
 
-def check_membership(connection, user_id):
-    """MySQL memberships 테이블을 조회하여 사용자의 유효한 멤버십 가입 여부 확인"""
-    try:
-        with connection.cursor() as cursor:
-            sql = """
-                SELECT m.membership_id 
-                FROM memberships m 
-                WHERE m.user_id = %s AND m.expires_at > NOW()
+
+# ============================================================
+# 대기열 사용자 조회
+# ============================================================
+
+def get_queue_user(connection, target_queue_id):
+    """
+    waiting_queue에서 특정 대기열 사용자를 조회한다.
+
+    중요 정책
+    ------------------------------------------------------------
+    1. 현재 memberships 테이블을 조회하지 않는다.
+    2. 대기열 진입 당시의 membership_at_join 값을 사용한다.
+    3. membership_at_join = 1인 경우 취소표 대상이다.
+    4. membership_at_join = 0인 경우 대상에서 제외한다.
+    5. FOR UPDATE를 사용하여 해당 waiting_queue 행을 잠근다.
+    """
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
             """
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            
-            if result:
-                return True
-        return False
-    except Exception as e:
-        print(f"⚠️ MySQL 멤버십 조회 중 오류 발생 (기본 비회원 처리): {e}")
-        return False
-
-def process_next_queue(target_queue_id):
-    """MySQL waiting_queue 대기열 순번 조회 -> memberships 테이블 검증 -> SQS 전송"""
-    connection = None
-    try:
-        connection = get_db_connection()
-        
-        with connection.cursor() as cursor:
-            # 1. waiting_queue 테이블과 users 테이블을 조인하여 사용자 정보 조회
-            cursor.execute("""
-                SELECT w.queue_id, w.user_id, w.event_id, w.queue_status, u.email 
-                FROM waiting_queue w 
-                JOIN users u ON w.user_id = u.user_id 
-                WHERE w.queue_id = %s
-            """, (target_queue_id,))
-            
-            item = cursor.fetchone()
-
-        if not item:
-            print(f"❌ {target_queue_id}번 대기열(waiting_queue)에 사용자가 없습니다.")
-            return
-
-        user_id = item['user_id']
-        email = item['email']
-        queue_status = item['queue_status']
-
-        if queue_status == 'SENT':
-            print(f"⚠️ 이미 처리된 사용자입니다: {user_id} (대기열 ID: {target_queue_id})")
-            return
-
-        # 2. 🔥 [핵심 비즈니스 로직] MySQL memberships 테이블을 통해 멤버십 회원인지 검증
-        print(f"🔍 [멤버십 검증 중] 사용자 ID: {user_id} 확인 중...")
-        is_member = check_membership(connection, user_id)
-
-        with connection.cursor() as cursor:
-            if not is_member:
-                print(f"🚫 [멤버십 검증 탈락] {user_id}님은 일반 대기자입니다. (예매 링크 발급 대상 아님)")
-                # 일반 대기자이므로 waiting_queue의 상태를 'SKIPPED'로 업데이트
-                update_sql = "UPDATE waiting_queue SET queue_status = 'SKIPPED' WHERE queue_id = %s"
-                cursor.execute(update_sql, (target_queue_id,))
-                connection.commit()
-                return
-
-        # 3. SQS 큐 URL 가져오기 (없으면 생성)
-        try:
-            url = sqs.get_queue_url(QueueName=QUEUE_NAME)['QueueUrl']
-        except sqs.exceptions.ClientError:
-            created = sqs.create_queue(QueueName=QUEUE_NAME)
-            url = created['QueueUrl']
-
-        # 4. SQS로 보낼 메시지 구성 (멤버십 통과한 회원만 전송)
-        message_body = {
-            'allocation_id': f'alloc-{user_id}-{target_queue_id}',
-            'user_id': user_id,
-            'email': email,
-            'event_id': item['event_id']
-        }
-
-        sqs.send_message(
-            QueueUrl=url,
-            MessageBody=json.dumps(message_body)
+            SELECT
+                w.queue_id,
+                w.user_id,
+                w.event_id,
+                w.status,
+                w.membership_at_join,
+                u.email
+            FROM waiting_queue w
+            JOIN users u
+              ON w.user_id = u.user_id
+            WHERE w.queue_id = %s
+            FOR UPDATE
+            """,
+            (target_queue_id,)
         )
 
-        # 5. waiting_queue 테이블의 상태를 'SENT'로 업데이트
-        with connection.cursor() as cursor:
-            update_sql = "UPDATE waiting_queue SET queue_status = 'SENT' WHERE queue_id = %s"
-            cursor.execute(update_sql, (target_queue_id,))
+        return cursor.fetchone()
+
+
+# ============================================================
+# SQS Queue URL 조회 / 생성
+# ============================================================
+
+def get_queue_url():
+    try:
+
+        response = sqs.get_queue_url(
+            QueueName=QUEUE_NAME
+        )
+
+        return response["QueueUrl"]
+
+    except sqs.exceptions.QueueDoesNotExist:
+
+        response = sqs.create_queue(
+            QueueName=QUEUE_NAME
+        )
+
+        return response["QueueUrl"]
+
+
+# ============================================================
+# 대기열 → SQS 처리
+# ============================================================
+
+def process_next_queue(target_queue_id):
+
+    connection = None
+
+    try:
+
+        # ----------------------------------------------------
+        # 1. MySQL 연결
+        # ----------------------------------------------------
+
+        connection = get_db_connection()
+
+
+        # ----------------------------------------------------
+        # 2. waiting_queue 사용자 조회
+        # ----------------------------------------------------
+
+        item = get_queue_user(
+            connection,
+            target_queue_id
+        )
+
+        if not item:
+
+            print(
+                f"❌ {target_queue_id}번 대기열 "
+                f"(waiting_queue)에 사용자가 없습니다."
+            )
+
+            connection.rollback()
+            return
+
+
+        user_id = item["user_id"]
+        email = item["email"]
+        event_id = item["event_id"]
+
+        # A파트 실제 컬럼명
+        status = item["status"]
+
+        # 대기열 진입 당시 저장된 멤버십 여부
+        membership_at_join = item["membership_at_join"]
+
+
+        print(
+            f"🔍 대기열 사용자 확인: "
+            f"user_id={user_id}, "
+            f"queue_id={target_queue_id}, "
+            f"event_id={event_id}"
+        )
+
+        print(
+            f"🔍 현재 대기열 상태: "
+            f"{status}"
+        )
+
+        print(
+            f"🔍 대기열 진입 당시 멤버십 여부: "
+            f"{membership_at_join}"
+        )
+
+
+        # ----------------------------------------------------
+        # 3. 이미 처리된 사용자 확인
+        # ----------------------------------------------------
+
+        if status == "SENT":
+
+            print(
+                f"⚠️ 이미 처리된 사용자입니다: "
+                f"{user_id} "
+                f"(대기열 ID: {target_queue_id})"
+            )
+
+            connection.rollback()
+            return
+
+
+        # ----------------------------------------------------
+        # 4. 이미 제외된 사용자 확인
+        # ----------------------------------------------------
+
+        if status == "SKIPPED":
+
+            print(
+                f"⚠️ 이미 취소표 대상에서 제외된 사용자입니다: "
+                f"{user_id} "
+                f"(대기열 ID: {target_queue_id})"
+            )
+
+            connection.rollback()
+            return
+
+
+        # ----------------------------------------------------
+        # 5. 대기열 진입 당시 멤버십 여부 확인
+        # ----------------------------------------------------
+        #
+        # 현재 memberships 테이블을 조회하지 않는다.
+        #
+        # membership_at_join
+        # 1 = 대기열 진입 당시 회원
+        # 0 = 대기열 진입 당시 비회원
+        #
+        # ----------------------------------------------------
+
+        if membership_at_join != 1:
+
+            print(
+                f"🚫 [멤버십 대상 제외] "
+                f"{user_id}님은 "
+                f"대기열 진입 당시 비회원입니다."
+            )
+
+            print(
+                f"   → membership_at_join = "
+                f"{membership_at_join}"
+            )
+
+
+            # ------------------------------------------------
+            # 비회원 → 취소표 대상 제외
+            # ------------------------------------------------
+
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    UPDATE waiting_queue
+                    SET status = 'SKIPPED',
+                        updated_at = NOW()
+                    WHERE queue_id = %s
+                      AND status = 'WAITING'
+                    """,
+                    (target_queue_id,)
+                )
+
+                if cursor.rowcount != 1:
+
+                    raise Exception(
+                        "waiting_queue 상태 변경에 실패했습니다. "
+                        "이미 처리된 대기열일 수 있습니다."
+                    )
+
+
             connection.commit()
 
-        print(f"🎉 [멤버십 인증 성공!] 대기열 ID {target_queue_id} 사용자 '{user_id}' ({email}) ➔ SQS 큐 전송 완료!")
+
+            print(
+                f"⏭️ 대기열 ID {target_queue_id} "
+                f"→ SKIPPED 처리 완료"
+            )
+
+            return
+
+
+        # ----------------------------------------------------
+        # 6. 멤버십 대상자 확인
+        # ----------------------------------------------------
+
+        print(
+            f"✅ [멤버십 대상 확인] "
+            f"{user_id}님은 "
+            f"대기열 진입 당시 멤버십 회원입니다."
+        )
+
+
+        # ----------------------------------------------------
+        # 7. SQS Queue URL 조회
+        # ----------------------------------------------------
+
+        url = get_queue_url()
+
+        print(
+            f"📨 SQS Queue URL 확인 완료: "
+            f"{url}"
+        )
+
+
+        # ----------------------------------------------------
+        # 8. SQS 메시지 생성
+        # ----------------------------------------------------
+
+        message_body = {
+
+            "allocation_id":
+                f"alloc-{user_id}-{target_queue_id}",
+
+            "user_id":
+                user_id,
+
+            "email":
+                email,
+
+            "event_id":
+                event_id,
+
+            "queue_id":
+                target_queue_id,
+
+            "membership_at_join":
+                membership_at_join
+        }
+
+
+        # ----------------------------------------------------
+        # 9. SQS 메시지 전송
+        # ----------------------------------------------------
+
+        response = sqs.send_message(
+            QueueUrl=url,
+            MessageBody=json.dumps(
+                message_body,
+                ensure_ascii=False
+            )
+        )
+
+        print(
+            f"📨 SQS 메시지 전송 완료 "
+            f"(MessageId: {response['MessageId']})"
+        )
+
+
+        # ----------------------------------------------------
+        # 10. waiting_queue 상태 변경
+        # ----------------------------------------------------
+        #
+        # SQS 전송 성공 후
+        # WAITING → SENT
+        #
+        # ----------------------------------------------------
+
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                """
+                UPDATE waiting_queue
+                SET status = 'SENT',
+                    updated_at = NOW()
+                WHERE queue_id = %s
+                  AND status = 'WAITING'
+                """,
+                (target_queue_id,)
+            )
+
+            if cursor.rowcount != 1:
+
+                raise Exception(
+                    "waiting_queue 상태 변경에 실패했습니다. "
+                    "이미 처리된 대기열일 수 있습니다."
+                )
+
+
+        # ----------------------------------------------------
+        # 11. MySQL 트랜잭션 커밋
+        # ----------------------------------------------------
+
+        connection.commit()
+
+
+        # ----------------------------------------------------
+        # 12. 완료 로그
+        # ----------------------------------------------------
+
+        print(
+            f"🎉 [취소표 대상 확정] "
+            f"대기열 ID {target_queue_id}"
+        )
+
+        print(
+            f"   사용자: {user_id}"
+        )
+
+        print(
+            f"   이메일: {email}"
+        )
+
+        print(
+            f"   이벤트: {event_id}"
+        )
+
+        print(
+            f"   membership_at_join: "
+            f"{membership_at_join}"
+        )
+
+        print(
+            "   ➜ resale-queue 전송 완료!"
+        )
+
 
     except Exception as e:
-        print(f"❌ 프로세스 실행 중 에러 발생: {e}")
+
+        if connection:
+
+            connection.rollback()
+
+        print(
+            f"❌ 프로세스 실행 중 에러 발생: {e}"
+        )
+
+
     finally:
+
         if connection and connection.open:
+
             connection.close()
 
+
+# ============================================================
+# 프로그램 실행
+# ============================================================
+
 if __name__ == "__main__":
-    target = input("처리할 대기열 순번(queue_id)을 입력하세요 (기본 1): ") or "1"
-    process_next_queue(int(target))
+
+    target = input(
+        "처리할 대기열 순번(queue_id)을 입력하세요 "
+        "(기본 1): "
+    ) or "1"
+
+
+    try:
+
+        target_queue_id = int(target)
+
+    except ValueError:
+
+        print(
+            "❌ queue_id는 숫자로 입력해야 합니다."
+        )
+
+        raise SystemExit(1)
+
+
+    process_next_queue(
+        target_queue_id
+    )
