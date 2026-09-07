@@ -16,13 +16,16 @@ repositories {
 }
 
 dependencies {
-// 모니터링 및 헬스체크용 Actuator & Prometheus 의존성 추가
-    implementation 'org.springframework.boot:spring-boot-starter-actuator'
-    implementation 'io.micrometer:micrometer-registry-prometheus'
+    // 모니터링 및 웹, 레디스, AOP 의존성
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+    
+    // 테스트 의존성
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
-}
+} 
 
 test {
     useJUnitPlatform()
