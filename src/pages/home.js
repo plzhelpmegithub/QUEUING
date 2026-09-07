@@ -361,22 +361,46 @@ export const homePage = {
 
     // ---- API에서 이벤트 불러오기 (히어로 + 캘린더 + 홈의 세 공연 섹션이 전부 이걸 씀) ----
     let latestRealEvents = [];
-    fetch('/events')
-      .then((res) => res.json())
-      .then((data) => {
-        const events = data.events || [];
-        latestRealEvents = events;
-        setupHero(events);
-        if (calendarApi) calendarApi.setEvents(buildCalendarEvents(latestRealEvents));
+    let eventPollTimer = null;
 
-        events.forEach((event) => interestCounts.set(event.eventId, 0));
-        renderEventSections();
-        refreshInterestCounts(events);
-      })
-      .catch(() => {
-        hotGrid.innerHTML = '<p style="color:#e31b23">공연 목록을 불러오지 못했습니다.</p>';
-        infoEl.innerHTML = `<p style="color:#e31b23;">공연 정보를 불러오지 못했습니다.</p>`;
-      });
+    function loadEvents(initial = false) {
+      fetch('/events')
+        .then((res) => res.json())
+        .then((data) => {
+          const events = data.events || [];
+
+          if (initial) {
+            latestRealEvents = events;
+            setupHero(events);
+            if (calendarApi) calendarApi.setEvents(buildCalendarEvents(latestRealEvents));
+            events.forEach((event) => interestCounts.set(event.eventId, 0));
+            renderEventSections();
+            refreshInterestCounts(events);
+            return;
+          }
+
+          const statusChanged = events.some((e) => {
+            const prev = latestRealEvents.find((p) => p.eventId === e.eventId);
+            return !prev || prev.status !== e.status;
+          });
+          if (!statusChanged) return;
+
+          latestRealEvents = events;
+          slides = slides.map((s) => events.find((e) => e.eventId === s.eventId) || s);
+          paintNow();
+          if (calendarApi) calendarApi.setEvents(buildCalendarEvents(latestRealEvents));
+          renderEventSections();
+        })
+        .catch(() => {
+          if (initial) {
+            hotGrid.innerHTML = '<p style="color:#e31b23">공연 목록을 불러오지 못했습니다.</p>';
+            infoEl.innerHTML = `<p style="color:#e31b23;">공연 정보를 불러오지 못했습니다.</p>`;
+          }
+        });
+    }
+
+    loadEvents(true);
+    eventPollTimer = setInterval(() => loadEvents(false), 10000);
 
     // 하트를 다른 화면(마이페이지 등)에서 눌러도, 또는 이 화면에서 눌러도
     // 하트 표시와 캘린더가 같이 갱신되도록 store 변경을 구독
@@ -393,6 +417,7 @@ export const homePage = {
       if (swapTimer1) clearTimeout(swapTimer1);
       if (swapTimer2) clearTimeout(swapTimer2);
       if (interestRefreshTimer) clearTimeout(interestRefreshTimer);
+      if (eventPollTimer) clearInterval(eventPollTimer);
     };
   },
 };

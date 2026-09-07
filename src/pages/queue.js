@@ -4,7 +4,7 @@
 import { formatNumber } from '../utils/format.js';
 import { mountRocketProgress } from '../components/rocketProgress.js';
 import { navigate } from '../router.js';
-import { getSelectedSession, getState, setAdmissionToken, setSelectedSession } from '../state/store.js';
+import { getSelectedSession, getState, hasMembership, setAdmissionToken, setSelectedSession } from '../state/store.js';
 
 // How often we self-trigger /queue/admit — in a real deployment an operator/cron
 // would call this periodically; this frontend has no such automation yet, so it
@@ -99,6 +99,7 @@ export const queuePage = {
         let redirectTimer = null;
         let settled = false; // guards against navigating twice if both polls resolve near-simultaneously
         let recovering = false; // guards against firing multiple concurrent re-entries below
+        let standbyPollTick = 0;
 
         function clearTimers() {
           if (admitPollTimer) clearInterval(admitPollTimer);
@@ -174,6 +175,20 @@ export const queuePage = {
                 return;
               }
               renderWaitingState(pos);
+              // standby 대기 중 조기 마감 감지 — 10초마다 enter로 마감 여부 확인
+              if (pos.type === 'standby') {
+                standbyPollTick++;
+                if (standbyPollTick % 10 === 0) {
+                  fetch('/queue/enter', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, ...queueContext }),
+                  })
+                    .then((r) => r.json())
+                    .then((res) => { if (!settled && res.status === 'closed') showClosedUI(); })
+                    .catch(() => {});
+                }
+              }
             })
             .catch(() => {});
         }
@@ -205,11 +220,77 @@ export const queuePage = {
           admitPollTimer = setInterval(tryAdmit, ADMIT_POLL_MS);
         }
 
+        function showClosedUI() {
+          if (settled) return;
+          settled = true;
+          clearTimers();
+          statusEl.textContent = '마감';
+
+          const isMember = hasMembership();
+          const TOTAL_SEC = 30;
+          let remaining = TOTAL_SEC;
+          let countdownTimer = null;
+
+          function fmt(s) {
+            return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+          }
+
+          const overlay = document.createElement('div');
+          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);z-index:9999;display:flex;align-items:center;justify-content:center;';
+
+          function renderOverlay() {
+            const timeStr = fmt(remaining);
+            const memberContent = isMember
+              ? `<p style="font-size:15px;font-weight:700;margin-bottom:8px;color:var(--color-text);">취소표 발생 시 시크릿 링크로 안내해드리겠습니다.</p>
+                 <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:20px;">멤버십 회원이시므로 취소표 발생 시 등록하신 이메일로 시크릿 링크가 발송됩니다.</p>
+                 <button class="btn btn-outline" data-go-home>메인 페이지로 돌아가기</button>
+                 <div style="font-size:12px;color:var(--color-text-secondary);margin-top:16px;"><span class="num-mono">${timeStr}</span> 후 메인 페이지로 이동합니다</div>`
+              : `<p style="font-size:15px;font-weight:700;margin-bottom:8px;color:var(--color-text);">멤버십을 가입하시면 취소표가 나오면 시크릿 링크로 안내해드립니다.</p>
+                 <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:16px;">멤버십 가입 후 취소표 발생 시 이메일로 시크릿 링크를 받으실 수 있습니다.</p>
+                 <p style="font-size:14px;font-weight:600;margin-bottom:18px;color:var(--color-text);">멤버십을 가입하시겠습니까?</p>
+                 <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:16px;">
+                   <button class="btn btn-primary" data-join-membership>멤버십 가입하기</button>
+                   <button class="btn btn-outline" data-go-home>메인 페이지로 돌아가기</button>
+                 </div>
+                 <div style="font-size:12px;color:var(--color-text-secondary);"><span class="num-mono">${timeStr}</span> 후 메인 페이지로 이동합니다</div>`;
+
+            overlay.innerHTML = `
+              <div style="background:var(--color-bg);border-radius:16px;padding:40px 36px;max-width:420px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                <div style="font-size:36px;margin-bottom:16px;">🔒</div>
+                <h2 style="font-size:20px;font-weight:900;margin-bottom:20px;color:var(--color-text);">마감되었습니다</h2>
+                ${memberContent}
+              </div>`;
+            overlay.querySelector('[data-go-home]')?.addEventListener('click', () => {
+              clearInterval(countdownTimer);
+              if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+              navigate('');
+            });
+            overlay.querySelector('[data-join-membership]')?.addEventListener('click', () => {
+              clearInterval(countdownTimer);
+              if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+              navigate('membership');
+            });
+          }
+
+          renderOverlay();
+          document.body.appendChild(overlay);
+
+          countdownTimer = setInterval(() => {
+            remaining--;
+            if (remaining <= 0) {
+              clearInterval(countdownTimer);
+              if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+              navigate('');
+              return;
+            }
+            renderOverlay();
+          }, 1000);
+        }
+
         function handleEnterResult(enterResult) {
           if (settled) return;
           if (enterResult.status === 'closed') {
-            statusEl.textContent = '마감';
-            enterBox.innerHTML = `<div class="notice-box"><p>${enterResult.message || '현재 티켓팅이 마감되었습니다.'}</p></div>`;
+            showClosedUI();
             return;
           }
           if (enterResult.status === 'error') {

@@ -1,3 +1,48 @@
+## [2026-09-07 17:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/home.js]**: 공연 상태 변경(마감 등)이 메인 페이지에 실시간 반영되지 않던 문제 수정.
+  - 기존 `/events` 단일 fetch를 `loadEvents()` 함수로 분리.
+  - `setInterval(loadEvents, 10000)`으로 10초마다 이벤트 상태를 재조회.
+  - 폴링 시 이전 상태 대비 `status` 변경이 있을 경우에만 히어로(`paintNow()`), 카드 섹션(`renderEventSections()`), 캘린더를 업데이트 — LP 슬라이드 위치(`idx`)는 유지.
+  - 페이지 cleanup 시 `eventPollTimer` clearInterval 처리.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시뮬레이션에서 조기 마감 후 메인 페이지의 "예매중" 뱃지와 하단 카드가 "마감"으로 바뀌지 않음.
+- **원인(Cause):** `/events` API를 최초 1회만 호출하고 이후 갱신 로직이 없어 서버 상태 변경이 브라우저에 미반영.
+- **해결(Solution):** 10초 폴링 추가. 상태 변경 감지 시에만 UI를 업데이트해 불필요한 DOM 재렌더링 최소화.
+
+## [2026-09-07 17:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: 마감 안내를 인라인 박스 방식에서 전체 화면 오버레이 모달 방식으로 변경.
+  - 기존 `enterBox.innerHTML` 렌더링 방식 제거.
+  - `document.body`에 `position:fixed;inset:0` 딤드 레이어(`rgba(0,0,0,0.65)` + `backdrop-filter:blur(3px)`) 추가 → 배경 클릭 불가.
+  - 중앙에 '🔒 마감되었습니다' 제목의 흰색 모달 박스 표시. 멤버십 여부에 따라 안내 문구·버튼 조건부 렌더링은 동일하게 유지.
+  - 카운트다운 시간 300초(5분) → 30초로 변경.
+
+## [2026-09-07 16:17] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: standby 대기 중 조기 마감 시 안내 박스가 표시되지 않던 문제 수정.
+  - 마감 UI 로직을 `showClosedUI()` 독립 함수로 분리.
+  - `pollPosition()` 내 standby 응답 시 10초마다(`standbyPollTick % 10 === 0`) `POST /queue/enter`를 호출하여 마감 여부 확인. 서버가 `closed`를 반환하면 `showClosedUI()` 호출.
+  - `handleEnterResult()`의 `closed` 처리도 `showClosedUI()` 위임으로 통일.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시뮬레이션 조기 마감 후 취소표 대기열 1번째 화면에서 마감 안내 박스가 미표시.
+- **원인(Cause):** 이미 standby 대기번호를 받은 사용자는 `pollPosition()` 루프만 돌고 `enterQueue()`를 재호출하지 않아 `closed` 응답을 받을 경로가 없었음.
+- **해결(Solution):** standby 상태에서 10초마다 `POST /queue/enter`를 호출. 서버 `enter()` 함수는 ticketingStatus가 `closed`이면 standby 여부 확인 전에 `{ status: 'closed' }`를 반환하므로, 응답 수신 즉시 `showClosedUI()` 트리거.
+
+## [2026-09-07 15:55] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: 티켓팅 마감(`status: 'closed'`) 시 멤버십 여부에 따라 다른 안내 박스를 표시하도록 `handleEnterResult` 수정.
+  - **비멤버십**: "멤버십을 가입하시면 취소표가 나오면 시크릿 링크로 안내해드립니다. 멤버십을 가입하시겠습니까?" 문구와 [멤버십 가입하기] / [메인 페이지로 돌아가기] 버튼 표시.
+  - **멤버십 가입자**: "취소표 발생 시 시크릿 링크로 안내해드리겠습니다." 문구와 [메인 페이지로 돌아가기] 버튼 표시.
+  - 두 경우 모두 5분(300초) 카운트다운 후 메인 페이지로 자동 리다이렉션. 버튼 클릭 시 즉시 이동.
+  - `hasMembership` 함수 import 추가.
+
 ## [2026-09-07 10:07] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
