@@ -311,6 +311,7 @@ function refreshEventsList(container) {
           <td>
             <button type="button" class="btn btn-outline btn-sm" data-set-open-time="${e.eventId}">오픈 시간</button>
             <button type="button" class="btn btn-outline btn-sm" data-set-close-time="${e.eventId}">마감 시간</button>
+            <button type="button" class="btn btn-outline btn-sm btn-danger-outline" data-close-now="${e.eventId}">즉시 마감</button>
             <button type="button" class="btn btn-outline btn-sm" data-delete-event="${e.eventId}">삭제</button>
           </td>
         </tr>`
@@ -328,6 +329,26 @@ function refreshEventsList(container) {
         btn.addEventListener('click', () => {
           const ev = eventsCache.find((x) => x.eventId === btn.dataset.setCloseTime);
           if (ev) openSetCloseTimeModal(ev, () => refreshEventsList(container));
+        });
+      });
+      tbody.querySelectorAll('[data-close-now]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const ev = eventsCache.find((x) => x.eventId === btn.dataset.closeNow);
+          const name = ev?.eventName || btn.dataset.closeNow;
+          if (!confirm(`"${name}" 공연을 즉시 마감할까요?`)) return;
+          btn.disabled = true;
+          const now = new Date().toISOString();
+          setEventCloseTime(btn.dataset.closeNow, now)
+            .then((result) => {
+              if (result.error) {
+                showToast({ title: '즉시 마감 실패', body: result.error });
+                btn.disabled = false;
+                return;
+              }
+              showToast({ title: `"${name}" 예매가 즉시 마감되었습니다`, type: 'success' });
+              refreshEventsList(container);
+            })
+            .catch(() => { showToast({ title: '즉시 마감 중 오류가 발생했습니다' }); btn.disabled = false; });
         });
       });
       tbody.querySelectorAll('[data-delete-event]').forEach((btn) => {
@@ -420,9 +441,11 @@ function getDefaultOpenTime(event) {
   return new Date(Date.now() + getDefaultOpenTimeOffsetMinutes(event) * 60000);
 }
 
-function applyOpenTime(eventId, ticketOpenAt, successTitle, onSaved) {
-  setEventOpenTime(eventId, ticketOpenAt)
-    .then((result) => {
+function applyOpenTime(eventId, ticketOpenAt, successTitle, onSaved, clearClose = false) {
+  const openPromise = setEventOpenTime(eventId, ticketOpenAt);
+  const closePromise = clearClose ? setEventCloseTime(eventId, null) : Promise.resolve(null);
+  Promise.all([openPromise, closePromise])
+    .then(([result]) => {
       if (result.error) {
         showToast({ title: '오픈 시간 설정 실패', body: result.error });
         return;
@@ -476,7 +499,7 @@ function openSetOpenTimeModal(event, onSaved) {
     btn.addEventListener('click', () => {
       const preset = btn.dataset.quickPreset;
       if (preset === 'now') {
-        applyOpenTime(event.eventId, null, '예매가 즉시 오픈으로 설정되었습니다', onSaved);
+        applyOpenTime(event.eventId, null, '예매가 즉시 오픈으로 설정되었습니다', onSaved, true);
         return;
       }
       const deltaMs = { '10s': 10000, '1m': 60000, '10m': 600000 }[preset] || 0;
@@ -487,7 +510,7 @@ function openSetOpenTimeModal(event, onSaved) {
   });
 
   document.querySelector('[data-clear-open-time]').addEventListener('click', () => {
-    applyOpenTime(event.eventId, null, '오픈 시간 제한이 해제되었습니다', onSaved);
+    applyOpenTime(event.eventId, null, '오픈 시간 제한이 해제되었습니다', onSaved, true);
   });
 
   document.querySelector('[data-save-open-time]').addEventListener('click', () => {
@@ -671,6 +694,313 @@ function openCreateEventModal(onCreated) {
   });
 }
 
+function simFetch(path, body) {
+  return fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  }).then((r) => r.json());
+}
+
+function initSimulationPanel(container) {
+  const panel = container.querySelector('[data-sim-panel]');
+  if (!panel) return;
+
+  const toggleBtn = panel.querySelector('[data-sim-toggle]');
+  const body = panel.querySelector('[data-sim-body]');
+  const eventSelect = panel.querySelector('[data-sim-event]');
+  const sessionSelect = panel.querySelector('[data-sim-session]');
+  const realEmailInput = panel.querySelector('[data-sim-real-email]');
+  const dummyCountInput = panel.querySelector('[data-sim-dummy-count]');
+  const cancelCountInput = panel.querySelector('[data-sim-cancel-count]');
+  const statusArea = panel.querySelector('[data-sim-status]');
+  const logArea = panel.querySelector('[data-sim-log]');
+
+  const btnInit = panel.querySelector('[data-sim-init]');
+  const btnSellout = panel.querySelector('[data-sim-sellout]');
+  const btnClose = panel.querySelector('[data-sim-close]');
+  const btnCancel = panel.querySelector('[data-sim-cancel]');
+  const btnLinks = panel.querySelector('[data-sim-links]');
+  const btnCleanup = panel.querySelector('[data-sim-cleanup]');
+  const btnRefresh = panel.querySelector('[data-sim-refresh]');
+
+  let simEventsCache = [];
+  let currentStage = null;
+  let actionInProgress = false;
+
+  toggleBtn.addEventListener('click', () => {
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? 'block' : 'none';
+    toggleBtn.textContent = hidden ? '접기' : '펼치기';
+    if (hidden) loadSimEvents();
+  });
+
+  function logMsg(msg) {
+    logArea.style.display = 'block';
+    const time = new Date().toLocaleTimeString('ko-KR');
+    logArea.innerHTML = `<div>[${time}] ${msg}</div>` + logArea.innerHTML;
+  }
+
+  function updateButtons(stage = currentStage) {
+    currentStage = stage || null;
+    const manualActionDisabled = !eventSelect.value || actionInProgress;
+
+    // 수동 실행 모드에서는 현재 단계와 관계없이 원하는 작업을 직접 실행한다.
+    // API가 각 작업의 필수 선행조건을 최종 검증하며, 요청 중에는 중복 실행만 막는다.
+    btnSellout.disabled = manualActionDisabled;
+    btnClose.disabled = manualActionDisabled;
+    btnCancel.disabled = manualActionDisabled;
+    btnLinks.disabled = manualActionDisabled;
+    btnInit.disabled = actionInProgress;
+    btnCleanup.disabled = actionInProgress;
+  }
+
+  function renderStatus(data) {
+    if (!data.initialized) {
+      statusArea.innerHTML = '<p class="text-secondary">시뮬레이션이 초기화되지 않았습니다.</p>';
+      updateButtons(null);
+      return;
+    }
+    const s = data.seats || {};
+    const q = data.queue || {};
+    const ru = data.realUser;
+    let html = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px;">
+        <div><b>단계</b><br/><span class="badge badge-blue">${data.stage}</span></div>
+        <div><b>더미 유저</b><br/>${(data.dummyCount || 0).toLocaleString()}명</div>
+        <div><b>총 좌석</b><br/>${(data.totalSeats || 0).toLocaleString()}석</div>
+        <div><b>판매됨</b><br/><span style="color:#e74c3c;">${(s.sold || 0).toLocaleString()}</span></div>
+        <div><b>남은 좌석</b><br/><span style="color:#27ae60;">${(s.available || 0).toLocaleString()}</span></div>
+        <div><b>선점 중</b><br/>${(s.held || 0).toLocaleString()}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px;">
+        <div><b>대기열 (standby)</b><br/>${(q.standby || 0).toLocaleString()}명</div>
+        <div><b>입장 허용</b><br/>${(q.admitted || 0).toLocaleString()}명</div>
+        <div><b>일반 대기</b><br/>${(q.waiting || 0).toLocaleString()}명</div>
+      </div>`;
+
+    if (ru) {
+      html += `<div style="padding:10px;background:var(--color-bg);border-radius:6px;border:1px solid var(--color-border);">
+        <b>실제 유저: ${ru.email}</b><br/>`;
+      if (ru.standbyPosition) html += `취소표 대기 <b>${ru.standbyPosition}번째</b> · `;
+      if (ru.isAdmitted) html += '<span style="color:#27ae60;">입장 허용됨</span> · ';
+      if (ru.hasAllocation) {
+        html += `<span style="color:#8e44ad;">시크릿 링크 발급됨</span> (좌석: ${ru.allocation.seatId}, 만료: ${new Date(ru.allocation.expiresAt).toLocaleTimeString('ko-KR')})`;
+      }
+      html += '</div>';
+    }
+
+    if (data.allocations && data.allocations.length > 0) {
+      html += '<div style="margin-top:12px;"><b>최근 취소표 할당 내역</b></div>';
+      html += '<table class="qtable" style="font-size:12px;margin-top:4px;"><thead><tr><th>유저</th><th>좌석</th><th>상태</th><th>시간</th></tr></thead><tbody>';
+      for (const a of data.allocations.slice(0, 10)) {
+        const isSim = a.userId.startsWith('sim-user-');
+        html += `<tr${isSim ? '' : ' style="background:rgba(142,68,173,0.08);"'}>
+          <td>${isSim ? a.userId.slice(0, 15) + '...' : '<b>' + a.userId + '</b>'}</td>
+          <td>${a.seatId.split(':').pop()}</td>
+          <td><span class="badge ${a.status === 'RESPONDED' ? 'badge-green' : a.status === 'LINK_SENT' ? 'badge-blue' : 'badge-outline'}">${a.status}</span></td>
+          <td>${new Date(a.createdAt).toLocaleTimeString('ko-KR')}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+    }
+
+    statusArea.innerHTML = html;
+    updateButtons(data.stage);
+  }
+
+  function loadSimEvents() {
+    simFetch('/admin/simulation/events').then((data) => {
+      simEventsCache = data.events || [];
+      eventSelect.innerHTML = '<option value="">— 공연을 선택하세요 —</option>' +
+        simEventsCache.map((e) =>
+          `<option value="${e.eventId}">${e.eventName} (${e.eventDate || '날짜 미정'}) — ${(e.totalSeats || 0).toLocaleString()}석</option>`
+        ).join('');
+    });
+  }
+
+  eventSelect.addEventListener('change', () => {
+    const ev = simEventsCache.find((e) => e.eventId === eventSelect.value);
+    updateButtons(null);
+    if (!ev || !ev.sessions || ev.sessions.length === 0) {
+      sessionSelect.innerHTML = '<option value="">회차 없음</option>';
+      return;
+    }
+    sessionSelect.innerHTML = ev.sessions.map((s, i) =>
+      `<option value="${i}" data-date="${s.date || ''}" data-time="${s.time || ''}">${s.date || '?'} ${s.time || ''}</option>`
+    ).join('');
+
+    const eventId = ev.eventId;
+    simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(eventId)}`)
+      .then(renderStatus)
+      .catch(() => {});
+  });
+
+  function getSimParams() {
+    const eventId = eventSelect.value;
+    const opt = sessionSelect.selectedOptions[0];
+    return {
+      eventId,
+      sessionDate: opt?.dataset.date || '',
+      sessionTime: opt?.dataset.time || '',
+    };
+  }
+
+  btnInit.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) { showToast({ title: '공연을 선택해주세요' }); return; }
+    const email = realEmailInput.value.trim();
+    if (!email) { showToast({ title: '실제 유저 이메일을 입력해주세요' }); return; }
+    const count = parseInt(dummyCountInput.value, 10) || 10000;
+    actionInProgress = true;
+    updateButtons();
+    btnInit.textContent = '초기화 중...';
+    logMsg(`초기화 시작 — ${params.eventId}, 더미 ${count.toLocaleString()}명`);
+    simFetch('/admin/simulation/init', { ...params, realUserEmail: email, dummyCount: count })
+      .then((r) => {
+        if (r.error) { showToast({ title: '초기화 실패', body: r.error }); return; }
+        showToast({ title: '시뮬레이션 초기화 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '초기화 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnInit.textContent = '시뮬레이션 초기화';
+        updateButtons();
+      });
+  });
+
+  btnSellout.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    if (!confirm('본 티켓팅 매진 연출을 시작할까요?\n모든 좌석이 더미 유저에 의해 점유됩니다.')) return;
+    actionInProgress = true;
+    updateButtons();
+    btnSellout.textContent = '매진 처리 중...';
+    logMsg('단계1: 매진 연출 시작');
+    simFetch('/admin/simulation/sellout', params)
+      .then((r) => {
+        if (r.error) { showToast({ title: '매진 연출 실패', body: r.error }); return; }
+        showToast({ title: '매진 연출 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '매진 연출 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnSellout.textContent = '단계1: 매진 연출';
+        updateButtons();
+      });
+  });
+
+  btnClose.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    if (!confirm('티켓팅을 즉시 마감하고 멤버십/대기열 유지 검증을 실행할까요?')) return;
+    actionInProgress = true;
+    updateButtons();
+    btnClose.textContent = '마감 처리 중...';
+    logMsg('단계2: 조기 마감 시작');
+    simFetch('/admin/simulation/close', params)
+      .then((r) => {
+        if (r.error) { showToast({ title: '마감 실패', body: r.error }); return; }
+        showToast({ title: '티켓팅 마감 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '마감 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnClose.textContent = '단계2: 조기 마감';
+        updateButtons();
+      });
+  });
+
+  btnCancel.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    const count = parseInt(cancelCountInput.value, 10) || 5;
+    if (!confirm(`더미 유저 좌석 ${count}석을 강제 취소(해제)할까요?`)) return;
+    actionInProgress = true;
+    updateButtons();
+    btnCancel.textContent = '좌석 취소 중...';
+    logMsg(`단계3: 더미 좌석 ${count}석 취소 시작`);
+    simFetch('/admin/simulation/cancel-seats', { ...params, count })
+      .then((r) => {
+        if (r.error) { showToast({ title: '좌석 취소 실패', body: r.error }); return; }
+        showToast({ title: '좌석 취소 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '좌석 취소 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnCancel.textContent = '단계3: 취소표 생성';
+        updateButtons();
+      });
+  });
+
+  btnLinks.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    if (!confirm('적격 멤버십 유저에게 시크릿 링크를 발급할까요?')) return;
+    actionInProgress = true;
+    updateButtons();
+    btnLinks.textContent = '링크 발급 중...';
+    logMsg('단계4: 시크릿 링크 발급 시작');
+    simFetch('/admin/simulation/issue-links', params)
+      .then((r) => {
+        if (r.error) { showToast({ title: '링크 발급 실패', body: r.error }); return; }
+        showToast({ title: '시크릿 링크 발급 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '링크 발급 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnLinks.textContent = '단계4: 시크릿 링크 발급';
+        updateButtons();
+      });
+  });
+
+  btnCleanup.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) { showToast({ title: '공연을 선택해주세요' }); return; }
+    if (!confirm('시뮬레이션 데이터(더미 유저, 좌석 점유, 대기열)를 모두 삭제할까요?')) return;
+    actionInProgress = true;
+    updateButtons();
+    btnCleanup.textContent = '삭제 중...';
+    logMsg('시뮬레이션 데이터 삭제 시작');
+    simFetch('/admin/simulation/cleanup', params)
+      .then((r) => {
+        if (r.error) { showToast({ title: '삭제 실패', body: r.error }); return; }
+        showToast({ title: '시뮬레이션 데이터 삭제 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        renderStatus({ initialized: false });
+      })
+      .catch((e) => showToast({ title: '삭제 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnCleanup.textContent = '데이터 삭제';
+        updateButtons();
+      });
+  });
+
+  btnRefresh.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) { showToast({ title: '공연을 선택해주세요' }); return; }
+    simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}&sessionDate=${params.sessionDate}&sessionTime=${params.sessionTime}`)
+      .then(renderStatus)
+      .catch((e) => showToast({ title: '상태 조회 오류', body: e.message }));
+  });
+}
+
 export const adminPage = {
   render(container) {
     if (!isAdmin()) {
@@ -704,10 +1034,70 @@ export const adminPage = {
           </table>
         </div>
       </div>
+
+      <div class="container" style="margin-top:32px;">
+        <div class="admin-panel admin-panel--wide" data-sim-panel>
+          <div class="mchart__head">
+            <span class="mchart__title">취소표 시뮬레이션</span>
+            <button type="button" class="btn btn-outline btn-sm" data-sim-toggle style="margin-left:auto;">펼치기</button>
+          </div>
+          <div data-sim-body style="display:none;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+              <div class="field">
+                <label>공연 선택</label>
+                <select data-sim-event style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface);">
+                  <option value="">불러오는 중...</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>회차 선택</label>
+                <select data-sim-session style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface);">
+                  <option value="">공연을 먼저 선택하세요</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:16px;">
+              <div class="field">
+                <label>실제 멤버십 유저 이메일</label>
+                <input type="email" data-sim-real-email placeholder="test@example.com" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
+              </div>
+              <div class="field">
+                <label>더미 유저 수</label>
+                <input type="number" data-sim-dummy-count value="10000" min="100" max="50000" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
+              </div>
+            </div>
+
+            <p class="text-secondary" style="font-size:12px;margin:-4px 0 12px;">
+              수동 실행 모드: 공연을 선택하면 각 단계 버튼을 원하는 시점에 직접 실행할 수 있습니다. 권장 순서는 초기화 → 매진 → 마감 → 취소표 생성 → 링크 발급입니다.
+            </p>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+              <button type="button" class="btn btn-primary btn-sm" data-sim-init>시뮬레이션 초기화</button>
+              <button type="button" class="btn btn-outline btn-sm" data-sim-sellout disabled style="border-color:#e74c3c;color:#e74c3c;">단계1: 매진 연출</button>
+              <button type="button" class="btn btn-outline btn-sm" data-sim-close disabled style="border-color:#e67e22;color:#e67e22;">단계2: 조기 마감</button>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <input type="number" data-sim-cancel-count value="5" min="1" max="100" style="width:60px;padding:6px;border:1px solid var(--color-border);border-radius:6px;text-align:center;" />
+                <button type="button" class="btn btn-outline btn-sm" data-sim-cancel disabled style="border-color:#8e44ad;color:#8e44ad;">단계3: 취소표 생성</button>
+              </div>
+              <button type="button" class="btn btn-outline btn-sm" data-sim-links disabled style="border-color:#27ae60;color:#27ae60;">단계4: 시크릿 링크 발급</button>
+              <button type="button" class="btn btn-outline btn-sm" data-sim-cleanup style="border-color:#95a5a6;color:#95a5a6;">데이터 삭제</button>
+              <button type="button" class="btn btn-outline btn-sm" data-sim-refresh>상태 새로고침</button>
+            </div>
+
+            <div data-sim-status style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:16px;min-height:80px;">
+              <p class="text-secondary">시뮬레이션을 초기화하면 여기에 진행 상태가 표시됩니다.</p>
+            </div>
+
+            <div data-sim-log style="margin-top:12px;max-height:200px;overflow-y:auto;font-size:12px;font-family:var(--font-mono);background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:8px;display:none;">
+            </div>
+          </div>
+        </div>
+      </div>
     `;
 
     refreshEventsList(container);
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
+    initSimulationPanel(container);
 
     container.querySelector('[data-bulk-delete]').addEventListener('click', () => {
       const targets = eventsCache.slice(0, 5);

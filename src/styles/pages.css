@@ -93,6 +93,9 @@
    버튼 자체가 "예매 시작까지 00:10:00"으로 바뀜. 기본 16px보다 살짝 줄여서
    폭이 좁은 사이드바에서도 한 줄로 들어가도록 함. */
 .btn--countdown { font-size: 14.5px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.btn--closed { background: var(--color-surface-secondary, #e5e5e5) !important; color: var(--color-text-secondary, #888) !important; cursor: not-allowed; border: none !important; }
+.btn-danger-outline { color: var(--color-red, #e53e3e) !important; border-color: var(--color-red, #e53e3e) !important; }
+.btn-danger-outline:hover { background: var(--color-red, #e53e3e); color: #fff !important; }
 
 /* ============ Booking Date/Time ============ */
 .booking-dt-page { max-width: 720px; margin: 0 auto; padding: 56px 0 100px; }

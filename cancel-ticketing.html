@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>취켓팅</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Noto+Sans+KR:wght@400;500;700;900&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#050505;
+    --panel:#111111;
+    --panel2:#161616;
+    --line:#262626;
+    --red:#e8352c;
+    --red-dim:#3a1210;
+    --white:#f5f5f5;
+    --gray:#8a8a8a;
+    --sold:#1c1c1c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--white);
+    font-family:'Noto Sans KR',sans-serif;
+    min-height:100vh;
+  }
+  .eng, .mono{font-family:'IBM Plex Mono',monospace;}
+  .disp{font-family:'Oswald',sans-serif;}
+
+  header{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:16px 32px;
+  }
+  .logo{display:flex;align-items:center;gap:10px;font-family:'Oswald',sans-serif;font-weight:700;font-size:18px;letter-spacing:1px;}
+  .logo .logo-mark{width:28px;height:28px;background:var(--red);display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;transform:skewX(-8deg);}
+  .headright{text-align:right;font-size:11px;color:var(--gray);line-height:1.6;}
+  .headright b{color:var(--white);font-family:'IBM Plex Mono',monospace;letter-spacing:1px;}
+  .redline{height:2px;background:linear-gradient(90deg,var(--red),transparent 85%);}
+
+  .wrap{max-width:1280px;margin:0 auto;padding:28px 32px 60px;}
+  .layout{display:grid;grid-template-columns:1fr 280px;gap:20px;align-items:start;}
+  @media(max-width:900px){.layout{grid-template-columns:1fr;}}
+
+  .sidebar{position:sticky;top:20px;display:flex;flex-direction:column;gap:14px;}
+  .timerbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;}
+  .timerbox .row1{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--gray);margin-bottom:10px;letter-spacing:.5px;}
+  .tag{background:var(--red-dim);color:var(--red);font-size:10px;padding:3px 8px;border-radius:20px;font-family:'IBM Plex Mono',monospace;letter-spacing:1px;}
+  .timer{font-family:'IBM Plex Mono',monospace;font-size:40px;font-weight:700;color:var(--red);letter-spacing:1px;}
+  .timer.warn{animation:pulse .9s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  .timerbox .cap{font-size:11px;color:var(--gray);margin-top:8px;line-height:1.6;}
+  .fuse{height:3px;background:var(--sold);border-radius:3px;margin-top:12px;overflow:hidden;}
+  .fuse-bar{height:100%;background:var(--red);width:100%;transition:width 1s linear;}
+
+  .infobox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;}
+  .infobox .h{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--gray);margin-bottom:12px;}
+  .infobox .row{display:flex;justify-content:space-between;font-size:12px;padding:8px 0;border-bottom:1px solid var(--line);color:var(--gray);}
+  .infobox .row:last-of-type{border-bottom:none;}
+  .infobox .row b{color:var(--white);font-weight:500;}
+  .infobox .amt{text-align:right;font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:700;color:var(--red);margin-top:10px;}
+  .infobox .amtlabel{font-size:11px;color:var(--gray);margin-top:14px;}
+
+  .cta{
+    width:100%;padding:15px;border:none;border-radius:8px;
+    background:var(--line);color:var(--gray);font-family:'Noto Sans KR',sans-serif;font-weight:700;
+    font-size:14px;cursor:not-allowed;transition:all .2s;
+  }
+  .cta.active{background:var(--red);color:#fff;cursor:pointer;}
+  .cta.active:hover{filter:brightness(1.1);}
+
+  .skip-btn{
+    width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;
+    background:transparent;color:var(--gray);font-family:'Noto Sans KR',sans-serif;font-weight:500;
+    font-size:12px;cursor:pointer;transition:all .2s;
+  }
+  .skip-btn:hover{border-color:var(--red);color:var(--red);}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px;}
+  .stepitem{
+    display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);
+    border-radius:8px;padding:12px 14px;font-size:13px;color:var(--gray);
+  }
+  .stepitem .num{
+    width:22px;height:22px;border:1px solid var(--line);border-radius:4px;
+    display:flex;align-items:center;justify-content:center;font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--gray);
+    flex-shrink:0;
+  }
+  .stepitem.active{border-color:var(--red);color:var(--white);}
+  .stepitem.active .num{background:var(--red);border-color:var(--red);color:#fff;}
+  .stepitem.done{color:var(--white);}
+  .stepitem.done .num{border-color:var(--red);color:var(--red);}
+
+  .hero-split{
+    display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;margin-bottom:20px;min-height:320px;
+  }
+  @media(max-width:700px){.hero-split{grid-template-columns:1fr;}}
+  .hero-poster{
+    position:relative;display:flex;flex-direction:column;justify-content:flex-end;
+    padding:32px;overflow:hidden;
+  }
+  .hero-poster img.poster-img{
+    position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center top;z-index:0;
+  }
+  .hero-poster::after{
+    content:'';position:absolute;inset:0;
+    background:linear-gradient(to top,rgba(0,0,0,.85) 0%,rgba(0,0,0,.2) 60%,transparent 100%);
+    z-index:1;
+  }
+  .poster-badge{position:relative;z-index:2;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:3px;margin-bottom:10px;opacity:.8;}
+  .poster-emoji{position:absolute;top:50%;left:50%;transform:translate(-50%,-60%);font-size:72px;opacity:.25;z-index:0;}
+  .poster-title{position:relative;z-index:2;}
+  .poster-venue{position:relative;z-index:2;}
+
+  .seatmap-wrap{width:100%;height:480px;border-radius:10px;overflow:hidden;border:1px solid var(--line);margin-bottom:20px;position:relative;}
+  .seatmap-wrap canvas{display:block;}
+  .poster-title{position:relative;z-index:1;font-size:28px;font-weight:700;line-height:1.2;letter-spacing:1px;text-transform:uppercase;color:#fff;}
+  .poster-venue{position:relative;z-index:1;font-size:12px;color:rgba(255,255,255,.6);margin-top:6px;}
+
+  .hero-info{
+    background:var(--panel);padding:32px;display:flex;flex-direction:column;justify-content:center;
+  }
+  .hero-info .badge{color:var(--red);font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:3px;margin-bottom:10px;}
+  .hero-info h1{font-family:'Oswald',sans-serif;font-weight:700;font-size:32px;line-height:1.15;margin-bottom:6px;}
+  .hero-info .venue{color:var(--gray);font-size:13px;margin-bottom:18px;}
+  .infogrid-sm{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .infocard{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;}
+  .infocard .k{font-size:10px;color:var(--gray);margin-bottom:4px;letter-spacing:1px;text-transform:uppercase;}
+  .infocard .v{font-size:13px;font-weight:700;}
+
+  .notice{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;font-size:12px;color:var(--gray);line-height:2;margin-bottom:24px;}
+  .notice b{color:var(--white);}
+  .heroCta{
+    display:block;width:100%;padding:18px;border:none;border-radius:10px;
+    background:var(--red);color:#fff;font-family:'Oswald',sans-serif;font-weight:700;font-size:18px;
+    letter-spacing:1px;cursor:pointer;text-transform:uppercase;
+  }
+  .heroCta:hover{filter:brightness(1.08);}
+  .heroCta:disabled{opacity:.4;cursor:not-allowed;filter:none;}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:28px;}
+  .eyebrow{color:var(--red);font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:3px;margin-bottom:10px;}
+  .panel h2{font-family:'Noto Sans KR',sans-serif;font-weight:900;font-size:24px;margin-bottom:8px;}
+  .panel .desc{color:var(--gray);font-size:13px;margin-bottom:22px;}
+
+  .allocated-seat-info{
+    background:var(--red-dim);border:1px solid var(--red);border-radius:10px;
+    padding:20px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;
+  }
+  .allocated-label{font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;letter-spacing:2px;}
+  .allocated-detail{display:flex;align-items:baseline;gap:8px;}
+  .allocated-section{font-family:'Oswald',sans-serif;font-size:22px;font-weight:600;}
+  .allocated-grade{font-size:13px;color:var(--red);}
+  .allocated-num{font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:700;color:var(--red);}
+  .allocated-price{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:700;color:var(--white);}
+
+  .zonemap{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;}
+  .zone{
+    border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:18px;
+    transition:border-color .15s;
+  }
+  .zone.highlight{border-color:var(--red);background:var(--red-dim);}
+  .zone.disabled{opacity:.35;}
+  .zone .g{font-family:'Oswald',sans-serif;font-size:18px;font-weight:600;}
+  .zone .p{color:var(--gray);font-size:12px;margin-top:4px;}
+  .zone .r{font-size:11px;margin-top:8px;color:var(--red);font-family:'IBM Plex Mono',monospace;}
+  .stage{grid-column:1/-1;text-align:center;padding:10px;border:1px dashed var(--line);border-radius:8px;color:var(--gray);font-size:11px;letter-spacing:4px;font-family:'IBM Plex Mono',monospace;}
+
+  .seatgrid{display:grid;gap:5px;margin-top:12px;}
+  .seat{
+    aspect-ratio:1;border-radius:4px;border:1px solid var(--line);
+    background:var(--panel2);font-size:9px;font-family:'IBM Plex Mono',monospace;
+    display:flex;align-items:center;justify-content:center;color:var(--gray);
+  }
+  .seat.sold{background:var(--sold);color:#3a3a3a;border-color:transparent;}
+  .seat.selected{background:var(--red);color:#fff;font-weight:700;border-color:var(--red);box-shadow:0 0 12px rgba(232,53,44,.5);}
+  .legend{display:flex;gap:16px;margin-top:14px;font-size:11px;color:var(--gray);}
+  .legend span{display:flex;align-items:center;gap:6px;}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block;}
+
+  .paylist{display:flex;flex-direction:column;gap:10px;}
+  .paymethod{
+    display:flex;justify-content:space-between;align-items:center;
+    border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:18px 20px;cursor:pointer;
+    transition:border-color .15s;
+  }
+  .paymethod:hover{border-color:var(--red);}
+  .paymethod.selected{border-color:var(--red);background:var(--red-dim);}
+  .paymethod .name{font-family:'Oswald',sans-serif;font-size:17px;font-weight:600;}
+  .paymethod .sub{font-size:11px;color:var(--gray);margin-top:4px;font-family:'Noto Sans KR';}
+  .pay-mark{width:18px;height:18px;border-radius:50%;border:1px solid var(--line);flex-shrink:0;}
+  .paymethod.selected .pay-mark{background:var(--red);border-color:var(--red);}
+
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;align-items:center;justify-content:center;z-index:50;}
+  .overlay.show{display:flex;}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:38px 32px;text-align:center;max-width:400px;width:90%;}
+  .modal .ico{font-size:38px;margin-bottom:10px;}
+  .modal h2{font-family:'Oswald',sans-serif;font-size:24px;margin-bottom:10px;color:var(--red);text-transform:uppercase;}
+  .modal p{color:var(--gray);font-size:13px;line-height:1.8;margin-bottom:22px;}
+  .modal-btn{background:var(--red);color:#fff;border:none;padding:13px 24px;border-radius:8px;font-weight:700;cursor:pointer;font-size:14px;}
+  .modal-btn:hover{filter:brightness(1.1);}
+  .modal-btn.secondary{background:var(--line);color:var(--gray);}
+
+  .loading-wrap{text-align:center;padding:80px 20px;color:var(--gray);}
+  .loading-wrap .spinner{width:32px;height:32px;border:3px solid var(--line);border-top-color:var(--red);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 16px;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .section-title{font-size:14px;color:var(--gray);margin:20px 0 10px;font-weight:500;}
+
+  /* SeatMap 컴포넌트 (mountSeatMap) 필수 스타일 */
+  .vm-legend{display:flex;align-items:center;gap:14px;padding:10px 16px;font-size:12px;color:var(--gray);flex-wrap:wrap;}
+  .vm-legend__item{display:flex;align-items:center;gap:5px;white-space:nowrap;}
+  .vm-legend__dot{width:12px;height:12px;border-radius:50%;display:inline-block;border:1.5px solid rgba(255,255,255,.15);flex-shrink:0;}
+  .vm-viewport{position:relative;width:100%;height:460px;overflow:hidden;cursor:grab;background:#1a1918;border-radius:10px;border:1px solid var(--line);user-select:none;touch-action:none;}
+  .vm-viewport.dragging{cursor:grabbing;}
+  .vm-zoom-controls{position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;z-index:20;}
+  .vm-zoom-btn{width:38px;height:38px;border-radius:10px;background:rgba(30,30,30,.95);border:1px solid var(--line);cursor:pointer;font-size:18px;font-weight:800;color:var(--white);display:flex;align-items:center;justify-content:center;line-height:1;transition:border-color .15s,color .15s;}
+  .vm-zoom-btn:hover{border-color:var(--red);color:var(--red);}
+  .vm-zoom-btn--reset{font-size:15px;}
+  .vm-tooltip{position:fixed;z-index:9999;background:rgba(17,17,17,.95);color:#fff;padding:7px 13px;border-radius:8px;font-size:12px;line-height:1.6;pointer-events:none;white-space:nowrap;display:none;box-shadow:0 4px 16px rgba(0,0,0,.4);}
+  .vm-tooltip.show{display:block;}
+  .vm-zoom-hint{text-align:center;font-size:12px;color:var(--gray);padding:8px 0;opacity:.7;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span class="logo-mark">🎫</span> 취켓팅</div>
+  <div class="headright">멤버십 전용 취소표<br><b id="linkId">—</b></div>
+</header>
+<div class="redline"></div>
+
+<div class="wrap">
+  <div class="layout">
+    <div id="mainContent">
+      <div class="loading-wrap"><div class="spinner"></div>취소표 정보를 불러오는 중...</div>
+    </div>
+    <div class="sidebar">
+      <div class="timerbox">
+        <div class="row1"><span>⏱ 남은 이용 시간</span><span class="tag">1 PERSON</span></div>
+        <div class="timer" id="timerDisplay">--:--</div>
+        <div class="cap">이 링크는 한 명만 사용할 수 있습니다.</div>
+        <div class="fuse"><div class="fuse-bar" id="fuseBar"></div></div>
+      </div>
+      <div class="infobox">
+        <div class="h"><span>예매 정보</span><span>🎫</span></div>
+        <div class="row"><span>공연</span><b id="sumEvent">—</b></div>
+        <div class="row"><span>일시</span><b id="sumDate">—</b></div>
+        <div class="row"><span>좌석</span><b id="sumSeat">—</b></div>
+        <div class="row"><span>결제</span><b id="sumPay">미선택</b></div>
+        <div class="amtlabel">결제 예정 금액</div>
+        <div class="amt" id="sumPrice">—</div>
+      </div>
+      <button class="cta" id="ctaBtn"></button>
+      <button class="skip-btn" id="skipBtn" style="display:none" onclick="showSkipConfirm()">이 좌석 넘기기 (다음 대기자에게 양보)</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="successOverlay"><div class="modal"><div class="ico">🎟️</div><h2>취켓팅 성공</h2><p id="successText"></p><button class="modal-btn" onclick="window.close()">확인</button></div></div>
+<div class="overlay" id="failOverlay"><div class="modal"><div class="ico">⏱️</div><h2>시간 초과</h2><p>5분 안에 예매를 완료하지 못했습니다.<br>이 링크는 폐기되고, 대기열의 다음 사용자에게 새 링크가 발급됩니다.</p><button class="modal-btn" onclick="window.close()">확인</button></div></div>
+<div class="overlay" id="errorOverlay"><div class="modal"><div class="ico">⚠️</div><h2 id="errorTitle">오류</h2><p id="errorText"></p><button class="modal-btn" onclick="window.close()">확인</button></div></div>
+<div class="overlay" id="skipOverlay"><div class="modal"><div class="ico">👋</div><h2>좌석 넘기기</h2><p>이 좌석을 다음 대기자에게 양보하시겠습니까?<br>양보하면 이 링크는 더 이상 사용할 수 없습니다.</p><div style="display:flex;gap:10px;justify-content:center;"><button class="modal-btn" onclick="confirmSkip()">넘기기</button><button class="modal-btn secondary" onclick="hideOverlay('skipOverlay')">취소</button></div></div></div>
+
+<script type="module">
+import { mountSeatMap } from '/src/components/seatMap.js';
+import { getConcertImage } from '/src/data/concerts.js';
+import { getVenueZoneLayout } from '/src/data/concerts.js';
+
+const params = new URLSearchParams(location.search);
+const EVENT_ID = params.get('eventId');
+const USER_ID = params.get('userId');
+const ALLOCATION_ID = params.get('allocationId');
+const API_BASE = (params.get('apiBase') || '').replace(/\/$/, '');
+
+const GRADE_MAP = {
+  Floor:'VIP', A1:'S', A2:'S', A3:'S', A4:'S',
+  B1:'R', B2:'R', D1:'R', D2:'R',
+  E1:'S', E2:'S', E3:'S', E4:'S',
+  F1:'R', F2:'R', F3:'R', G:'S', H:'S',
+};
+
+const PAYMENTS = [
+  {id:'vbank', name:'가상계좌', desc:'입금 기한 30분 · 발급 즉시 좌석 확정'},
+  {id:'kakaopay', name:'카카오페이', desc:'간편결제 · 인증 후 즉시 승인'},
+  {id:'naverpay', name:'네이버페이', desc:'간편결제 · 포인트 적립 가능'},
+  {id:'card', name:'신용카드', desc:'즉시 승인 · 할부 선택 가능'},
+];
+
+const TOTAL_TTL = 300;
+
+let state = {
+  page: 0,
+  event: null,
+  allocation: null,
+  allocatedSection: '',
+  allocatedNumber: '',
+  seatPrice: 0,
+  seats: [],
+  seatsLoaded: false,
+  payment: null,
+  secondsLeft: 0,
+  timerId: null,
+  expired: false,
+  held: false,
+  processing: false,
+};
+
+async function api(path, opts) {
+  const res = await fetch(API_BASE + path, {
+    headers: {'Content-Type': 'application/json'},
+    ...opts,
+  });
+  return res.json();
+}
+
+function parseSeatId(seatId) {
+  const parts = seatId.split(':');
+  const lastPart = parts[parts.length - 1];
+  const dashIdx = lastPart.lastIndexOf('-');
+  return {
+    section: dashIdx >= 0 ? lastPart.slice(0, dashIdx) : lastPart,
+    number: dashIdx >= 0 ? lastPart.slice(dashIdx + 1) : '',
+  };
+}
+
+function seatLabel(section, number) {
+  const grade = GRADE_MAP[section] || '';
+  const num = parseInt(number, 10) || number;
+  return section + '구역' + (grade ? ' ' + grade + '석' : '') + ' ' + num + '번';
+}
+
+function setCta(label, enabled, onclick) {
+  const btn = document.getElementById('ctaBtn');
+  btn.textContent = label;
+  btn.className = 'cta' + (enabled ? ' active' : '');
+  btn.onclick = enabled ? onclick : null;
+}
+
+function stepsHtml(activeIdx) {
+  const labels = ['좌석 확인', '결제수단', '완료'];
+  let html = '<div class="steps">';
+  labels.forEach(function(l, i) {
+    const n = i + 1;
+    let cls = 'stepitem';
+    if (n === activeIdx) cls += ' active';
+    else if (n < activeIdx) cls += ' done';
+    html += '<div class="' + cls + '"><span class="num">' + String(n).padStart(2, '0') + '</span>' + l + '</div>';
+  });
+  return html + '</div>';
+}
+
+function showOverlay(id) { document.getElementById(id).classList.add('show'); }
+function hideOverlay(id) { document.getElementById(id).classList.remove('show'); }
+
+function showError(msg, title) {
+  document.getElementById('errorTitle').textContent = title || '오류';
+  document.getElementById('errorText').innerHTML = msg;
+  showOverlay('errorOverlay');
+}
+
+function startTimer() {
+  clearInterval(state.timerId);
+  updateTimerDisplay();
+  state.timerId = setInterval(function() {
+    state.secondsLeft--;
+    updateTimerDisplay();
+    if (state.secondsLeft <= 0) {
+      clearInterval(state.timerId);
+      state.expired = true;
+      fetch(API_BASE + '/cancel-queue/expire', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          userId: USER_ID,
+          eventId: EVENT_ID,
+          seatId: state.allocation.seatId,
+          sessionDate: state.allocation.sessionDate || '',
+          sessionTime: state.allocation.sessionTime || '',
+        }),
+      }).catch(function() {});
+      showOverlay('failOverlay');
+    }
+  }, 1000);
+}
+
+function updateTimerDisplay() {
+  var sec = Math.max(0, state.secondsLeft);
+  var m = String(Math.floor(sec / 60)).padStart(2, '0');
+  var s = String(sec % 60).padStart(2, '0');
+  var el = document.getElementById('timerDisplay');
+  el.textContent = m + ':' + s;
+  el.classList.toggle('warn', sec <= 60);
+  document.getElementById('fuseBar').style.width = (sec / TOTAL_TTL * 100) + '%';
+}
+
+function updateSidebar() {
+  var e = state.event;
+  var a = state.allocation;
+  document.getElementById('linkId').textContent = 'ALLOC-' + (a.allocationId || '');
+  document.getElementById('sumEvent').textContent = e.eventName || '';
+  var sd = a.sessionDate || '';
+  var st = a.sessionTime || '';
+  document.getElementById('sumDate').textContent = sd + (st ? ' ' + st : '');
+  document.getElementById('sumSeat').textContent = seatLabel(state.allocatedSection, state.allocatedNumber);
+  var section = (e.sections || []).find(function(s) { return s.name === state.allocatedSection; });
+  state.seatPrice = section ? section.price : 0;
+  document.getElementById('sumPrice').textContent = state.seatPrice ? state.seatPrice.toLocaleString() + '원' : '—';
+}
+
+async function init() {
+  if (!EVENT_ID || !USER_ID) {
+    showError('잘못된 링크입니다.<br>eventId와 userId 파라미터가 필요합니다.');
+    return;
+  }
+  try {
+    var results = await Promise.all([
+      api('/events'),
+      api('/cancel-queue/status/' + EVENT_ID + '/me?eventId=' + EVENT_ID + '&userId=' + encodeURIComponent(USER_ID)),
+    ]);
+    var eventsData = results[0];
+    var statusData = results[1];
+
+    state.event = (eventsData.events || []).find(function(ev) { return ev.eventId === EVENT_ID; });
+    if (!state.event) {
+      showError('해당 공연을 찾을 수 없습니다.');
+      return;
+    }
+
+    if (!statusData.secretLink || !statusData.secretLink.active) {
+      showError('현재 사용 가능한 취소표 링크가 없습니다.<br>이미 만료되었거나 사용된 링크입니다.', '링크 만료');
+      return;
+    }
+
+    state.allocation = statusData.secretLink;
+    var parsed = parseSeatId(state.allocation.seatId);
+    state.allocatedSection = parsed.section;
+    state.allocatedNumber = parsed.number;
+
+    var expiresAt = new Date(state.allocation.expiresAt).getTime();
+    state.secondsLeft = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+
+    if (state.secondsLeft <= 0) {
+      state.expired = true;
+      showOverlay('failOverlay');
+      return;
+    }
+
+    updateSidebar();
+    startTimer();
+    state.page = 1;
+    renderPage();
+  } catch (err) {
+    showError('서버에 연결할 수 없습니다.<br>잠시 후 다시 시도해주세요.');
+  }
+}
+
+function renderPage() {
+  var m = document.getElementById('mainContent');
+  var skipBtn = document.getElementById('skipBtn');
+
+  if (state.page === 1) {
+    var e = state.event;
+    var a = state.allocation;
+    var colors = (e.color || '#e8352c,#1a1a1a').split(',');
+    var sd = a.sessionDate || '';
+    var st = a.sessionTime || '';
+    var sl = seatLabel(state.allocatedSection, state.allocatedNumber);
+
+    m.innerHTML =
+      '<div class="hero-split">' +
+        '<div class="hero-poster" style="background:linear-gradient(135deg,' + (colors[0] || '#e8352c') + ' 0%,' + (colors[1] || '#1a1a1a') + ' 100%)">' +
+          '<img class="poster-img" src="' + getConcertImage(e.eventName) + '" alt="" onerror="this.style.display=\'none\'">' +
+          '<div class="poster-badge eng">CANCELLED TICKET</div>' +
+          '<div class="poster-title">' + (e.eventName || '').toUpperCase() + '</div>' +
+          '<div class="poster-venue">' + (e.venue || '') + '</div>' +
+        '</div>' +
+        '<div class="hero-info">' +
+          '<div class="badge eng">CANCELLED TICKET · MEMBERSHIP ONLY</div>' +
+          '<h1 class="disp">' + (e.eventName || '') + '</h1>' +
+          '<div class="venue">' + (e.venue || '') + '</div>' +
+          '<div class="infogrid-sm">' +
+            '<div class="infocard"><div class="k">공연 일시</div><div class="v">' + sd + (st ? ' ' + st : '') + '</div></div>' +
+            '<div class="infocard"><div class="k">배정 좌석</div><div class="v" style="color:var(--red)">' + sl + '</div></div>' +
+            '<div class="infocard"><div class="k">금액</div><div class="v">' + (state.seatPrice ? state.seatPrice.toLocaleString() + '원' : '—') + '</div></div>' +
+            (e.ageRating ? '<div class="infocard"><div class="k">관람 연령</div><div class="v">' + e.ageRating + '</div></div>' : '') +
+            (e.runtime ? '<div class="infocard"><div class="k">러닝타임</div><div class="v">' + e.runtime + '</div></div>' : '') +
+            (e.agency ? '<div class="infocard"><div class="k">주최/주관</div><div class="v">' + e.agency + '</div></div>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="notice">' +
+        '<b>취켓팅 안내</b><br>' +
+        '· 이 링크는 대기열에서 발급된 <b>1인 전용 링크</b>이며, 타인과 공유할 수 없습니다.<br>' +
+        '· 예매하기를 누르면 좌석이 선점되며, 제한 시간 내에 결제를 완료해야 합니다.<br>' +
+        '· 시간 초과 시 링크가 즉시 만료되고, 대기열의 다음 순번에게 넘어갑니다.<br>' +
+        '· 배정된 좌석을 원하지 않으면 <b>넘기기</b>를 눌러 다음 대기자에게 양보할 수 있습니다.' +
+      '</div>' +
+      '<button class="heroCta" id="heroCtaBtn" onclick="enterBooking()">예매하기</button>';
+    skipBtn.style.display = 'none';
+    setCta('공연 정보를 확인하고 예매하기를 눌러주세요', false, null);
+    return;
+  }
+
+  if (state.page === 2) {
+    skipBtn.style.display = 'block';
+    var html = stepsHtml(1);
+
+    if (!state.seatsLoaded) {
+      html += '<div class="panel"><div class="loading-wrap"><div class="spinner"></div>좌석 정보를 불러오는 중...</div></div>';
+      m.innerHTML = html;
+      loadSeats();
+      return;
+    }
+
+    var e = state.event;
+    var a2 = state.allocation;
+    var sl2 = seatLabel(state.allocatedSection, state.allocatedNumber);
+
+    html += '<div class="panel">' +
+      '<div class="eyebrow">01 / SEAT CONFIRMATION</div>' +
+      '<h2>배정된 좌석을 확인하세요</h2>' +
+      '<div class="desc">아래 좌석이 회원님께 배정되었습니다. 결제를 진행하거나 넘기기를 선택하세요.</div>';
+
+    html += '<div class="allocated-seat-info">' +
+      '<div><div class="allocated-label">배정 좌석</div>' +
+      '<div class="allocated-detail">' +
+        '<span class="allocated-section">' + state.allocatedSection + '구역</span>' +
+        '<span class="allocated-grade">' + (GRADE_MAP[state.allocatedSection] ? GRADE_MAP[state.allocatedSection] + '석' : '') + '</span>' +
+        '<span class="allocated-num">' + (parseInt(state.allocatedNumber, 10) || state.allocatedNumber) + '번</span>' +
+      '</div></div>' +
+      '<div class="allocated-price">' + (state.seatPrice ? state.seatPrice.toLocaleString() + '원' : '') + '</div>' +
+    '</div>';
+
+    html += '<div class="seatmap-wrap" id="seatMapHost"></div>';
+
+    html += '</div>';
+    m.innerHTML = html;
+
+    var sectionsMap = {};
+    state.seats.forEach(function(seat) {
+      var sec = seat.section || '기타';
+      if (!sectionsMap[sec]) sectionsMap[sec] = { count: 0, price: parseInt(seat.price, 10) || 0 };
+      sectionsMap[sec].count++;
+    });
+    var smSections = Object.keys(sectionsMap).map(function(name) {
+      return { id: name, label: name + '구역', grade: GRADE_MAP[name] || name, zone: e.eventName || '', cols: sectionsMap[name].count, color: '' };
+    });
+    var smSeats = state.seats.map(function(seat) {
+      var bareId = seat.seatId.includes(':') ? seat.seatId.split(':').pop() : seat.seatId;
+      var parts = bareId.split('-');
+      var status = 'available';
+      if (seat.seatId === a2.seatId) status = 'mine';
+      else if (seat.status === 'SOLD') status = 'sold';
+      else if (seat.status === 'HELD') status = 'holding';
+      return {
+        id: seat.seatId,
+        section: seat.section,
+        zoneId: seat.section,
+        row: parts[0] || '',
+        seatNum: parseInt(parts[1], 10) || 1,
+        grade: GRADE_MAP[seat.section] || seat.section,
+        status: status,
+        price: parseInt(seat.price, 10) || 0,
+      };
+    });
+    try {
+      var seatMapApi = mountSeatMap(document.getElementById('seatMapHost'), {
+        sections: smSections,
+        seats: smSeats,
+        readOnly: true,
+        venue: e.venue,
+      });
+      if (seatMapApi && seatMapApi.scrollToZone) {
+        seatMapApi.scrollToZone(state.allocatedSection);
+      }
+    } catch (mapErr) {
+      console.error('[SeatMap] 렌더 오류:', mapErr);
+    }
+
+    setCta('이 좌석으로 결제 진행', true, function() { goPage(3); });
+    return;
+  }
+
+  if (state.page === 3) {
+    skipBtn.style.display = 'block';
+    var sl3 = seatLabel(state.allocatedSection, state.allocatedNumber);
+    var html3 = stepsHtml(2);
+    html3 += '<div class="panel"><div class="eyebrow">02 / PAYMENT</div>' +
+      '<h2>결제수단을 선택하세요</h2>' +
+      '<div class="desc">' + sl3 + ' · ' + (state.seatPrice ? state.seatPrice.toLocaleString() + '원' : '') + '</div>' +
+      '<div class="paylist">';
+    PAYMENTS.forEach(function(p) {
+      var sel = state.payment === p.id ? 'selected' : '';
+      html3 += '<div class="paymethod ' + sel + '" onclick="pickPayment(\'' + p.id + '\')">' +
+        '<div><div class="name">' + p.name + '</div><div class="sub">' + p.desc + '</div></div>' +
+        '<div class="pay-mark"></div></div>';
+    });
+    html3 += '</div></div>';
+    m.innerHTML = html3;
+    setCta(state.payment ? '결제 확인' : '결제수단을 선택하세요', !!state.payment, finalizePayment);
+  }
+}
+
+async function enterBooking() {
+  if (state.expired || state.processing) return;
+  state.processing = true;
+  var btn = document.getElementById('heroCtaBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '좌석 선점 중...'; }
+  try {
+    var result = await api('/cancel-queue/hold', {
+      method: 'POST',
+      body: JSON.stringify({
+        userId: USER_ID,
+        eventId: EVENT_ID,
+        seatId: state.allocation.seatId,
+      }),
+    });
+    if (!result.success) {
+      var msg = result.message || '좌석 선점에 실패했습니다.';
+      if (result.reason === 'token_unavailable') msg = '입장 토큰이 만료되었습니다.';
+      showError(msg);
+      state.processing = false;
+      if (btn) { btn.disabled = false; btn.textContent = '예매하기'; }
+      return;
+    }
+    state.held = true;
+    state.page = 2;
+    state.processing = false;
+    renderPage();
+  } catch (err) {
+    showError('서버에 연결할 수 없습니다.');
+    state.processing = false;
+    if (btn) { btn.disabled = false; btn.textContent = '예매하기'; }
+  }
+}
+
+async function loadSeats() {
+  try {
+    var a = state.allocation;
+    var url = '/seats?eventId=' + EVENT_ID;
+    if (a.sessionDate) url += '&sessionDate=' + encodeURIComponent(a.sessionDate);
+    if (a.sessionTime) url += '&sessionTime=' + encodeURIComponent(a.sessionTime);
+    var data = await api(url);
+    state.seats = data.seats || [];
+    state.seatsLoaded = true;
+  } catch (err) {
+    showError('좌석 정보를 불러올 수 없습니다.');
+    return;
+  }
+  renderPage();
+}
+
+function goPage(n) { state.page = n; renderPage(); }
+
+function pickPayment(id) {
+  state.payment = id;
+  var pay = PAYMENTS.find(function(p) { return p.id === id; });
+  document.getElementById('sumPay').textContent = pay ? pay.name : '';
+  renderPage();
+}
+
+async function finalizePayment() {
+  if (!state.payment || state.expired || state.processing) return;
+  state.processing = true;
+  setCta('결제 처리 중...', false, null);
+  try {
+    var result = await api('/seats/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        userId: USER_ID,
+        seatId: state.allocation.seatId,
+        eventId: EVENT_ID,
+        sessionDate: state.allocation.sessionDate || '',
+        sessionTime: state.allocation.sessionTime || '',
+      }),
+    });
+    if (!result.success) {
+      showError(result.message || '결제에 실패했습니다.');
+      state.processing = false;
+      renderPage();
+      return;
+    }
+
+    api('/cancel-queue/respond', {
+      method: 'POST',
+      body: JSON.stringify({
+        userId: USER_ID,
+        eventId: EVENT_ID,
+        seatId: state.allocation.seatId,
+      }),
+    }).catch(function() {});
+
+    clearInterval(state.timerId);
+
+    var sl = seatLabel(state.allocatedSection, state.allocatedNumber);
+    var payName = (PAYMENTS.find(function(p) { return p.id === state.payment; }) || {}).name || '';
+    var remaining = document.getElementById('timerDisplay').textContent;
+
+    document.getElementById('successText').innerHTML =
+      (state.allocation.sessionDate || '') + ' ' + (state.allocation.sessionTime || '') + '<br>' +
+      sl + ' · ' + payName + ' 결제 완료<br>' +
+      (state.seatPrice ? state.seatPrice.toLocaleString() + '원' : '') + ' · 남은 시간 ' + remaining + '에 성공';
+    showOverlay('successOverlay');
+    state.processing = false;
+  } catch (err) {
+    showError('결제 처리 중 오류가 발생했습니다.');
+    state.processing = false;
+    renderPage();
+  }
+}
+
+function showSkipConfirm() {
+  showOverlay('skipOverlay');
+}
+
+async function confirmSkip() {
+  hideOverlay('skipOverlay');
+  try {
+    await api('/cancel-queue/expire', {
+      method: 'POST',
+      body: JSON.stringify({
+        userId: USER_ID,
+        eventId: EVENT_ID,
+        seatId: state.allocation.seatId,
+        sessionDate: state.allocation.sessionDate || '',
+        sessionTime: state.allocation.sessionTime || '',
+      }),
+    });
+    clearInterval(state.timerId);
+    document.getElementById('errorTitle').textContent = '양보 완료';
+    showError('좌석을 다음 대기자에게 넘겼습니다.<br>이 링크는 더 이상 사용할 수 없습니다.');
+  } catch (err) {
+    showError('처리 중 오류가 발생했습니다.');
+  }
+}
+
+init();
+
+window.enterBooking = enterBooking;
+window.showSkipConfirm = showSkipConfirm;
+window.confirmSkip = confirmSkip;
+window.hideOverlay = hideOverlay;
+window.pickPayment = pickPayment;
+</script>
+</body>
+</html>

@@ -47,6 +47,7 @@ export const concertDetailPage = {
 
     let destroyed = false;
     let openTimer = null;
+    let closeTimer = null;
     let chatCleanup = null;
     let venueSeatMapCtrl = null;
 
@@ -325,6 +326,29 @@ export const concertDetailPage = {
           const openAtMs = new Date(c.ticketOpenAt).getTime();
           if (!Number.isNaN(openAtMs)) startOpenCountdown(openAtMs);
         }
+
+        function checkClosed() {
+          if (!c.ticketCloseAt) return false;
+          const closeMs = new Date(c.ticketCloseAt).getTime();
+          if (Number.isNaN(closeMs) || closeMs > Date.now()) return false;
+          bookingOpen = false;
+          bookBtn.disabled = true;
+          bookBtn.textContent = '예매가 마감되었습니다';
+          bookBtn.classList.add('btn--closed');
+          const calHost = container.querySelector('[data-booking-cal]');
+          if (calHost) {
+            calHost.querySelectorAll('[data-cal-date]').forEach((cell) => {
+              cell.removeAttribute('data-cal-date');
+              cell.classList.remove('bcal-day--valid');
+              cell.classList.add('bcal-day--disabled');
+            });
+            calHost.querySelectorAll('[data-pick-session]').forEach((btn) => { btn.disabled = true; });
+          }
+          return true;
+        }
+        if (!checkClosed()) {
+          closeTimer = setInterval(() => { if (checkClosed()) clearInterval(closeTimer); }, 1000);
+        }
       })
       .catch(() => {
         if (!destroyed) {
@@ -335,6 +359,7 @@ export const concertDetailPage = {
     return () => {
       destroyed = true;
       if (openTimer) clearInterval(openTimer);
+      if (closeTimer) clearInterval(closeTimer);
       if (chatCleanup) chatCleanup();
       if (venueSeatMapCtrl) venueSeatMapCtrl.destroy();
     };

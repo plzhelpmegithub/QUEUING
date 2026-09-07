@@ -4,9 +4,10 @@ import { navigate } from '../router.js';
 import { isInterested, toggleInterest, subscribe } from '../state/store.js';
 import { getConcertImage } from '../data/concerts.js';
 
-function statusBadge(status) {
+function statusBadge(status, ticketCloseAt) {
   if (status === 'sold_out') return `<span class="badge badge-dark-red">SOLD OUT</span>`;
   if (status === 'closed' || status === 'cancelled') return `<span class="badge badge-outline">마감</span>`;
+  if (ticketCloseAt && new Date(ticketCloseAt).getTime() <= Date.now()) return `<span class="badge badge-outline">마감</span>`;
   return `<span class="badge badge-red">예매중</span>`;
 }
 
@@ -30,7 +31,7 @@ function cardHtml(e, i) {
   return `
     <div class="card fade-in" style="overflow:hidden;animation-delay:${(i || 0) * 0.05}s;">
       <div style="height:180px;background:${bgStyle};position:relative;cursor:pointer;transition:transform .4s ease;" data-open="${eventId}" onmouseenter="this.style.transform='scale(1.04)'" onmouseleave="this.style.transform='none'">
-        <div style="position:absolute;top:10px;left:10px;">${statusBadge(e.status)}</div>
+        <div style="position:absolute;top:10px;left:10px;">${statusBadge(e.status, e.ticketCloseAt)}</div>
         <button type="button" class="badge" data-heart="${eventId}" style="position:absolute;top:10px;right:10px;border:none;background:rgba(0,0,0,0.35);color:#fff;cursor:pointer;" aria-label="관심 공연 ${eventName}">
           ${isInterested(e.eventId) ? '♥' : '♡'}
         </button>
