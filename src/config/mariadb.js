@@ -7,10 +7,8 @@ const pool = mariadb.createPool({
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'queuing_db',
   connectionLimit: 10,
-  // VM3가 MySQL 8 기본 인증(caching_sha2_password)을 쓰는 경우, 비-SSL 연결에서는
-  // 서버의 RSA 공개키를 클라이언트가 직접 요청해서 받아와야 함 — 이게 없으면
-  // "RSA public key is not available client side" 에러로 커넥션 풀이 채워지지 않음
   allowPublicKeyRetrieval: true,
+  timezone: 'Etc/UTC',
 });
 
 pool.getConnection()

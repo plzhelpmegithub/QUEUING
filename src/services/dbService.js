@@ -82,6 +82,7 @@ async function initTable() {
       sections JSON NULL,
       status VARCHAR(20) NOT NULL DEFAULT 'open',
       ticket_open_at DATETIME NULL,
+      ticket_close_at DATETIME NULL,
       emoji VARCHAR(10) DEFAULT '',
       color VARCHAR(50) DEFAULT '',
       cancel_reason TEXT NULL,
@@ -106,6 +107,7 @@ async function initTable() {
     "sections JSON NULL",
     "status VARCHAR(20) NOT NULL DEFAULT 'open'",
     "ticket_open_at DATETIME NULL",
+    "ticket_close_at DATETIME NULL",
     "emoji VARCHAR(10) DEFAULT ''",
     "color VARCHAR(50) DEFAULT ''",
     "cancel_reason TEXT NULL",
@@ -187,7 +189,7 @@ async function initTable() {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cancel_allocations (
-      id INT AUTO_INCREMENT PRIMARY KEY,
+      allocation_id INT AUTO_INCREMENT PRIMARY KEY,
       user_id VARCHAR(50) NOT NULL,
       seat_id VARCHAR(100) NOT NULL DEFAULT '',
       event_id VARCHAR(50) NOT NULL DEFAULT '',

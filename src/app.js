@@ -15,6 +15,23 @@ fastify.get('/', async (request, reply) => {
   return html;
 });
 
+if (process.env.CORS_ORIGIN) {
+  const allowedOrigins = process.env.CORS_ORIGIN.split(',').map((o) => o.trim());
+  fastify.addHook('onRequest', (request, reply, done) => {
+    const origin = request.headers.origin || '';
+    if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+      reply.header('Access-Control-Allow-Origin', origin || '*');
+      reply.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+      reply.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    }
+    if (request.method === 'OPTIONS') {
+      reply.status(204).send();
+      return;
+    }
+    done();
+  });
+}
+
 fastify.addHook('onRequest', (request, reply, done) => {
   request.startTime = process.hrtime();
   done();
@@ -43,6 +60,8 @@ const backupRoutes = require('./routes/backupRoutes');
 fastify.register(backupRoutes);
 const cancelQueueRoutes = require('./routes/cancelQueueRoutes');
 fastify.register(cancelQueueRoutes);
+const simulationRoutes = require('./routes/simulationRoutes');
+fastify.register(simulationRoutes);
 
 fastify.get('/health', async () => ({ status: 'ok' }));
 

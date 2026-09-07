@@ -3,7 +3,7 @@ const pool = require('../config/mariadb');
 const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
 const { recoverAll } = require('../services/redisRecoveryService');
-const { notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
+const { sendEmail, notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
 const { publishSeatEvent, EVENT_TYPE } = require('../services/eventService');
 const { buildSeatId } = require('../services/sessionContext');
 
@@ -83,6 +83,7 @@ async function deleteEventData(eventId) {
   let dbSynced = true;
   try {
     await pool.query(`DELETE FROM wishlists WHERE event_id = ?`, [eventId]);
+    await pool.query(`DELETE FROM cancel_allocations WHERE event_id = ?`, [eventId]);
     await pool.query(`DELETE FROM seats WHERE event_id = ?`, [eventId]);
     await pool.query(`DELETE FROM reservations WHERE event_id = ?`, [eventId]);
     await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
@@ -554,6 +555,16 @@ async function eventRoutes(fastify) {
       }
     }
 
+    try {
+      const parsedCloseAt = card.ticketCloseAt ? new Date(card.ticketCloseAt) : null;
+      await pool.query(
+        'UPDATE events SET ticket_close_at = ? WHERE event_id = ?',
+        [parsedCloseAt, eventId],
+      );
+    } catch (dbErr) {
+      console.error('[Event] 마감 시간 MariaDB 저장 실패:', dbErr.message);
+    }
+
     return reply.send({
       success: true,
       eventId,
@@ -752,6 +763,24 @@ async function eventRoutes(fastify) {
       console.error('[Redis Recover] 전체 복구 실패:', err.message);
       return reply.status(500).send({ success: false, message: 'MariaDB → Redis 복구에 실패했습니다.', error: err.message });
     }
+  });
+
+  fastify.post('/admin/test-email', async (request, reply) => {
+    const { to, subject, body } = request.body || {};
+    if (!to) return reply.status(400).send({ success: false, message: '수신자 이메일(to)을 입력해주세요.' });
+
+    const result = await sendEmail(
+      to,
+      subject || '[QUEUING] 테스트 메일',
+      body || `
+        <h2>QUEUING 테스트 메일</h2>
+        <p>이 메일은 이메일 발송 기능 테스트를 위해 전송되었습니다.</p>
+        <p><strong>발송 시각:</strong> ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</p>
+        <hr>
+        <p>— QUEUING 팀</p>
+      `,
+    );
+    return reply.send(result);
   });
 }
 

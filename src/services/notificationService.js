@@ -1,5 +1,6 @@
 const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+const nodemailer = require('nodemailer');
 
 function buildAwsConfig() {
   const config = {
@@ -20,18 +21,44 @@ function buildAwsConfig() {
 const sesClient = new SESClient(buildAwsConfig());
 const snsClient = new SNSClient(buildAwsConfig());
 
-const FROM_EMAIL = process.env.FROM_EMAIL || 'noreply@queuing.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@queuing.com';
+const USE_SMTP = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+
+let smtpTransport = null;
+if (USE_SMTP) {
+  smtpTransport = nodemailer.createTransport({
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    secure: false,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+  console.log(`[Email] SMTP 모드 활성화 (${process.env.SMTP_HOST || 'smtp.gmail.com'}, ${process.env.SMTP_USER})`);
+} else {
+  console.log('[Email] AWS SES 모드 활성화');
+}
 
 async function sendEmail(to, subject, body) {
   try {
-    await sesClient.send(new SendEmailCommand({
-      Source: FROM_EMAIL,
-      Destination: { ToAddresses: [to] },
-      Message: {
-        Subject: { Data: subject },
-        Body: { Html: { Data: body } },
-      },
-    }));
+    if (USE_SMTP && smtpTransport) {
+      await smtpTransport.sendMail({
+        from: `"QUEUING" <${FROM_EMAIL}>`,
+        to,
+        subject,
+        html: body,
+      });
+    } else {
+      await sesClient.send(new SendEmailCommand({
+        Source: FROM_EMAIL,
+        Destination: { ToAddresses: [to] },
+        Message: {
+          Subject: { Data: subject },
+          Body: { Html: { Data: body } },
+        },
+      }));
+    }
     console.log(`[Email] 발송 성공: ${to} — ${subject}`);
     return { success: true, to, type: 'email' };
   } catch (err) {

@@ -1,3 +1,108 @@
+## [2026-09-07 12:21] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[redis-api-chart/values.yaml]**: Gmail SMTP 활성화 플래그와 외부 Kubernetes Secret 참조 설정을 추가. 기본값은 비활성화하여 기존 AWS SES/LocalStack fallback 유지.
+- **[redis-api-chart/templates/deployment.yaml]**: SMTP 계정과 App Password를 `secretKeyRef`로 주입하도록 조건부 환경변수 렌더링 추가.
+- **[redis-api-chart/Chart.yaml]**: 차트 템플릿 변경에 맞춰 버전을 `1.0.2`로 증가.
+- **[.env.example / .gitignore]**: 로컬 SMTP 테스트 환경변수 예시 추가 및 환경변수·Secret 원본 파일의 커밋 방지 규칙 추가.
+- **[redis-api-chart/README.md]**: Helm SMTP 설정과 인프라 담당자 작업 절차 문서화.
+- **[redis-api-chart/reademe.txt]**: 비밀번호를 명령행에 직접 입력하도록 안내하던 오래된 내용을 보안 안내로 교체.
+
+## [2026-09-07 10:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: `formatSeatLabel(seatId, sections)` 헬퍼 함수 추가. 취소표 알림 이메일 본문의 `${seat.seatId}` 원시 ID를 `${formatSeatLabel(seat.seatId, card.sections)}` 호출로 교체하여 "Floor구역 VIP석 840번" 형식으로 사람이 읽기 좋은 형태로 표시.
+
+## [2026-09-07 09:44] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/cancelAllocationService.js]**: `getAllocation`, `getAllocationHistory` 쿼리의 `id` → `allocation_id AS id`로 변경.
+- **[src/services/dbService.js]**: `cancel_allocations` CREATE TABLE의 PK 컬럼명을 `id` → `allocation_id`로 수정하여 실제 DB 스키마와 일치시킴.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** DB에 유효한 할당 레코드가 있음에도 "링크 만료" 오류 표시.
+- **원인(Cause):** `cancel_allocations` 테이블이 다른 파트에서 `allocation_id`를 PK 컬럼명으로 먼저 생성되어 있어, `CREATE TABLE IF NOT EXISTS`가 스킵됨. 서비스 코드가 `SELECT id`로 조회 → `Unknown column 'id'` 에러 → 상태 API 500 반환 → 프론트가 `secretLink.active`를 읽지 못해 "링크 만료"로 오인. `COALESCE(id, allocation_id)`도 MariaDB에서는 두 컬럼 모두 파싱하므로 동일 에러 발생.
+- **해결(Solution):** 쿼리를 `allocation_id AS id`로 직접 수정. dbService.js CREATE TABLE도 동일하게 수정.
+
+## [2026-09-07 09:30] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/eventRoutes.js]**: `deleteEventData()` 함수에서 이벤트 삭제 시 `cancel_allocations` 테이블의 관련 레코드도 함께 삭제하도록 추가. 기존에는 이벤트를 삭제해도 취소표 할당 이력이 남아 있어, 같은 eventId로 시뮬레이션을 재실행할 때 만료된 이전 할당이 조회되는 문제 발생 가능.
+
+## [2026-09-07 09:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/config/mariadb.js]**: 커넥션 풀에 `timezone: 'Etc/UTC'` 추가. Node.js Date 객체가 UTC 기준으로 직렬화되므로 MariaDB 드라이버도 UTC로 통일.
+- **[src/services/cancelAllocationService.js]**: `getAllocation`의 만료 필터를 `NOW()` → `UTC_TIMESTAMP()`로 변경. `expireAllOverdue`의 만료 조건도 동일하게 변경. MariaDB 서버가 KST 타임존일 때 `NOW()`가 UTC 기준 `expires_at`보다 9시간 앞서 있어 발급 즉시 만료로 판단되던 문제 수정.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시크릿 링크를 클릭하면 즉시 "취소표 링크가 만료되었습니다" 오류 표시.
+- **원인(Cause):** Node.js가 `expires_at`을 UTC 기준으로 저장(`new Date(Date.now() + 300s)`)하지만, MariaDB 서버 타임존이 KST(UTC+9)여서 `NOW()`가 9시간 앞선 값을 반환. DB 조회 시 `expires_at > NOW()` 조건에서 방금 생성된 레코드도 이미 만료된 것으로 판단.
+- **해결(Solution):** MariaDB 커넥션에 `timezone: 'Etc/UTC'` 설정 추가, 만료 비교 쿼리를 `UTC_TIMESTAMP()`로 변경하여 Node.js-MariaDB 간 타임존을 UTC로 통일.
+
+## [2026-09-07 09:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `GET /cancel-queue/status/:eventId/:userId` 핸들러에서 userId를 URL path parameter 대신 query string(`?userId=`)으로 우선 읽도록 변경. 이메일 주소처럼 `.`이 포함된 userId가 Fastify 라우터에서 파일 확장자로 오인되어 잘리는 문제 수정.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시크릿 링크 클릭 시 "현재 사용 가능한 취소표 링크가 없습니다. 이미 만료되었거나 사용된 링크입니다." 오류 표시.
+- **원인(Cause):** userId가 이메일 형식(`ggreang212@gmail.com`)일 때 Fastify가 URL path의 `.com` 부분을 파일 확장자로 파싱해 userId 값이 잘림. 결과적으로 DB 조회 시 userId 불일치로 할당 레코드를 찾지 못함.
+- **해결(Solution):** 프론트엔드에서 userId를 path parameter가 아닌 query string으로 전달하고, 서버에서도 `request.query.userId`를 우선 사용하도록 수정.
+
+## [2026-09-07 08:00] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/app.js]**: `CORS_ORIGIN` 환경변수가 설정된 경우 CORS 헤더를 응답에 추가하는 훅 추가. 로컬 테스트 시 `CORS_ORIGIN=*` 또는 `CORS_ORIGIN=http://192.168.x.x:포트`로 설정하면 외부 origin에서의 API 호출을 허용. 운영 환경에서는 미설정 시 비활성.
+- **[src/routes/simulationRoutes.js]**: 시크릿 링크 이메일 URL에 `API_BASE` 환경변수가 설정된 경우 `apiBase` 쿼리 파라미터를 추가. 로컬에서 `cancel-ticketing.html`을 열어도 API 호출이 VM 백엔드로 향하도록 지원.
+
+## [2026-09-07 03:25] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 시크릿 링크 이메일의 URL을 SPA 해시 라우트(`/#/private-link`)에서 독립 HTML 페이지(`/cancel-ticketing.html`)로 변경. cancel-ticketing.html은 풀 예매 워크플로(좌석 확인 → 결제수단 선택 → 결제 완료)를 제공하는 전용 UI.
+
+## [2026-09-06 21:33] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 멤버십 회원 전용 취소표 시뮬레이션 라우트 신규 생성.
+  - `GET /admin/simulation/events` — DB 등록 공연 목록 조회 (드롭다운 용도).
+  - `POST /admin/simulation/init` — 시뮬레이션 초기화: 더미 유저 최대 50,000명 생성, 실제 멤버십 유저 계정/멤버십 자동 등록, Redis `simulation:{eventId}` 해시에 메타 저장.
+  - `POST /admin/simulation/sellout` — [단계1] 매진 연출: 전체 좌석을 더미 유저로 SOLD 처리 (Redis pipeline + DB batch), 잔여 더미를 standby 큐에 등록, 실제 유저를 score=0으로 최우선 배치.
+  - `POST /admin/simulation/close` — [단계2] 조기 마감: 이벤트 상태 closed 전환 + MariaDB `ticket_close_at` 갱신, standby 대기열 전수 검사 → 멤버십 적격/비적격 교차 검증.
+  - `POST /admin/simulation/cancel-seats` — [단계3] 취소표 생성: 지정 수량만큼 더미 좌석 랜덤 선택 후 AVAILABLE 복원 (Redis + DB), 예약 CANCELLED 처리.
+  - `POST /admin/simulation/issue-links` — [단계4] 시크릿 링크 발급: AVAILABLE 좌석마다 `allocateNextForSeat()` 호출, 멤버십 유저 자동 매칭 + 이메일 발송.
+  - `POST /admin/simulation/cleanup` — 더미 유저/좌석/대기열/예약/멤버십 일괄 삭제, Redis 큐 키 초기화.
+  - `GET /admin/simulation/status` — 현재 시뮬레이션 단계, 좌석 상태, 대기열 수치, 실제 유저 상태(standby 위치·입장 허용·시크릿 링크 할당) 조회.
+- **[src/app.js]**: `simulationRoutes` require 및 Fastify 등록 추가.
+
+## [2026-09-06 21:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: `events` 테이블에 `ticket_close_at DATETIME NULL` 컬럼 추가 (CREATE TABLE + addColumns).
+- **[src/routes/eventRoutes.js]**: `PATCH /events/:eventId/close-time` 핸들러에 MariaDB `ticket_close_at` 저장/해제 추가. 기존에는 Redis에만 반영되고 DB에는 저장되지 않아서, Redis 복구 시 마감 해제가 원복되는 문제가 있었음.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자가 "5분 후 마감" 후 "지금 바로 오픈"을 눌러도 마감 상태가 해제되지 않음.
+- **원인(Cause):** `PATCH /events/:eventId/close-time` 핸들러가 Redis(`events:list`, `event:info`)에만 `ticketCloseAt`을 저장/해제하고, MariaDB `events.ticket_close_at`에는 반영하지 않았음. 또한 `ticket_close_at` 컬럼 자체가 DB 스키마에 없어서 저장이 불가능했음. Redis 복구 서비스는 MariaDB의 `ticket_close_at`을 기준으로 복원하므로, DB에 값이 없으면 해제가 무효화됨.
+- **해결(Solution):** `events` 테이블에 `ticket_close_at DATETIME NULL` 컬럼 추가, `close-time` PATCH 핸들러에서 MariaDB도 함께 업데이트하도록 수정. 서버 재시작 시 `addColumns()`가 누락된 컬럼을 자동 추가.
+
+## [2026-09-06 20:24] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/seatRoutes.js]**: 예매 완료/취소 이메일의 공연 정보 조회 수정. seatId 파싱을 `split('-')` → `split(':')[0]`으로 변경하여 eventId를 정확히 추출. Redis 좌석 해시에서 `section`, `sessionDate`, `sessionTime`을 가져와 이메일에 반영. 좌석 표시를 raw ID(`Floor-001`) 대신 `Floor구역 VIP석 1번` 형식으로 변환하는 `formatSeatLabel()` 추가. 올림픽홀 구역별 등급 매핑(`GRADE_MAP`) 추가.
+
+## [2026-09-06 20:09] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/seatRoutes.js]**: `POST /seats/confirm` 결제 확정 성공 시 예매 완료 안내 메일 자동 발송. `POST /seats/cancel` 예매 취소 성공 시 취소 및 환불 안내 메일 자동 발송. MariaDB에서 사용자 이메일을 조회하고, Redis 이벤트 카드에서 공연 정보를 가져와 HTML 이메일 발송. 메일 발송은 비동기로 처리하여 API 응답을 지연시키지 않음.
+
+## [2026-09-06 19:12] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/notificationService.js]**: Gmail SMTP 발송 기능 추가 (nodemailer). `SMTP_USER`/`SMTP_PASS` 환경변수가 설정되면 SMTP 모드, 미설정 시 기존 AWS SES 모드로 동작. `SMTP_HOST`(기본 `smtp.gmail.com`), `SMTP_PORT`(기본 `587`) 커스텀 가능.
+- **[package.json]**: `nodemailer` (^6.9.0) 의존성 추가.
+- **[src/routes/eventRoutes.js]**: `POST /admin/test-email` 엔드포인트 추가. 수신자(`to`), 제목(`subject`), 본문(`body`)을 지정하여 이메일 발송 테스트 가능.
+
 ## [2026-09-06 12:05] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

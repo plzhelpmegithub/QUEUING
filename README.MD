@@ -28,7 +28,8 @@ api/
     │   ├── membershipRoutes.js         # 멤버십 구독
     │   ├── wishlistRoutes.js           # 위시리스트
     │   ├── backupRoutes.js             # 백업/복구
-    │   └── cancelQueueRoutes.js        # 취소표 대기열
+    │   ├── cancelQueueRoutes.js        # 취소표 대기열
+    │   └── simulationRoutes.js        # 취소표 시뮬레이션 (어드민)
     └── services/
         ├── authService.js              # 인증 로직 (argon2id + bcrypt 하위호환)
         ├── queueService.js             # 대기열 핵심 로직
@@ -39,7 +40,7 @@ api/
         ├── tokenService.js             # Admission Token (JWT)
         ├── metricsService.js           # Prometheus 메트릭
         ├── sseService.js               # SSE 실시간 브로드캐스트
-        ├── notificationService.js      # AWS SES/SNS 알림
+        ├── notificationService.js      # 이메일(SES/SMTP)/SMS(SNS) 알림
         ├── membershipService.js        # 멤버십 CRUD
         ├── wishlistService.js          # 위시리스트 CRUD
         ├── backupService.js            # 스냅샷 백업/복구
@@ -65,6 +66,7 @@ api/
 | `@node-rs/argon2` | 비밀번호 해싱 (argon2id, Rust 네이티브 바인딩) |
 | `bcryptjs` | 비밀번호 해싱 (기존 해시 하위호환) |
 | `prom-client` | Prometheus 메트릭 수집 |
+| `nodemailer` | 이메일 발송 (SMTP, Gmail 등) |
 | `@aws-sdk/client-ses` | 이메일 알림 (AWS SES) |
 | `@aws-sdk/client-sns` | SMS 알림 (AWS SNS) |
 | `dotenv` | 환경변수 로드 |
@@ -137,6 +139,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `POST /events/seed` | 데모용 더미 이벤트 5개 생성 |
 | `POST /admin/redis/reset` | Redis 이벤트 상태 초기화. `hard`/`resync`는 MariaDB 기준으로 이벤트 목록을 재구성하며 DB에 저장된 오픈 예정 시간도 복원 |
 | `POST /admin/redis/recover` | MariaDB의 이벤트·좌석·대기열·예매 상태를 Redis로 전체 복구하고, 대상 이벤트의 오픈 예정 시간과 자동 오픈 타이머를 재등록 |
+| `POST /admin/test-email` | 이메일 발송 테스트. `{ to, subject?, body? }` — `to`만 필수, 나머지는 기본 테스트 메일 사용 |
 
 ---
 
@@ -169,8 +172,8 @@ mariadb 라이브러리 기반 커넥션 풀.
 |---|---|
 | `POST /seats/init` | 좌석 초기화 (Redis Hash 생성) |
 | `POST /seats/hold` | 좌석 선점. 좌석 ID에 포함된 회차와 Admission Token을 검증한 뒤 분산 락·타이머 시작 |
-| `POST /seats/confirm` | 결제 확정. MariaDB reservations 저장, 토큰 무효화, 매진 체크 |
-| `POST /seats/cancel` | 좌석 취소. available 복구, B팀 재판매 트리거 |
+| `POST /seats/confirm` | 결제 확정. MariaDB reservations 저장, 토큰 무효화, 매진 체크. 성공 시 사용자 이메일로 예매 완료 안내 메일 자동 발송 |
+| `POST /seats/cancel` | 좌석 취소. available 복구, B팀 재판매 트리거. 성공 시 사용자 이메일로 취소 및 환불 안내 메일 자동 발송 |
 | `POST /seats/release` | 좌석 해제 + standby 자동 배정 |
 | `GET /seats/timer/:seatId` | 남은 결제 시간 조회 |
 | `GET /seats/sold-out` | 매진 여부 확인 |
@@ -228,6 +231,33 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
 | `GET /cancel-queue/history/:eventId` | 이벤트별 할당 내역 조회 |
+
+---
+
+### src/routes/simulationRoutes.js — 취소표 시뮬레이션 라우트
+
+멤버십 회원 전용 취소표 티켓팅의 전체 흐름을 어드민에서 단계별로 재현할 수 있는 시뮬레이션 API.
+
+| 엔드포인트 | 설명 |
+|---|---|
+| `GET /admin/simulation/events` | DB 등록 공연 목록 조회 (드롭다운용) |
+| `POST /admin/simulation/init` | 시뮬레이션 초기화 — 더미 유저 생성 + 실제 멤버십 유저 계정/멤버십 자동 등록 |
+| `POST /admin/simulation/sellout` | [단계1] 매진 연출 — 전체 좌석 더미 점유(SOLD) + 잔여를 standby 큐 등록 + 실제 유저 최우선 배치 |
+| `POST /admin/simulation/close` | [단계2] 조기 마감 — ticketing 상태 closed + 멤버십/대기열 유지 교차 검증 |
+| `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 더미 좌석 랜덤 취소(AVAILABLE 복원) |
+| `POST /admin/simulation/issue-links` | [단계4] 시크릿 링크 발급 — allocateNextForSeat으로 멤버십 유저 매칭 + 이메일 발송 (링크 대상: `/cancel-ticketing.html`) |
+| `POST /admin/simulation/cleanup` | 시뮬레이션 데이터 일괄 삭제 (더미 유저·좌석·대기열·예약·멤버십) |
+| `GET /admin/simulation/status` | 현재 시뮬레이션 단계·좌석·대기열·실제유저 상태 조회 |
+
+**Redis 키:**
+- `simulation:{eventId}` (Hash) — 시뮬레이션 메타데이터 (stage, realUserEmail, dummyCount 등)
+
+**시뮬레이션 단계 흐름:**
+1. `initialized` → 더미 유저 + 실제 유저 준비 완료
+2. `sold_out` → 전석 SOLD + standby 대기열 구성
+3. `closed` → 티켓팅 마감 + 멤버십 검증
+4. `seats_cancelled` → 더미 좌석 일부 취소 (취소표 생성)
+5. `links_issued` → 시크릿 링크 발급 + 이메일 발송
 
 ---
 
@@ -415,14 +445,18 @@ Server-Sent Events로 브라우저에 실시간 이벤트 푸시 (서버 → 클
 
 ### src/services/notificationService.js — 알림 서비스
 
-AWS SES(이메일) / SNS(SMS) 클라이언트.
+이메일(SES 또는 SMTP) / SMS(SNS) 듀얼 모드 클라이언트.
 
-- `sendEmail()`: AWS SES로 이메일 발송
+- `sendEmail()`: `SMTP_USER`/`SMTP_PASS` 환경변수가 있으면 nodemailer SMTP로 발송, 없으면 AWS SES로 발송
 - `sendSMS()`: AWS SNS로 SMS 발송
 - `notifyEventCancellation()`: 공연 취소 알림 (사용자 목록에게 일괄 발송)
 - `notifyEventUpdate()`: 공연 정보 변경 알림
 
-> 환경변수 `AWS_ENDPOINT`를 설정하면 LocalStack 등 커스텀 엔드포인트를 사용하고, 미설정 시 AWS SDK 기본 엔드포인트(실제 AWS)를 사용. 자격증명도 환경변수(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) 또는 IAM Role 등 SDK 기본 체인으로 주입.
+**이메일 모드 선택:**
+| 모드 | 조건 | 설명 |
+|---|---|---|
+| SMTP | `SMTP_USER` + `SMTP_PASS` 설정 | Gmail 등 외부 SMTP 서버로 실제 메일 발송. `SMTP_HOST`(기본 `smtp.gmail.com`), `SMTP_PORT`(기본 `587`) 커스텀 가능 |
+| SES | SMTP 환경변수 미설정 | AWS SES로 발송. `AWS_ENDPOINT` 설정 시 LocalStack 사용(테스트용, 실제 발송 안 됨), 미설정 시 실제 AWS |
 
 ---
 
@@ -580,8 +614,32 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `DB_NAME` | `queuing_db` | MariaDB 데이터베이스명 |
 | `JWT_SECRET` | `queuing-admission-secret-key-2026` | JWT 서명 키 |
 | `HOLD_DURATION` | `600` | 결제 제한 시간 (초) |
+| `SMTP_USER` | *(없음)* | SMTP 이메일 계정 (설정 시 SMTP 모드 활성화) |
+| `SMTP_PASS` | *(없음)* | SMTP 비밀번호 또는 앱 비밀번호 |
+| `SMTP_HOST` | `smtp.gmail.com` | SMTP 서버 호스트 |
+| `SMTP_PORT` | `587` | SMTP 서버 포트 |
+| `FROM_EMAIL` | `SMTP_USER` 또는 `noreply@queuing.com` | 발신자 이메일 주소 |
 
 ---
+
+### Kubernetes Helm 차트의 Gmail SMTP 설정
+
+`redis-api-chart`는 SMTP 자격증명을 차트에 저장하지 않고, `queuing-a` 네임스페이스에 미리 생성된 `gmail-smtp-credentials` Secret을 참조한다. `smtp.enabled`의 기본값은 `false`이므로 기존 AWS SES/LocalStack fallback이 유지된다.
+
+```yaml
+# redis-api-chart 배포 override 예시
+smtp:
+  enabled: true
+```
+
+Secret 키는 애플리케이션이 읽는 이름과 동일해야 한다.
+
+```text
+SMTP_USER: Gmail 계정 주소
+SMTP_PASS: Gmail App Password
+```
+
+실제 App Password는 GitHub, Helm values, Argo CD manifest에 기록하지 않고 Kubernetes Secret으로 주입한다. 차트 상세 구조와 생성 명령은 `redis-api-chart/README.md`를 참조한다.
 
 ## 배포·확인 시 주의
 

@@ -1,4 +1,4 @@
-kubectl create secret generic mariadb-credentials \
-  --from-literal=MARIADB_ROOT_PASSWORD='password_insert'
+이 파일은 이전 안내와의 호환을 위해 남겨둔 안내 파일입니다.
 
-' ' 안에 비번값을 먼저 넣고 실행해야 레디스가 정상 작동
+현재 Helm 차트의 DB·SMTP 자격증명 설정과 생성 방법은 README.md를 확인하십시오.
+실제 비밀번호 또는 App Password를 이 파일이나 Git 저장소에 기록하지 마십시오.

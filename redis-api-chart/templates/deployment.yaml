@@ -80,6 +80,27 @@ spec:
               value: {{ .Values.env.nodeEnv | quote }}
             - name: NODE_OPTIONS
               value: {{ .Values.env.nodeOptions | quote }} # Node.js V8 힙 메모리 고갈로 인한 파드 부하시 프로세스 죽음 현상 해결
+            {{- if .Values.smtp.enabled }}
+            # SMTP 계정과 App Password는 외부 Kubernetes Secret에서 주입한다.
+            - name: SMTP_HOST
+              value: {{ .Values.smtp.host | quote }}
+            - name: SMTP_PORT
+              value: {{ .Values.smtp.port | quote }}
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "smtp.secret.name must be set when smtp.enabled=true" .Values.smtp.secret.name }}
+                  key: {{ required "smtp.secret.userKey must be set when smtp.enabled=true" .Values.smtp.secret.userKey }}
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "smtp.secret.name must be set when smtp.enabled=true" .Values.smtp.secret.name }}
+                  key: {{ required "smtp.secret.passwordKey must be set when smtp.enabled=true" .Values.smtp.secret.passwordKey }}
+            {{- if .Values.smtp.fromEmail }}
+            - name: FROM_EMAIL
+              value: {{ .Values.smtp.fromEmail | quote }}
+            {{- end }}
+            {{- end }}
             - name: AWS_ENDPOINT
               value: {{ .Values.env.awsEndpoint | quote }}
             - name: AWS_ACCESS_KEY_ID

@@ -50,7 +50,7 @@ async function expireAllOverdue() {
   const overdue = await pool.query(
     `SELECT user_id, seat_id, event_id, session_date, session_time
      FROM cancel_allocations
-     WHERE status = 'LINK_SENT' AND expires_at < NOW()`,
+     WHERE status = 'LINK_SENT' AND expires_at < UTC_TIMESTAMP()`,
   );
   let expired = 0;
   let reassigned = 0;
@@ -71,9 +71,9 @@ async function expireAllOverdue() {
 async function getAllocation(userId, eventId = '', includeExpired = false) {
   const eventFilter = eventId ? ' AND event_id = ?' : '';
   const params = eventId ? [userId, eventId] : [userId];
-  const expiryFilter = includeExpired ? '' : ' AND expires_at > NOW()';
+  const expiryFilter = includeExpired ? '' : ' AND expires_at > UTC_TIMESTAMP()';
   const rows = await pool.query(
-    `SELECT id, user_id, seat_id, event_id, status, created_at, expires_at
+    `SELECT allocation_id AS id, user_id, seat_id, event_id, status, created_at, expires_at
      , session_date, session_time
      FROM cancel_allocations
      WHERE user_id = ?${eventFilter} AND status = 'LINK_SENT'${expiryFilter}
@@ -171,7 +171,7 @@ async function expireAllocation(userId, eventId, seatId, context = {}) {
 
 async function getAllocationHistory(eventId) {
   const rows = await pool.query(
-    `SELECT id, user_id, seat_id, event_id, session_date, session_time, status, created_at, expires_at, responded_at
+    `SELECT allocation_id AS id, user_id, seat_id, event_id, session_date, session_time, status, created_at, expires_at, responded_at
      FROM cancel_allocations WHERE event_id = ? ORDER BY created_at DESC`,
     [eventId || ''],
   );

@@ -27,7 +27,8 @@ async function cancelQueueRoutes(fastify) {
   });
 
   fastify.get('/cancel-queue/status/:eventId/:userId', async (request, reply) => {
-    const { eventId, userId } = request.params;
+    const { eventId } = request.params;
+    const userId = request.query.userId || request.params.userId;
     const context = getQueueContext(request, eventId);
 
     const [position, membership, allocation] = await Promise.all([
