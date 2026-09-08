@@ -157,6 +157,16 @@ const messagesCounter = new client.Counter({
   registers: [register],
 });
 
+// 라벨이 붙은 메트릭은 첫 inc/set 이 일어나기 전까지 시계열 자체가 생기지 않는다.
+// 그러면 접속자가 한 명도 없을 때 /metrics 에 ws_active_connections 가 아예
+// 안 나오고, Prometheus 에도 없는 값이 되어 이 지표로는 HPA 를 걸 수 없다.
+// (커스텀 메트릭 HPA 는 값이 0이어도 "존재"해야 동작한다)
+// 그래서 기동 시점에 두 종류를 0으로 초기화해 항상 노출되게 한다.
+for (const kind of ['chat', 'seats']) {
+  wsConnectionsGauge.set({ kind }, 0);
+  messagesCounter.inc({ kind }, 0);
+}
+
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
