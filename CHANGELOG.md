@@ -3,7 +3,7 @@
 ### 🔄 변경 및 수정 사항
 - **[redis-api-chart/values.yaml]**: Google reCAPTCHA v3 활성화 여부, 검증 정책 및 외부 Kubernetes Secret 참조 설정을 추가.
 - **[redis-api-chart/templates/deployment.yaml]**: reCAPTCHA 활성화 시 API Pod에 Secret Key와 검증 환경변수를 주입하도록 연결.
-- **[redis-api-chart/Chart.yaml]**: 차트 템플릿 변경을 반영하여 차트 버전을 `1.0.5`로 증가.
+- **[redis-api-chart/Chart.yaml]**: 차트 템플릿 변경을 반영하여 차트 버전을 `1.0.4`로 증가.
 - **[redis-api-chart/README.md / README.MD]**: Helm Secret 생성 방법, 운영 values override 및 Site Key/Secret Key 분리 원칙 문서화.
 
 ### 🛠 트러블슈팅 (Troubleshooting)
