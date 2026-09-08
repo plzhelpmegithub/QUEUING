@@ -1,9 +1,55 @@
+## [2026-09-08 14:45] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[terraform/]**: 프론트엔드 배포용 Terraform 추가 (S3 + CloudFront + Route 53 + ACM).
+  - **s3.tf** (신규): S3 버킷 (퍼블릭 차단, 버전 관리, 암호화, OAC 버킷 정책).
+  - **cloudfront.tf** (신규): ACM 인증서 (us-east-1 자동 발급/DNS 검증), OAC, CloudFront Distribution (SPA 에러 페이지, Gzip 압축, 캐싱).
+  - **route53.tf** (신규): Hosted Zone, ACM 검증 레코드, 프론트엔드 A/AAAA (→CloudFront), API A/AAAA (→ALB).
+  - **main.tf**: us-east-1 provider 별칭 추가 (CloudFront ACM 인증서용).
+  - **variables.tf**: 프론트엔드 변수 추가 (frontend_bucket_name, frontend_subdomain, api_subdomain).
+  - **outputs.tf**: 프론트엔드 출력 추가 (S3 버킷, CloudFront URL/ID, Route 53 NS, frontend_url, api_url).
+  - **terraform.tfvars.example**: 프론트엔드/도메인 설정 예시 추가.
+
+---
+
+## [2026-09-08 14:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[terraform/]**: ECS Fargate → EC2 Auto Scaling Group 아키텍처 전환. AMI `ami-0bc151a94289adb52` 적용.
+  - **ec2.tf** (신규): IAM Role + Instance Profile, Launch Template(AMI·인스턴스타입·User Data), Auto Scaling Group, CPU 기반 Scaling Policy.
+  - **user_data.sh.tpl** (신규): EC2 시작 시 Docker 설치 → Secrets Manager 조회 → 컨테이너 실행 자동화 스크립트.
+  - **ecs.tf**: ECS Fargate 리소스 전부 제거 (ec2.tf로 대체).
+  - **alb.tf**: Target Group target_type을 "ip"에서 "instance"로 변경.
+  - **variables.tf**: Fargate 전용 변수(api_cpu, api_memory) 제거. EC2 변수(ec2_ami_id, ec2_instance_type, ec2_volume_size) 추가.
+  - **security.tf**: ECS 관련 주석을 EC2로 전면 업데이트.
+  - **outputs.tf**: ECS 클러스터/서비스 출력을 ASG/Launch Template/AMI 출력으로 교체.
+  - **terraform.tfvars.example**: EC2 설정 예시로 업데이트.
+
+---
+
+## [2026-09-08 13:15] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[terraform/]**: API 백엔드를 AWS로 이전하기 위한 Terraform IaC 전체 구성 작성.
+  - **main.tf**: Provider(ap-northeast-2), 원격 state backend(S3+DynamoDB lock) 템플릿.
+  - **variables.tf**: 전체 입력 변수 정의 (VPC CIDR, ECS CPU/메모리, RDS/Redis 인스턴스 유형, SMTP, reCAPTCHA 등).
+  - **vpc.tf**: 2 AZ, Public/Private Subnet, NAT Gateway, Route Table. ALB는 Public, ECS/RDS/Redis는 Private.
+  - **security.tf**: 4개 Security Group — ALB(80/443 inbound), ECS(ALB→3000), RDS(ECS→3306), Redis(ECS→6379).
+  - **ecr.tf**: API Docker 이미지 프라이빗 레포. 최근 10개 이미지만 유지하는 Lifecycle Policy.
+  - **alb.tf**: ALB + Target Group(health check /health). ACM 인증서 유무에 따라 HTTP 직접/HTTPS 리다이렉트 분기.
+  - **ecs.tf**: Fargate Task Definition (환경변수 + Secrets Manager 참조), Service, Auto Scaling (CPU 70% 목표).
+  - **elasticache.tf**: Managed Redis 7.1 (Private Subnet).
+  - **rds.tf**: Managed MariaDB 10.11, gp3 스토리지, prod 환경 Multi-AZ 자동 활성화.
+  - **secrets.tf**: DB 비밀번호·SMTP·reCAPTCHA Secret Key를 Secrets Manager JSON으로 통합 관리.
+  - **outputs.tf**: ALB DNS, ECR URL, RDS/Redis 엔드포인트, CloudWatch 로그 그룹 등 핵심 출력.
+  - **terraform.tfvars.example**: 변수 예시 파일 (실제 값은 .gitignore 처리).
+
 ## [2026-09-08 12:55] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
 - **[redis-api-chart/values.yaml]**: Google reCAPTCHA v3 활성화 여부, 검증 정책 및 외부 Kubernetes Secret 참조 설정을 추가.
 - **[redis-api-chart/templates/deployment.yaml]**: reCAPTCHA 활성화 시 API Pod에 Secret Key와 검증 환경변수를 주입하도록 연결.
-- **[redis-api-chart/Chart.yaml]**: 차트 템플릿 변경을 반영하여 차트 버전을 `1.0.4`로 증가.
+- **[redis-api-chart/Chart.yaml]**: 차트 템플릿 변경을 반영하여 차트 버전을 `1.0.5`로 증가.
 - **[redis-api-chart/README.md / README.MD]**: Helm Secret 생성 방법, 운영 values override 및 Site Key/Secret Key 분리 원칙 문서화.
 
 ### 🛠 트러블슈팅 (Troubleshooting)
