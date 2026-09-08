@@ -1,0 +1,76 @@
+# ──────────────────────────────────────────────
+# prometheus-adapter Helm values (릴리즈 이름: prometheus-adapter / 네임스페이스: monitoring)
+#
+# HPA 는 기본적으로 CPU·메모리만 볼 수 있다. "초당 요청 수"나 "동시 접속 수"
+# 같은 애플리케이션 지표로 스케일링하려면 그 값을 Custom Metrics API
+# (custom.metrics.k8s.io) 로 노출해야 하는데, 그 변환을 이 어댑터가 한다.
+#
+#   앱 /metrics → Prometheus 수집 → 이 어댑터 → HPA
+#
+# ■ 적용
+#   helm upgrade prometheus-adapter prometheus-community/prometheus-adapter \
+#     -n monitoring -f shared-infra/prometheus-adapter-values.yaml
+#
+# ■ 확인
+#   kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1" | jq '.resources[].name'
+#   → "resources":[] 로 비어 있으면 아래 url 이나 seriesQuery 가 안 맞는 것이다.
+#
+#   kubectl -n monitoring logs deploy/prometheus-adapter --tail=30 | grep -i unable
+# ──────────────────────────────────────────────
+
+prometheus:
+  # ⚠️ 모니터링 스택의 릴리즈 이름이 바뀌면 이 주소도 같이 바꿔야 한다.
+  # 2026-09-08 까지 옛 이름(kube-prom-...)이 남아 있어서 어댑터가 계속 실패했다.
+  #   dial tcp: lookup kube-prom-kube-prometheus-prometheus.monitoring.svc: no such host
+  # 어댑터 자체는 Running 이고 API 도 200 을 돌려주는데 메트릭만 0개인,
+  # 겉보기에 멀쩡해 보이는 상태였다.
+  #
+  #   실제 서비스 이름 확인:  kubectl -n monitoring get svc | grep prometheus
+  url: http://monitoring-kube-prometheus-prometheus.monitoring.svc
+  port: 9090
+
+rules:
+  # 차트 기본 규칙(컨테이너 리소스 등)은 끄고 우리 지표만 등록한다.
+  default: false
+  custom:
+    # ── C파트: WebSocket 동시 접속 수 ──
+    # 실시간 서버는 CPU 보다 "몇 개의 연결을 붙들고 있는지"가 부하에 가깝다.
+    # server.js 의 prom-client Gauge(ws_active_connections, 라벨 kind)에서 온다.
+    #
+    # ⚠️ 이 지표가 Prometheus 에 들어오려면 두 가지가 모두 필요하다.
+    #   1) realtime-ws 차트의 ServiceMonitor 에 release: monitoring 라벨
+    #      (kube-prometheus-stack 이 그 라벨이 붙은 것만 인식한다)
+    #   2) server.js 기동 시 게이지를 0 으로 초기화
+    #      (라벨 있는 메트릭은 첫 inc 전까지 시계열 자체가 없고,
+    #       커스텀 메트릭 HPA 는 값이 0이어도 "존재"해야 동작한다)
+    - seriesQuery: 'ws_active_connections{namespace="realtime"}'
+      resources:
+        overrides:
+          namespace:
+            resource: "namespace"
+          service:
+            resource: "service"
+      name:
+        matches: "ws_active_connections"
+        as: "ws_active_connections_total"
+      metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+
+    # ── D파트: 초당 요청 수 (RPS) ──
+    # 예지님 실시간 카운터 서비스(backend-counter)를 요청량 기준으로
+    # 스케일링하기 위한 지표. Spring Boot Actuator(Micrometer)가 노출하는
+    # 표준 메트릭 http_server_requests_seconds_count 를 rate 로 변환한다.
+    #
+    # 앱의 실제 메트릭 이름이 다르면 seriesQuery/matches 를 그 이름으로 바꾼다.
+    #   확인: curl -s "http://192.168.0.192:30092/api/v1/label/__name__/values" \
+    #           | grep http_server_requests
+    - seriesQuery: 'http_server_requests_seconds_count{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace:
+            resource: "namespace"
+          pod:
+            resource: "pod"
+      name:
+        matches: "^http_server_requests_seconds_count$"
+        as: "http_requests_per_second"
+      metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'

@@ -1,0 +1,97 @@
+# ──────────────────────────────────────────────
+# kube-prometheus-stack Helm values (릴리즈 이름: monitoring / 네임스페이스: monitoring)
+#
+# 클러스터에만 있고 git 어디에도 없던 설정을 기록으로 남긴다.
+# 2026-09-08 시점의 실제 적용값이며, 여기 없는 항목은 차트 기본값이다.
+#
+# ■ 적용
+#   helm upgrade monitoring prometheus-community/kube-prometheus-stack \
+#     -n monitoring --version 88.6.0 \
+#     -f shared-infra/monitoring-values.yaml --timeout 10m
+#
+#   ⚠️ --version 을 반드시 고정할 것. 빼면 최신 차트로 통째로 올라가서
+#      D파트(예지님) 대시보드 구성이 바뀔 수 있다.
+#
+# ■ helm upgrade 는 클러스터 관리자 계정으로 실행해야 한다
+#   kube-prometheus-stack 은 pre-upgrade 훅에서 admission webhook 용
+#   ClusterRole 을 지웠다 다시 만든다. 네임스페이스 범위 권한만 가진 계정
+#   (예: monitoring:yeji)으로 실행하면 여기서 막힌다.
+#     Upgrade failed: pre-upgrade hooks failed: clusterroles ... is forbidden
+#   실제로 2026-09-04 에 이 이유로 리비전 2·3 이 연속 실패했다.
+#
+# ■ 마스터 부하가 높을 때는 피할 것
+#   etcd 응답이 느려지면 pre-upgrade 훅이 "etcdserver: request timed out"
+#   으로 실패한다. uptime 의 load average 가 낮을 때 실행한다.
+# ──────────────────────────────────────────────
+
+grafana:
+  # ⚠️ persistence 를 껐다 (2026-09-08)
+  #
+  # 원래 hostPath PV(grafana-pv, /data/grafana, worker1 고정)를 붙이려 했으나
+  # 볼륨 마운트가 2분 타임아웃에 걸려 파드가 아예 뜨지 못했다.
+  #   kubelet: unmounted volumes=[storage] ... context deadline exceeded
+  # 볼륨 단계에서 막히면 컨테이너 이벤트가 하나도 안 남아서
+  # kubectl describe 에는 Scheduled 만 보인다 — 원인 찾기가 매우 어렵다.
+  #
+  # /data/grafana 는 파일 0개였고(9/4 생성 후 미사용), 잃은 데이터는 없다.
+  # 대시보드는 kube-prometheus-stack 이 ConfigMap 으로 프로비저닝하므로
+  # 파드가 뜨면 자동 복구된다. UI에서 손으로 만든 대시보드만 휘발된다.
+  #
+  # 근본 원인은 확정하지 못했다. hostPath 는 노드에 물리적으로 묶이는 방식이라
+  # 권장되지 않으므로, AWS 이관 시 EBS CSI 드라이버로 제대로 붙일 예정이다
+  # (terraform 의 aws_eks_addon.ebs_csi 참고).
+  persistence:
+    enabled: false
+
+  # RWO 볼륨을 다시 붙일 때를 대비해 남겨둔다.
+  # 기본 RollingUpdate 는 새 파드를 먼저 띄우고 옛 파드를 죽이는데,
+  # ReadWriteOnce 볼륨은 파드 하나만 붙을 수 있어 서로 기다리는 교착이 생긴다.
+  deploymentStrategy:
+    type: Recreate
+
+  service:
+    type: NodePort
+    nodePort: 30091 # http://192.168.0.192:30091
+
+  # ── SMTP (알림 메일) ──
+  # 앱 비밀번호는 Secret 으로만 넣는다. YAML 에 평문으로 두지 않는다.
+  #   kubectl -n monitoring create secret generic grafana-smtp \
+  #     --from-literal=user='<발신 Gmail 주소>' \
+  #     --from-literal=password='<Gmail 앱 비밀번호 16자리, 공백 제거>'
+  #
+  # Gmail 앱 비밀번호는 2단계 인증이 켜져 있어야 발급 메뉴가 보인다.
+  # 일반 로그인 비밀번호로는 인증되지 않는다(535 오류).
+  smtp:
+    existingSecret: grafana-smtp
+    userKey: user
+    passwordKey: password
+
+  # ⚠️ smtp.existingSecret 만으로는 켜지지 않는다.
+  # 차트가 Secret 에서 만들어주는 건 GF_SMTP_USER / GF_SMTP_PASSWORD 뿐이고,
+  # 활성화 여부와 호스트는 grafana.ini 쪽에 있어야 한다.
+  grafana.ini:
+    smtp:
+      enabled: true
+      host: smtp.gmail.com:587
+      from_address: chlwldp02narver@gmail.com
+      from_name: QUEUING Grafana
+
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30092 # http://192.168.0.192:30092 — Grafana/admin.js 가 쿼리
+  prometheusSpec:
+    service:
+      type: NodePort
+    # 메트릭 데이터는 계속 영속화한다. 손으로 만든 prometheus-pv 를 그대로 쓴다.
+    # (PVC 는 Operator 가 이 템플릿으로 직접 만든다 — 손으로 만들면 PV 를
+    #  가로채서 Operator 쪽 PVC 가 영원히 Pending 이 된다. 2026-08 에 겪음)
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+          volumeName: prometheus-pv
