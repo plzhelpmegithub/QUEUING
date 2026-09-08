@@ -4,3 +4,5 @@ apache-jmeter-5.6.3/bin/*.log
 apache-jmeter-5.6.3/bin/*.jtl
 *.jmx
 jmeter.log
+apache-jmeter-5.6.3/bin/dashboard_report/
+apache-jmeter-5.6.3/bin/dashboard_report/
