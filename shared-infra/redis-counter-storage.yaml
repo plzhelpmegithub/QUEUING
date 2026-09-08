@@ -1,0 +1,74 @@
+# ──────────────────────────────────────────────
+# D파트(예지님) 전용 Redis 영속 저장소 — PV + PVC
+#
+# ■ 왜 필요한가
+# redis-counter-master StatefulSet 은 AOF 를 켜두었지만
+#   command: [... "--appendonly yes --appendfsync everysec" ...]
+# volumeClaimTemplates 도 volumes 도 없어서 AOF 파일이 컨테이너 안에만 있다.
+# 즉 파드가 죽거나 재배포되면 좋아요 수·접속자 카운터가 그대로 사라진다.
+# "Redis 장애 시 카운터 유실 방지" 요구사항이 지금은 충족되지 않는다.
+#
+# 저장 설정만 켜고 저장할 곳이 없는 상태로, 2026-09-08 Grafana 에서 겪은 것과
+# 같은 종류의 함정이다. 켜져 있으니 되는 줄 알기 쉽다.
+#
+# ■ 역할 분담
+#   이 파일(PV/PVC) — 클러스터 자원이므로 인프라(지예) 담당
+#   StatefulSet 에 volumes/volumeMounts 추가 — D파트 차트이므로 예지님 담당
+#     (k8s/queuing-chart/templates/ 아래, 아래 "예지님이 하실 일" 참고)
+#
+# ■ hostPath 가 아니라 local 을 쓰는 이유
+# 둘 다 노드의 디렉터리를 쓰지만 local 은 정식 볼륨 타입이라 스케줄러가
+# nodeAffinity 를 이해하고 파드를 그 노드에만 배치한다. hostPath 는 스케줄러가
+# 모르기 때문에 엉뚱한 노드에 떠서 빈 디렉터리를 보게 될 수 있고, 실제로
+# Grafana 의 hostPath PV 에서 마운트가 2분 타임아웃으로 실패한 적이 있다.
+#
+# ■ 적용 전에 반드시
+#   1) 아래 <NODE> 를 실제 노드 이름으로 바꾼다
+#        kubectl -n redis get pods -o wide     ← NODE 칼럼
+#   2) 그 노드에 디렉터리를 만든다 (SSH 로 접속)
+#        sudo mkdir -p /data/redis-counter
+#        sudo chown 999:999 /data/redis-counter   # redis:7-alpine 의 redis 사용자
+#        sudo chmod 750 /data/redis-counter
+#
+# ■ 적용
+#   kubectl apply -f shared-infra/redis-counter-storage.yaml
+# ──────────────────────────────────────────────
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: redis-counter-pv
+spec:
+  capacity:
+    storage: 2Gi # 카운터 데이터라 크지 않다. 팀 공용 Redis 도 좌석 6,600개에 1.25MB 수준
+  accessModes:
+    - ReadWriteOnce
+  # Retain: PVC 를 지워도 데이터는 남긴다. Delete 로 두면 실수로 PVC 를 지웠을 때
+  # 카운터가 통째로 사라진다. 다시 쓰려면 PV 의 claimRef 를 비워주면 된다.
+  persistentVolumeReclaimPolicy: Retain
+  # 빈 문자열로 두어야 기본 StorageClass 의 동적 프로비저닝이 끼어들지 않는다.
+  storageClassName: ""
+  local:
+    path: /data/redis-counter
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - <NODE> # ← kubectl -n redis get pods -o wide 의 NODE 값으로 교체
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-counter-pvc
+  namespace: redis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  volumeName: redis-counter-pv # 위 PV 를 직접 지정해 다른 PV 를 잡지 않게 한다
+  resources:
+    requests:
+      storage: 2Gi
