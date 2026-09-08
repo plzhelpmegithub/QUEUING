@@ -37,4 +37,36 @@ spec:
             secretKeyRef:
               name: redis-counter-secret
               key: password
-        command: ["sh", "-c", "redis-server --appendonly yes --appendfsync everysec --requirepass $(REDIS_PASSWORD)"] # AOF 설정 + 비밀번호 인증
+        # --dir /data 를 명시해서 AOF(영속성 로그) 파일이
+        # 반드시 마운트된 볼륨(PVC) 안에 쓰이도록 강제함
+        # (안 하면 컨테이너 내부 임시 저장공간에 쓰여서, 파드 재시작 시 데이터 유실)
+        command: ["sh", "-c", "redis-server --appendonly yes --appendfsync everysec --dir /data --requirepass $(REDIS_PASSWORD)"]
+
+        # ▼ 추가 ① 컨테이너 안의 /data 경로를 아래 volumes에서 정의한 실제 저장공간에 연결
+        volumeMounts:
+        - name: data
+          mountPath: /data
+
+        # ▼ 추가 ② 리소스 제한
+        # requests/limits가 없으면 이 파드는 "BestEffort" 등급이 되어,
+        # 노드 메모리가 부족해질 때 가장 먼저 강제 종료(퇴출)됨.
+        # 카운터 데이터를 들고 있는 Redis가 그렇게 되면 안 되니까 명시적으로 지정
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+
+      # ▼ 추가 ③ 인프라(지예)가 미리 만들어둔 PVC를 연결
+      # containers와 같은 들여쓰기 레벨(spec.volumes)에 위치해야 함
+      #
+      # 참고: StatefulSet엔 원래 volumeClaimTemplates라는 방식도 있는데,
+      # 그건 한 번 만들면 나중에 수정이 불가능해서(바꾸려면 StatefulSet을 통째로 삭제 후 재생성해야 함)
+      # 지금처럼 replicas: 1로 단순한 구조에서는
+      # 미리 만들어둔 PVC를 그냥 volumes로 연결하는 이 방식이 더 간단하고 결과도 동일함
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: redis-counter-pvc  # 지예가 redis 네임스페이스에 만들어둔 PVC (worker1의 /data/redis-counter에 연결됨)
