@@ -73,7 +73,7 @@ grafana:
     smtp:
       enabled: true
       host: smtp.gmail.com:587
-      from_address: chlwldp02narver@gmail.com
+      from_address: chlwldp02naver@gmail.com
       from_name: QUEUING Grafana
 
 prometheus:
