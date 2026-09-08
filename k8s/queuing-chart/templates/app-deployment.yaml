@@ -30,10 +30,25 @@ spec:
             cpu: "500m"
             memory: "256Mi"
         env:
+        # =========================================================
+        # [보안 적용] DB 비밀번호를 평문 대신 K8s Secret에서 안전하게 참조
+        # =========================================================
         - name: SPRING_DATASOURCE_PASSWORD
-          value: "{{ .Values.env.dbPassword }}"
+          valueFrom:
+            secretKeyRef:
+              name: backend-counter-secret # 지예에게 생성을 요청한 시크릿 이름
+              key: db-password             # 시크릿 내부의 데이터 키
+              
+        # =========================================================
+        # [보안 적용] Redis 비밀번호를 평문 대신 K8s Secret에서 안전하게 참조
+        # =========================================================
         - name: SPRING_DATA_REDIS_PASSWORD
-          value: "{{ .Values.env.redisPassword }}"
+          valueFrom:
+            secretKeyRef:
+              name: backend-counter-secret # 지예에게 생성을 요청한 시크릿 이름
+              key: redis-password          # 시크릿 내부의 데이터 키
+
+        # 일반 환경 변수 매핑
         - name: SERVER_PORT
           value: "{{ .Values.service.port }}"
         - name: DB_HOST
@@ -44,6 +59,7 @@ spec:
           value: "{{ .Values.env.redisHost }}"
         - name: REDIS_PORT
           value: "{{ .Values.env.redisPort }}"
+          
 {{- if .Values.env.custom }}
 {{- range $key, $val := .Values.env.custom }}
         - name: {{ $key }}

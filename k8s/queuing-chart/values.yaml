@@ -1,8 +1,15 @@
+# ==========================================
+# 큐잉 서비스 쿠버네티스 헬름 차트 설정 (values.yaml)
+# ==========================================
+
+# 배포할 파이(Pod)의 기본 복제본 개수
 replicaCount: 2
 
 image:
+  # 도커 허브에 올린 백엔드 카운터 이미지 저장소
   repository: "ttomang/backend-counter"
-  tag: "1.0.5"
+  # 이미지 태그 (코드를 수정하고 새로 빌드할 때마다 숫자를 올려야 반영됩니다)
+  tag: "1.0.6"
   pullPolicy: IfNotPresent
 
 service:
@@ -10,15 +17,21 @@ service:
   port: 8080
   nodePort: 30083
 
+# 애플리케이션 실행 시 주입될 환경 변수 모음
 env:
+  # 데이터베이스 연결 정보 (호스트 및 포트)
   dbHost: "211.46.52.164"
   dbPort: "13306"
   dbUser: "team2"
-  dbPassword: "Gkrtod1@"
+  # ⚠️ 중요: 보안을 위해 평문 비밀번호(dbPassword)는 여기서 완전히 제거하고,
+  # 쿠버네티스 Secret(backend-counter-secret)을 통해 안전하게 주입받도록 변경되었습니다.
+
+  # 레디스 연결 정보
   redisHost: "redis-master.realtime.svc.cluster.local"
   redisPort: "6379"
-  redisPassword: "SJsQlDBpnFTKfyu3i0z3nv55"
+  # ⚠️ 마찬가지로 평문 비밀번호(redisPassword)도 제외되었습니다.
 
+# 오토스케일링(HPA) 설정
 autoscaling:
   enabled: true
   minReplicas: 2
