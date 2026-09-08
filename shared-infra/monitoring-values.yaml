@@ -76,6 +76,46 @@ grafana:
       from_address: chlwldp02naver@gmail.com
       from_name: QUEUING Grafana
 
+  # ── 알림 대상 · 라우팅 (프로비저닝) ──
+  #
+  # ⚠️ UI 에서 만든 설정은 파드가 재시작되면 사라진다
+  # Grafana 는 대시보드·연락처·알림 규칙을 SQLite DB 에 저장하는데, 위에서
+  # persistence 를 껐기 때문에 그 DB 가 파드와 함께 사라진다. 그래서 알림 설정은
+  # UI 가 아니라 여기에 선언해서 매 기동 시 자동으로 만들어지게 한다.
+  # 저장소 상태와 무관하게 항상 살아 있고, git 에도 기록이 남는다.
+  #
+  # 이 파일들은 /etc/grafana/provisioning/alerting/ 에 마운트된다.
+  #
+  # 이름을 한글이 아니라 team-email 로 둔 이유:
+  # policies 의 receiver 가 이 이름을 문자열로 참조하는데, 인코딩이 어긋나면
+  # 매칭에 실패해 알림이 조용히 안 나간다. ASCII 로 두는 편이 안전하다.
+  alerting:
+    contactpoints.yaml:
+      apiVersion: 1
+      contactPoints:
+        - orgId: 1
+          name: team-email
+          receivers:
+            - uid: team-email
+              type: email
+              settings:
+                addresses: chlwldp02naver@gmail.com
+                # 여러 명에게 보내려면 세미콜론으로 구분한다
+                # addresses: a@example.com;b@example.com
+
+    # 알림이 실제로 team-email 로 가도록 라우팅을 지정한다.
+    # 이 블록이 없으면 연락처는 만들어지지만 기본 정책(grafana-default-email)
+    # 으로 흘러가서 메일이 오지 않는다.
+    policies.yaml:
+      apiVersion: 1
+      policies:
+        - orgId: 1
+          receiver: team-email
+          group_by: [grafana_folder, alertname]
+          group_wait: 30s # 첫 통지까지 대기 — 연관 알림을 한 번에 묶기 위해
+          group_interval: 5m # 같은 그룹의 후속 통지 간격
+          repeat_interval: 4h # 해결되지 않은 알림의 재통지 간격
+
 prometheus:
   service:
     type: NodePort
