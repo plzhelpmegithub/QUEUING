@@ -31,6 +31,21 @@ spec:
               value: {{ .Values.env.redisHost | quote }}
             - name: REDIS_PORT
               value: {{ .Values.env.redisPort | quote }}
+            {{- if .Values.statsRedis.enabled }}
+            # D파트 전용 Redis 의 stats:{eventId} 채널 구독용.
+            # 이 값이 없으면 server.js 가 통계 구독을 아예 만들지 않는다.
+            - name: STATS_REDIS_HOST
+              value: {{ .Values.statsRedis.host | quote }}
+            - name: STATS_REDIS_PORT
+              value: {{ .Values.statsRedis.port | quote }}
+            # D파트 Redis 는 requirepass 가 걸려 있어 비밀번호가 필수다.
+            # 평문으로 두지 않고 Secret 에서 받는다.
+            - name: STATS_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.statsRedis.secret.name | quote }}
+                  key: {{ .Values.statsRedis.secret.key | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

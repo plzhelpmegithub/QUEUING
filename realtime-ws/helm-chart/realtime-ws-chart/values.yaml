@@ -14,6 +14,32 @@ env:
   redisHost: "redis-master.realtime.svc.cluster.local"
   redisPort: "6379"
 
+# ─────────────────────────────────────────────────────────────
+# [D파트 통계 채널] 접속자 수·좋아요 수를 실시간으로 밀어주는 경로
+#
+# D파트(예지님)는 부하 격리를 위해 팀 공용 Redis 가 아닌 전용 인스턴스를 쓴다.
+# 그쪽에 stats:{eventId} 로 발행된 집계값을 우리가 구독해서, 그 채널에 붙은
+# 브라우저로 흘려보낸다. 집계는 D, 전송은 C 라는 역할 경계에 맞춘 구성이다.
+#
+#   브라우저:  wss://.../ws/stats/{eventId}?token=...
+#   D파트:     PUBLISH stats:{eventId} '{"viewers":123,"likes":45}'
+#
+# enabled: false 이면 서버가 이 구독을 아예 만들지 않는다. D파트가 폴링(5초)로
+# 운영하는 동안에는 꺼두면 되고, 그 상태에서 서버 동작은 지금까지와 동일하다.
+#
+# 켜기 전에 비밀번호 Secret 을 먼저 만들어야 한다:
+#   kubectl -n realtime create secret generic stats-redis-secret \
+#     --from-literal=password="$(kubectl -n redis get secret redis-counter-secret \
+#        -o jsonpath='{.data.password}' | base64 -d)"
+# ─────────────────────────────────────────────────────────────
+statsRedis:
+  enabled: false
+  host: "redis-counter-master.redis.svc.cluster.local"
+  port: "6379"
+  secret:
+    name: "stats-redis-secret"
+    key: "password"
+
 resources:
   requests:
     cpu: "100m"

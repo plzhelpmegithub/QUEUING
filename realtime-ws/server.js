@@ -16,6 +16,19 @@ const PORT = process.env.PORT || 8080;
 const REDIS_HOST = process.env.REDIS_HOST || 'redis-master.realtime.svc.cluster.local';
 const REDIS_PORT = process.env.REDIS_PORT || 6379;
 
+// ---- D파트(예지님) 통계 Redis ----
+// 접속자 수·좋아요 수 같은 집계값을 실시간으로 화면에 밀어주기 위한 경로.
+// D파트는 부하 격리를 위해 팀 공용 Redis 가 아닌 전용 인스턴스를 쓰므로
+// (redis-counter-master.redis), 우리가 그쪽 pub/sub 도 함께 구독한다.
+// 집계는 D가, 전송은 C가 담당한다는 역할 경계에 맞춘 구성이다.
+//
+// STATS_REDIS_HOST 가 비어 있으면 이 기능 전체를 건너뛴다. 아직 D파트가
+// PUBLISH 를 붙이지 않았거나, 폴링 방식으로 운영하는 동안에는 설정하지
+// 않으면 되고, 그 경우 서버는 지금까지와 완전히 동일하게 동작한다.
+const STATS_REDIS_HOST = process.env.STATS_REDIS_HOST || '';
+const STATS_REDIS_PORT = process.env.STATS_REDIS_PORT || 6379;
+const STATS_REDIS_PASSWORD = process.env.STATS_REDIS_PASSWORD || '';
+
 // A파트(eventService.js)와 합의된 좌석 이벤트 채널 — eventId별로 나뉘지 않은
 // 고정 채널 하나. seat:{eventId} 패턴이 아니라서 psubscribe('seat:*')로는 안 잡힘.
 const SEAT_EVENT_CHANNEL = 'events:seat-status';
@@ -162,7 +175,7 @@ const messagesCounter = new client.Counter({
 // 안 나오고, Prometheus 에도 없는 값이 되어 이 지표로는 HPA 를 걸 수 없다.
 // (커스텀 메트릭 HPA 는 값이 0이어도 "존재"해야 동작한다)
 // 그래서 기동 시점에 두 종류를 0으로 초기화해 항상 노출되게 한다.
-for (const kind of ['chat', 'seats']) {
+for (const kind of ['chat', 'seats', 'stats']) {
   wsConnectionsGauge.set({ kind }, 0);
   messagesCounter.inc({ kind }, 0);
 }
@@ -378,6 +391,44 @@ redisSub.on('pmessage', (pattern, channel, message) => {
   messagesCounter.inc({ kind: 'chat' });
 });
 
+// ---- D파트 통계 구독 (선택) ----
+// D파트가 자기 Redis 에 stats:{eventId} 로 집계값을 발행하면, 그 채널에 붙어
+// 있는 브라우저로 그대로 흘려보낸다. 채널 이름이 곧 channelKey 라서
+// 별도 변환이 필요 없다 — seats/chat 과 같은 규약이다.
+//
+// 브라우저 접속 경로:  wss://.../ws/stats/{eventId}?token=...
+//   wss.on('connection') 이 경로를 일반적으로 파싱하므로 이 종류를 위한
+//   추가 처리는 없다. 데이터를 넣어줄 구독자만 있으면 된다.
+//
+// STATS_REDIS_HOST 가 없으면 아무것도 하지 않는다(폴링 방식으로 운영 중인 경우).
+let redisStatsSub = null;
+if (STATS_REDIS_HOST) {
+  redisStatsSub = new Redis({
+    host: STATS_REDIS_HOST,
+    port: STATS_REDIS_PORT,
+    // D파트 Redis 는 requirepass 가 걸려 있다. 팀 공용 Redis 와 달리
+    // 비밀번호를 반드시 넘겨야 한다(없으면 NOAUTH 로 거절당한다).
+    ...(STATS_REDIS_PASSWORD ? { password: STATS_REDIS_PASSWORD } : {}),
+  });
+
+  redisStatsSub.on('error', (err) => console.error('[redis:stats]', err.message));
+
+  redisStatsSub.psubscribe('stats:*', (err, count) => {
+    if (err) {
+      console.error('통계 Redis psubscribe 실패:', err.message);
+      return;
+    }
+    console.log(`D파트 통계 채널 구독 중 (${STATS_REDIS_HOST}:${STATS_REDIS_PORT}, 패턴 ${count}개)`);
+  });
+
+  redisStatsSub.on('pmessage', (pattern, channel, message) => {
+    broadcastToChannel(channel, message);
+    messagesCounter.inc({ kind: 'stats' });
+  });
+} else {
+  console.log('통계 Redis 미설정 — stats 채널 비활성 (D파트는 폴링으로 조회)');
+}
+
 // 좌석 이벤트 처리 — A가 이제 이 Redis에 직접 발행하므로 구독 경로가 하나로 통합됨.
 function handleSeatEventMessage(message) {
   let event;
@@ -451,5 +502,7 @@ process.on('SIGTERM', () => {
       ws.close(1001, 'server shutting down, please reconnect');
     }
   }
+  // 종료 중에 재접속을 시도하며 에러 로그를 남기지 않도록 구독을 먼저 끊는다
+  if (redisStatsSub) redisStatsSub.disconnect();
   setTimeout(() => process.exit(0), 5000);
 });
