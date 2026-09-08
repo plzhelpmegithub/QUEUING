@@ -33,7 +33,7 @@ env:
 #        -o jsonpath='{.data.password}' | base64 -d)"
 # ─────────────────────────────────────────────────────────────
 statsRedis:
-  enabled: false
+  enabled: true
   host: "redis-counter-master.redis.svc.cluster.local"
   port: "6379"
   secret:
