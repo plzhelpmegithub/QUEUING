@@ -8,7 +8,8 @@
   top: 0;
   z-index: 200;
   height: var(--header-h);
-  background: var(--color-primary-dark);
+  /* Match the sampled background of queuing-logo-header.png (#B11018). */
+  background: #B11018;
   box-shadow: 0 2px 16px rgba(0,0,0,0.22);
   transition: box-shadow .2s ease;
 }

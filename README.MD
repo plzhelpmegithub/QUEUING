@@ -75,6 +75,7 @@ nginx/
     │   └── style.css               # 글로벌 CSS
     └── utils/
         ├── backendApi.js           # API 호출 유틸리티
+        ├── recaptcha.js            # Google reCAPTCHA v3 토큰 발급
         ├── calendarEvents.js       # 달력 이벤트 유틸리티
         ├── format.js               # 날짜/숫자 포맷
         └── realtimeChat.js         # 실시간 채팅 유틸리티
@@ -149,6 +150,7 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 - 운영 `nginx.conf`의 API 프록시 location 정규식에 `/cancel-queue`를 포함할 것. 누락되면 취소표 API 요청이 SPA `index.html`로 fall back되어 JSON 조회가 실패한다.
 - 빌드: `npm run build` → `dist/` 디렉토리를 Nginx에 배포
 - 좌석 좌표 변경 시 `olympicHallSeats.js`만 수정하면 됨 (seatMap.js의 변환 로직은 변경 불필요)
+- 개발용 reCAPTCHA는 `.env.local`에 `VITE_RECAPTCHA_SITE_KEY`만 설정한다. secret key는 프론트엔드에 넣지 않고 API 서버 환경변수로만 관리한다.
 
 ## ⚙️ Core Logic & Code Description
 
@@ -179,7 +181,12 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 ### src/utils/backendApi.js
 - **목적:** A파트 REST API 호출 유틸리티. Vite 프록시를 통해 CORS 없이 호출.
 - **주요 기능:** 일반 좌석 API와 함께 취소표 대기열 진입·상태 조회, 서버 Pool 조회, Secret Link 좌석 선점, 할당 만료 API를 제공한다.
-- **API 명세 / 라우팅 규칙:** `joinCancelQueueApi()`는 `POST /cancel-queue/join`, `fetchCancelQueueStatus()`는 `GET /cancel-queue/status/:eventId/:userId`, `fetchCancelPool()`은 `GET /cancel-queue/pool/:eventId`, `holdCancelSeat()`는 `POST /cancel-queue/hold`, `expireCancelAllocation()`은 `POST /cancel-queue/expire`를 호출한다. 모든 요청에 3초 타임아웃을 적용하며 `releaseSeatBeacon()`은 `navigator.sendBeacon()`으로 페이지 종료 시에도 전송한다.
+- **API 명세 / 라우팅 규칙:** `joinCancelQueueApi()`는 `POST /cancel-queue/join`, `fetchCancelQueueStatus()`는 `GET /cancel-queue/status/:eventId/:userId`, `fetchCancelPool()`은 `GET /cancel-queue/pool/:eventId`, `holdCancelSeat()`는 `POST /cancel-queue/hold`, `expireCancelAllocation()`은 `POST /cancel-queue/expire`를 호출한다. 로그인·회원가입·대기열 진입·좌석 선점·결제 확정 POST에는 `withRecaptcha()`가 action별 토큰을 추가한다. 모든 요청에 3초 타임아웃을 적용하며 `releaseSeatBeacon()`은 `navigator.sendBeacon()`으로 페이지 종료 시에도 전송한다.
+
+### src/utils/recaptcha.js
+- **목적:** 개발/운영 환경의 Vite 공개 site key로 Google reCAPTCHA v3 스크립트를 지연 로드하고, 보호 API 요청 직전에 일회성 토큰을 발급한다.
+- **주요 기능:** `VITE_RECAPTCHA_SITE_KEY`가 없으면 빈 토큰으로 기존 개발 흐름을 유지하고, 키가 있으면 Google 스크립트를 동적으로 로드해 action별 토큰을 요청한다. 독립 취소표 페이지도 같은 모듈을 사용한다.
+- **API 명세 / 라우팅 규칙:** `withRecaptcha(payload, action)`이 `recaptchaToken`과 `recaptchaAction`을 POST JSON에 추가한다. 실제 허용 여부는 API 서버가 Google에 재검증한 결과로 결정한다.
 
 ### src/pages/cancelQueue.js
 - **목적:** 로그인 사용자의 취소표 대기열과 Secret Link 발급 상태를 표시.
@@ -223,7 +230,7 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 
 ### public/images/queuing-logo-header.png / src/components/header.js
 - **목적:** 사용자가 제공한 가로형 최종 로고 디자인을 사이트 헤더에 적용.
-- **주요 기능:** 흰색 심볼과 QUEUING 문자가 포함된 가로형 이미지를 일반 화면과 예매 흐름 양쪽에서 사용한다. 이미지 배경은 원본 디자인을 유지하며 헤더 색상 계열과 자연스럽게 이어진다.
+- **주요 기능:** 흰색 심볼과 QUEUING 문자가 포함된 가로형 이미지를 일반 화면과 예매 흐름 양쪽에서 사용한다. 헤더 배경은 로고 원본의 배경색 `#B11018`과 일치시켜 이미지 가장자리에 별도 색상 블록이 보이지 않도록 한다.
 
 ### src/data/concerts.js
 - **목적:** 공연명과 포스터 이미지의 매칭 규칙을 관리.

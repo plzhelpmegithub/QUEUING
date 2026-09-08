@@ -2,6 +2,8 @@
 // Vite 프록시(/seats → 192.168.0.190:3000)를 통해 호출하므로 CORS 불필요.
 // 프록시 설정은 vite.config.js 참고.
 
+import { withRecaptcha } from './recaptcha.js';
+
 const FETCH_TIMEOUT_MS = 3000;
 
 async function getJson(path) {
@@ -16,14 +18,15 @@ async function getJson(path) {
   }
 }
 
-async function postJson(path, body) {
+async function postJson(path, body, recaptchaAction = '') {
+  const requestBody = recaptchaAction ? await withRecaptcha(body, recaptchaAction) : body;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
     const data = await res.json().catch(() => ({}));
@@ -34,11 +37,11 @@ async function postJson(path, body) {
 }
 
 export async function enterQueueApi(userId, context = {}) {
-  return postJson('/queue/enter', { userId, ...context });
+  return postJson('/queue/enter', { userId, ...context }, 'queue_enter');
 }
 
 export async function joinCancelQueueApi(userId, context = {}) {
-  return postJson('/cancel-queue/join', { userId, ...context });
+  return postJson('/cancel-queue/join', { userId, ...context }, 'cancel_queue_join');
 }
 
 export async function fetchCancelQueueStatus(eventId, userId, context = {}) {
@@ -54,7 +57,7 @@ export async function fetchCancelPool(eventId, context = {}) {
 }
 
 export async function holdCancelSeat(userId, eventId, seatId, context = {}) {
-  return postJson('/cancel-queue/hold', { userId, eventId, seatId, ...context });
+  return postJson('/cancel-queue/hold', { userId, eventId, seatId, ...context }, 'cancel_seat_hold');
 }
 
 export async function expireCancelAllocation(userId, eventId, seatId, context = {}) {
@@ -75,13 +78,14 @@ export async function fetchRealSeats(context = {}) {
 // POST /seats/hold — 좌석 선점 (분산 락 + Admission Token 검증)
 // 성공 시 서버에서 해당 좌석이 held 상태로 전환되고, 다른 유저는 선점 불가.
 export async function holdSeatApi(userId, seatId, token, context = {}) {
+  const requestBody = await withRecaptcha({ userId, seatId, token, ...context }, 'seat_hold');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch('/seats/hold', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, seatId, token, ...context }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
     return await res.json();
@@ -119,13 +123,14 @@ export async function releaseSeatApi(userId, seatId, context = {}) {
 
 // POST /seats/confirm — 결제 확정 (held → sold)
 export async function confirmSeatApi(userId, seatId, context = {}) {
+  const requestBody = await withRecaptcha({ userId, seatId, ...context }, 'seat_confirm');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch('/seats/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, seatId, ...context }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
     return await res.json();

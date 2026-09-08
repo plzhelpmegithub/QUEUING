@@ -266,6 +266,7 @@
 import { mountSeatMap } from '/src/components/seatMap.js';
 import { getConcertImage } from '/src/data/concerts.js';
 import { getVenueZoneLayout } from '/src/data/concerts.js';
+import { withRecaptcha } from '/src/utils/recaptcha.js';
 
 const params = new URLSearchParams(location.search);
 const EVENT_ID = params.get('eventId');
@@ -307,6 +308,12 @@ let state = {
 };
 
 async function api(path, opts) {
+  const action = path.startsWith('/cancel-queue/hold') ? 'cancel_seat_hold'
+    : path.startsWith('/seats/confirm') ? 'seat_confirm' : '';
+  if (action && opts && opts.body) {
+    const payload = JSON.parse(opts.body);
+    opts = { ...opts, body: JSON.stringify(await withRecaptcha(payload, action)) };
+  }
   const res = await fetch(API_BASE + path, {
     headers: {'Content-Type': 'application/json'},
     ...opts,

@@ -7,6 +7,14 @@ import { navigate } from '../router.js';
 import { isInterested, toggleInterest, subscribe } from '../state/store.js';
 import { getConcertImage, getTicketPriceRows } from '../data/concerts.js';
 
+function effectiveStatus(event) {
+  const s = event.status || 'open';
+  if (s === 'sold_out' || s === 'cancelled' || s === 'closed') return s;
+  const closeTime = event.ticketCloseAt ? new Date(event.ticketCloseAt).getTime() : NaN;
+  if (Number.isFinite(closeTime) && closeTime <= Date.now()) return 'closed';
+  return s;
+}
+
 function statusBadge(status) {
   if (status === 'sold_out') return `<span class="badge badge-dark-red">SOLD OUT</span>`;
   if (status === 'closed' || status === 'cancelled') return `<span class="badge badge-outline">마감</span>`;
@@ -79,7 +87,7 @@ function hotCardHtml(event, index, interestCount) {
           총 좌석 &nbsp;${totalSeats}석<br/>
           티켓 가격 &nbsp;${ticketPrices(event)}
         </div>
-        ${isUpcoming(event) ? '<span class="badge badge-gray">예매예정</span>' : statusBadge(event.status)}
+        ${isUpcoming(event) ? '<span class="badge badge-gray">예매예정</span>' : statusBadge(effectiveStatus(event))}
       </div>
     </article>`;
 }
@@ -99,7 +107,7 @@ function posterCardHtml(event, index, interestCount, upcoming = false) {
       <div class="home-poster-card__media" data-event-open="${eventId}">
         <img src="${imageUrl}" alt="${name} 포스터" loading="lazy" />
         <div class="home-poster-card__badges">
-          ${upcoming ? '<span class="badge badge-gray">오픈 예정</span>' : statusBadge(event.status)}
+          ${upcoming ? '<span class="badge badge-gray">오픈 예정</span>' : statusBadge(effectiveStatus(event))}
         </div>
         <button type="button" class="home-poster-card__heart" data-heart="${eventId}" aria-label="관심 공연 ${name}">${isInterested(event.eventId) ? '♥' : '♡'}</button>
       </div>
@@ -196,7 +204,7 @@ export const homePage = {
         heroEl.style.background = `linear-gradient(90deg, rgba(5,4,4,0.92) 0%, rgba(5,4,4,0.7) 40%, rgba(5,4,4,0.3) 100%), url('${imgUrl}') center/cover no-repeat`;
       }
       infoEl.innerHTML = `
-        <div class="lp-hero__badges">${statusBadge(e.status)}<span class="badge badge-gray" style="background:rgba(255,255,255,0.16);color:#fff;">${formatNumber(e.totalSeats || 0)}석</span></div>
+        <div class="lp-hero__badges">${statusBadge(effectiveStatus(e))}<span class="badge badge-gray" style="background:rgba(255,255,255,0.16);color:#fff;">${formatNumber(e.totalSeats || 0)}석</span></div>
         <div class="lp-hero__title">${e.eventName}</div>
         <div class="lp-hero__meta">
           <div>공연일<b>${e.eventDate || '-'}</b></div>
@@ -381,7 +389,7 @@ export const homePage = {
 
           const statusChanged = events.some((e) => {
             const prev = latestRealEvents.find((p) => p.eventId === e.eventId);
-            return !prev || prev.status !== e.status;
+            return !prev || prev.status !== e.status || prev.ticketCloseAt !== e.ticketCloseAt;
           });
           if (!statusChanged) return;
 

@@ -19,6 +19,7 @@ import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { connectSeats } from '../services/realtimeIntegration.js';
 import { generateEventSessions, formatStoredSessions, getVenueZoneLayout } from '../data/concerts.js';
+import { withRecaptcha } from '../utils/recaptcha.js';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
@@ -390,11 +391,12 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       function ensureAdmissionToken(userId) {
         const existing = getAdmissionToken(c.eventId, session);
         if (existing?.token) return Promise.resolve(existing.token);
-        return fetch('/queue/enter', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, eventId: c.eventId, sessionDate: session?.date || '', sessionTime: session?.time || '' }),
-        })
+        return withRecaptcha({ userId, eventId: c.eventId, sessionDate: session?.date || '', sessionTime: session?.time || '' }, 'queue_enter')
+          .then((body) => fetch('/queue/enter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }))
           .then((r) => r.json())
           .then((enterResult) => {
             if (enterResult.token) {
@@ -414,18 +416,20 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const STALE_TOKEN_REASONS = new Set(['no_token', 'expired', 'revoked', 'invalid', 'user_mismatch', 'mismatch', 'session_mismatch']);
 
       function attemptHold(userId, seatId, token) {
-        return fetch('/seats/hold', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        return withRecaptcha({
             userId,
             seatId,
             token,
             eventId: c.eventId,
             sessionDate: session?.date || '',
             sessionTime: session?.time || '',
-          }),
-        }).then((r) => r.json().then((data) => ({ ok: r.ok, data })));
+          }, 'seat_hold')
+          .then((body) => fetch('/seats/hold', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }))
+          .then((r) => r.json().then((data) => ({ ok: r.ok, data })));
       }
 
       function deselectSeat(seat) {

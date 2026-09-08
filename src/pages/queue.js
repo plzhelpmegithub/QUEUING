@@ -5,6 +5,7 @@ import { formatNumber } from '../utils/format.js';
 import { mountRocketProgress } from '../components/rocketProgress.js';
 import { navigate } from '../router.js';
 import { getSelectedSession, getState, hasMembership, setAdmissionToken, setSelectedSession } from '../state/store.js';
+import { withRecaptcha } from '../utils/recaptcha.js';
 
 // How often we self-trigger /queue/admit — in a real deployment an operator/cron
 // would call this periodically; this frontend has no such automation yet, so it
@@ -160,9 +161,12 @@ export const queuePage = {
             .then((pos) => {
               if (settled) return;
               if (pos.status === 'admitted') {
-                // Position tracking says we're in — the admit-poll loop below is
-                // responsible for actually grabbing the token and redirecting.
                 statusEl.textContent = '입장 허용됨 · 토큰 발급 중...';
+                if (!settled) {
+                  requestQueueEnter()
+                    .then(handleEnterResult)
+                    .catch(() => {});
+                }
                 return;
               }
               if (pos.status === 'not_found') {
@@ -179,12 +183,7 @@ export const queuePage = {
               if (pos.type === 'standby') {
                 standbyPollTick++;
                 if (standbyPollTick % 10 === 0) {
-                  fetch('/queue/enter', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId, ...queueContext }),
-                  })
-                    .then((r) => r.json())
+                  requestQueueEnter()
                     .then((res) => { if (!settled && res.status === 'closed') showClosedUI(); })
                     .catch(() => {});
                 }
@@ -308,13 +307,18 @@ export const queuePage = {
           tryAdmit(); // also try immediately instead of waiting a full ADMIT_POLL_MS
         }
 
+        function requestQueueEnter() {
+          return withRecaptcha({ userId, ...queueContext }, 'queue_enter')
+            .then((body) => fetch('/queue/enter', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            }))
+            .then((r) => r.json());
+        }
+
         function enterQueue() {
-          return fetch('/queue/enter', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, ...queueContext }),
-          })
-            .then((r) => r.json())
+          return requestQueueEnter()
             .then(handleEnterResult)
             .catch(() => {
               statusEl.textContent = '오류';

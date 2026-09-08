@@ -1,6 +1,7 @@
 // 회원가입 페이지 — 이름·이메일·비밀번호 입력 폼. 가입 성공 시 signupComplete 페이지로 이동.
 
 import { navigate } from '../router.js';
+import { withRecaptcha } from '../utils/recaptcha.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^01[016789]-\d{3,4}-\d{4}$/;
@@ -190,18 +191,19 @@ export const signupPage = {
       setError('form', '');
       submitBtn.disabled = true;
 
-      fetch('/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      withRecaptcha({
           userId: els.email.value.trim(),
           password: els.password.value,
           email: els.email.value.trim(),
           name: els.name.value.trim(),
           phone: els.phone.value.trim(),
           birthDate: els.birth.value,
-        }),
-      })
+        }, 'register')
+        .then((body) => fetch('/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }))
         .then((res) => res.json())
         .then((result) => {
           if (!result.success) {

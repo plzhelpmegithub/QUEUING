@@ -5,6 +5,7 @@
 import { login, popReturnTo } from '../state/store.js';
 import { navigate } from '../router.js';
 import { openModal } from '../components/modal.js';
+import { withRecaptcha } from '../utils/recaptcha.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -94,11 +95,12 @@ export const loginPage = {
       formErr.textContent = '';
       submitBtn.disabled = true;
 
-      fetch('/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: email, password }),
-      })
+      withRecaptcha({ userId: email, password }, 'login')
+        .then((body) => fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }))
         .then((res) => res.json())
         .then((result) => {
           if (!result.success) {

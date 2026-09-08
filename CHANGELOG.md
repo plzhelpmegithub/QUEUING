@@ -1,3 +1,45 @@
+## [2026-09-08 10:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/utils/recaptcha.js]**: Google reCAPTCHA v3 스크립트 지연 로딩과 action별 토큰 발급을 추가. 개발 site key가 없으면 기존 프론트엔드 흐름을 유지.
+- **[src/utils/backendApi.js / src/pages/login.js / src/pages/signup.js / src/pages/queue.js / src/pages/zoneSelect.js / src/pages/payment.js / cancel-ticketing.html]**: 로그인·회원가입·대기열 진입·좌석 선점·결제 확정 요청에 action별 reCAPTCHA 토큰을 포함하도록 연결.
+- **[.env.example]**: 개발용 `VITE_RECAPTCHA_SITE_KEY` 설정 예시 추가.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 프론트엔드에서 보안 인증을 적용해도 API를 직접 호출하면 화면을 우회할 수 있음.
+- **원인(Cause):** 브라우저가 발급한 토큰을 API 서버가 재검증하지 않으면 클라이언트 검증만으로는 요청의 신뢰성을 보장할 수 없음.
+- **해결(Solution):** 보호되는 POST 요청 직전에 `withRecaptcha(payload, action)`으로 토큰을 추가하고, API 서버의 Google 검증 결과를 기준으로 요청을 허용하도록 양쪽을 연결.
+
+## [2026-09-08 10:14] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/styles/components.css]**: 사이트 헤더 배경을 헤더 로고 원본 배경색 `#B11018`에 맞춰 로고 주변의 색상 차이와 사각 경계를 제거.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 메인 페이지 좌측 상단 로고의 배경색이 헤더 배경과 달라 별도의 색상 블록처럼 보였음.
+- **원인(Cause):** 헤더는 `--color-primary-dark`의 `#B5121B`, 로고 이미지는 `#B11018`을 사용해 배경색이 일치하지 않았음.
+- **해결(Solution):** 헤더 컴포넌트에만 로고 이미지의 실제 배경색 `#B11018`을 적용하고, 전역 브랜드 색상 토큰은 유지.
+
+## [2026-09-08 09:56] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: `pollPosition()`에서 `admitted` 상태 감지 시 `/queue/enter` 호출로 기존 토큰 획득 후 좌석 선택 페이지로 자동 이동.
+  - 기존: `admitted` 감지 시 "입장 허용됨" 텍스트만 표시, 토큰 획득 불가 (admitBatch가 이미 admitted된 유저의 토큰을 반환하지 않으므로).
+  - 변경: `/queue/enter` API가 이미 admitted된 유저에게 기존 토큰을 반환하는 점을 활용하여, `handleEnterResult`로 토큰 수신 → `enterConfirmed()` → zones 페이지 이동.
+
+## [2026-09-07 17:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/home.js]**: 어드민 즉시 마감 후 메인 페이지 뱃지(LP 히어로, HOT 카드, 포스터 카드)가 "예매중"으로 남는 문제 수정.
+  - `effectiveStatus(event)` 함수 추가: `event.status === 'closed'`뿐 아니라 `event.ticketCloseAt ≤ 현재시간`인 경우도 `'closed'`로 판정.
+  - LP 히어로·HOT 카드·포스터 카드 세 곳의 `statusBadge(e.status)` 호출을 `statusBadge(effectiveStatus(e))`로 변경.
+  - 폴링 변경 감지 조건에 `ticketCloseAt` 변경도 포함(`prev.ticketCloseAt !== e.ticketCloseAt`).
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 어드민 즉시 마감 후 공연 상세에서는 "예매 마감" 표시되나 메인 페이지 LP 히어로·카드 뱃지는 "예매중" 유지.
+- **원인(Cause):** `statusBadge()`가 `event.status` 필드만 확인해 `ticketCloseAt`이 과거여도 `status`가 아직 `'open'`이면 "예매중"으로 표시. 폴링 감지도 `status` 변경만 체크해 `ticketCloseAt` 변경을 놓침.
+- **해결(Solution):** `effectiveStatus()` 도입으로 `ticketCloseAt <= now`이면 항상 `'closed'` 반환. 뱃지 렌더링과 폴링 감지 모두 이 함수 기준으로 통일.
+
 ## [2026-09-07 17:35] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
