@@ -11,29 +11,27 @@ load_dotenv()
 # AWS / LocalStack 설정
 # ============================================================
 
-ENDPOINT = os.getenv(
-    "AWS_ENDPOINT_URL",
-    "http://127.0.0.1:4566"
-)
+# 환경 변수에 값이 없으면 None이 되도록 설정
+ENDPOINT = os.getenv("AWS_ENDPOINT_URL")
+REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2")
 
-REGION = os.getenv(
-    "AWS_DEFAULT_REGION",
-    "ap-northeast-2"
-)
-
-sqs = boto3.client(
-    "sqs",
-    endpoint_url=ENDPOINT,
-    region_name=REGION,
-    aws_access_key_id=os.getenv(
-        "AWS_ACCESS_KEY_ID",
-        "test"
-    ),
-    aws_secret_access_key=os.getenv(
-        "AWS_SECRET_ACCESS_KEY",
-        "test"
+if ENDPOINT:
+    # 1. LocalStack 환경 (로컬 개발용)
+    # 로컬스택은 더미 자격 증명이 필요하므로 키를 강제 주입합니다.
+    sqs = boto3.client(
+        "sqs",
+        endpoint_url=ENDPOINT,
+        region_name=REGION,
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "test"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "test")
     )
-)
+    print(f"🔗 [로컬 환경] LocalStack SQS에 연결합니다. (Endpoint: {ENDPOINT})")
+else:
+    # 2. 실제 AWS EKS 환경 (IRSA 적용)
+    # endpoint_url과 액세스 키 파라미터를 완전히 제거해야 
+    # EKS가 주입한 IRSA 토큰을 자동으로 읽어옵니다.
+    sqs = boto3.client("sqs", region_name=REGION)
+    print("🔗 [운영 환경] AWS SQS에 연결합니다. (IRSA 권한 사용)")
 
 
 # ============================================================

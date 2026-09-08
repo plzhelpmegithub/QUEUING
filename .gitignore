@@ -7,3 +7,4 @@ minikube-linux-amd64
 .env
 __pycache__/
 venv/
+.env
