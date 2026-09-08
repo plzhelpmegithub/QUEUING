@@ -31,4 +31,10 @@ spec:
         image: redis:7-alpine  # 가볍고 안정적인 공식 이미지
         ports:
         - containerPort: 6379
-        command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"] # AOF 설정 포함
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-counter-secret
+              key: password
+        command: ["sh", "-c", "redis-server --appendonly yes --appendfsync everysec --requirepass $(REDIS_PASSWORD)"] # AOF 설정 + 비밀번호 인증
