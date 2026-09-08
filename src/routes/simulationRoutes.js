@@ -403,9 +403,24 @@ async function simulationRoutes(fastify) {
 
     await redis.del(getScopedKey('event:sold-out', context));
 
+    const promotions = [];
+    for (let i = 0; i < cancelCount; i++) {
+      const next = await queueService.getNextStandby(context);
+      if (!next.userId) break;
+      const result = await queueService.promoteStandby(next.userId, context);
+      if (result.success) {
+        promotions.push({ userId: result.userId });
+      }
+    }
+
+    if (promotions.length > 0) {
+      console.log(`[Simulation] standby → admitted 프로모션 ${promotions.length}명`);
+    }
+
     await redis.hset(`simulation:${eventId}`, {
       stage: 'seats_cancelled',
       cancelledCount: cancelCount.toString(),
+      promotedCount: promotions.length.toString(),
       cancelledAt: new Date().toISOString(),
     });
 
@@ -414,7 +429,9 @@ async function simulationRoutes(fastify) {
       success: true,
       cancelledCount: cancelCount,
       cancelledSeats,
-      message: `더미 좌석 ${cancelCount}석이 취소되었습니다. 이제 시크릿 링크를 발급할 수 있습니다.`,
+      promotedCount: promotions.length,
+      promotions,
+      message: `더미 좌석 ${cancelCount}석이 취소되었습니다. standby ${promotions.length}명 입장 허용됨.`,
     });
   });
 

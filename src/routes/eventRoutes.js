@@ -544,6 +544,14 @@ async function eventRoutes(fastify) {
     }
     const card = JSON.parse(cardStr);
     card.ticketCloseAt = ticketCloseAt || null;
+
+    const isImmediatelyClosed = card.ticketCloseAt
+      && new Date(card.ticketCloseAt).getTime() <= Date.now();
+
+    if (isImmediatelyClosed && card.status !== 'cancelled' && card.status !== 'sold_out') {
+      card.status = 'closed';
+    }
+
     await redis.hset(EVENT_LIST_KEY, eventId, JSON.stringify(card));
 
     const info = await redis.hgetall(EVENT_KEY);
@@ -553,14 +561,24 @@ async function eventRoutes(fastify) {
       } else {
         await redis.hdel(EVENT_KEY, 'ticketCloseAt');
       }
+      if (isImmediatelyClosed) {
+        await redis.hset(EVENT_KEY, 'status', 'closed');
+      }
     }
 
     try {
       const parsedCloseAt = card.ticketCloseAt ? new Date(card.ticketCloseAt) : null;
-      await pool.query(
-        'UPDATE events SET ticket_close_at = ? WHERE event_id = ?',
-        [parsedCloseAt, eventId],
-      );
+      if (isImmediatelyClosed) {
+        await pool.query(
+          'UPDATE events SET ticket_close_at = ?, status = ? WHERE event_id = ?',
+          [parsedCloseAt, 'closed', eventId],
+        );
+      } else {
+        await pool.query(
+          'UPDATE events SET ticket_close_at = ? WHERE event_id = ?',
+          [parsedCloseAt, eventId],
+        );
+      }
     } catch (dbErr) {
       console.error('[Event] 마감 시간 MariaDB 저장 실패:', dbErr.message);
     }
@@ -569,6 +587,7 @@ async function eventRoutes(fastify) {
       success: true,
       eventId,
       ticketCloseAt: card.ticketCloseAt,
+      status: card.status,
       message: card.ticketCloseAt
         ? `마감 시간이 ${card.ticketCloseAt}로 설정되었습니다.`
         : '마감 시간 제한이 해제되었습니다 (수동 마감).',

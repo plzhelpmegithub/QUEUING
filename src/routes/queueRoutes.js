@@ -1,5 +1,6 @@
 const redis = require('../config/redis');
 const queueService = require('../services/queueService');
+const { guardRecaptcha } = require('../services/recaptchaService');
 
 function getQueueContext(request) {
   const body = request.body || {};
@@ -23,6 +24,7 @@ async function queueRoutes(fastify) {
   });
 
   fastify.post('/queue/enter', async (request, reply) => {
+    if (!await guardRecaptcha(request, reply, 'queue_enter')) return;
     const { userId } = request.body || {};
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });

@@ -116,8 +116,8 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /auth/register` | 회원가입. 이메일/비밀번호 유효성 검사 후 argon2id 해싱하여 MariaDB 저장 |
-| `POST /auth/login` | 로그인. argon2id 비교 후 사용자 정보 반환. 기존 bcrypt 해시는 자동으로 argon2id로 마이그레이션 |
+| `POST /auth/register` | reCAPTCHA v3 검증 후 회원가입. 이메일/비밀번호 유효성 검사 후 argon2id 해싱하여 MariaDB 저장 |
+| `POST /auth/login` | reCAPTCHA v3 검증 후 로그인. argon2id 비교 후 사용자 정보 반환. 기존 bcrypt 해시는 자동으로 argon2id로 마이그레이션 |
 | `PATCH /auth/profile` | 회원정보 수정. 이름·전화번호·비밀번호·마케팅 수신 동의를 저장하며 이메일은 수정하지 않음. 비밀번호 변경 시 argon2id 해싱 |
 | `GET /auth/users` | 전체 사용자 목록 조회 (관리자용) |
 
@@ -147,7 +147,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /queue/enter` | 대기열 진입. `eventId`, `sessionDate`, `sessionTime`을 함께 보내면 해당 회차 전용 대기열로 처리 |
+| `POST /queue/enter` | reCAPTCHA v3 검증 후 대기열 진입. `eventId`, `sessionDate`, `sessionTime`을 함께 보내면 해당 회차 전용 대기열로 처리 |
 | `GET /queue/position/:userId` | 현재 대기 순번 조회. 회차 query(`eventId`, `sessionDate`, `sessionTime`) 지원 |
 | `POST /queue/admit` | 해당 회차 대기열의 상위 100명 일괄 입장 허용 + 회차 전용 Admission Token 발급 |
 | `GET /queue/standby` | standby 목록 조회 |
@@ -171,8 +171,8 @@ mariadb 라이브러리 기반 커넥션 풀.
 | 엔드포인트 | 설명 |
 |---|---|
 | `POST /seats/init` | 좌석 초기화 (Redis Hash 생성) |
-| `POST /seats/hold` | 좌석 선점. 좌석 ID에 포함된 회차와 Admission Token을 검증한 뒤 분산 락·타이머 시작 |
-| `POST /seats/confirm` | 결제 확정. MariaDB reservations 저장, 토큰 무효화, 매진 체크. 성공 시 사용자 이메일로 예매 완료 안내 메일 자동 발송 |
+| `POST /seats/hold` | reCAPTCHA v3와 좌석 ID에 포함된 회차·Admission Token을 검증한 뒤 분산 락·타이머 시작 |
+| `POST /seats/confirm` | reCAPTCHA v3 검증 후 결제 확정. MariaDB reservations 저장, 토큰 무효화, 매진 체크. 성공 시 사용자 이메일로 예매 완료 안내 메일 자동 발송 |
 | `POST /seats/cancel` | 좌석 취소. available 복구, B팀 재판매 트리거. 성공 시 사용자 이메일로 취소 및 환불 안내 메일 자동 발송 |
 | `POST /seats/release` | 좌석 해제 + standby 자동 배정 |
 | `GET /seats/timer/:seatId` | 남은 결제 시간 조회 |
@@ -270,6 +270,14 @@ mariadb 라이브러리 기반 커넥션 풀.
 - `listUsers()`: 전체 사용자 목록 (비밀번호 제외)
 
 **argon2id 설정:** `@node-rs/argon2` 사용, memoryCost=19456, timeCost=2, parallelism=1, outputLen=32
+
+---
+
+### src/services/recaptchaService.js — Google reCAPTCHA v3 검증
+
+- **목적:** 클라이언트가 발급한 reCAPTCHA v3 토큰을 Google `siteverify` API에서 검증하고, 자동화 요청을 핵심 예매 API에서 차단한다.
+- **주요 기능:** 토큰 존재 여부, Google 성공 여부, 요청 action, 최소 점수, `RECAPTCHA_ALLOWED_HOSTNAMES`를 검증한다. `RECAPTCHA_SECRET_KEY`가 없으면 개발 편의를 위해 검증을 비활성화하고 기존 흐름을 유지한다.
+- **API 명세 / 라우팅 규칙:** `guardRecaptcha()`가 `/auth/login`, `/auth/register`, `/queue/enter`, `/cancel-queue/join`, `/seats/hold`, `/cancel-queue/hold`, `/seats/confirm`의 POST 요청을 보호한다. 실패 시 HTTP 403과 `code: recaptcha_failed`를 반환한다.
 
 ---
 
@@ -619,6 +627,10 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `SMTP_HOST` | `smtp.gmail.com` | SMTP 서버 호스트 |
 | `SMTP_PORT` | `587` | SMTP 서버 포트 |
 | `FROM_EMAIL` | `SMTP_USER` 또는 `noreply@queuing.com` | 발신자 이메일 주소 |
+| `RECAPTCHA_SECRET_KEY` | *(없음)* | Google reCAPTCHA v3 서버 비밀 키. 설정하면 검증 활성화 |
+| `RECAPTCHA_REQUIRED` | *(설정값에 따름)* | `false`로 설정하면 비상 시 reCAPTCHA 검증을 일시 비활성화 |
+| `RECAPTCHA_SCORE_THRESHOLD` | `0.5` | reCAPTCHA v3 최소 허용 점수 |
+| `RECAPTCHA_ALLOWED_HOSTNAMES` | *(없음)* | 검증 응답 hostname 허용 목록. 개발 환경은 `localhost` 권장 |
 
 ---
 
@@ -640,6 +652,31 @@ SMTP_PASS: Gmail App Password
 ```
 
 실제 App Password는 GitHub, Helm values, Argo CD manifest에 기록하지 않고 Kubernetes Secret으로 주입한다. 차트 상세 구조와 생성 명령은 `redis-api-chart/README.md`를 참조한다.
+
+### Kubernetes Helm 차트의 Google reCAPTCHA 설정
+
+`redis-api-chart`는 reCAPTCHA Secret Key를 Helm values나 Git에 기록하지 않고, `queuing-a` 네임스페이스에 미리 생성된 `recaptcha-credentials` Secret을 참조한다. `recaptcha.enabled`의 기본값은 `false`이므로 기존 배포에 자동으로 검증을 강제하지 않는다.
+
+```yaml
+# redis-api-chart 배포 override 예시
+recaptcha:
+  enabled: true
+  required: true
+  scoreThreshold: "0.5"
+  allowedHostnames: "www.example.com,example.com"
+  secret:
+    name: "recaptcha-credentials"
+    key: "RECAPTCHA_SECRET_KEY"
+```
+
+활성화 전 인프라 담당자가 다음 Secret을 `queuing-a`에 생성해야 한다.
+
+```text
+Secret 이름: recaptcha-credentials
+Secret 키:   RECAPTCHA_SECRET_KEY
+```
+
+실제 Secret Key는 프론트엔드 S3 파일이나 Helm values에 넣지 않는다. 프론트엔드에는 Google Site Key만 빌드 환경변수로 포함하고, API는 Secret Key로 Google `siteverify` 검증을 수행한다. 차트 상세 구조와 생성 명령은 `redis-api-chart/README.md`를 참조한다.
 
 ## 배포·확인 시 주의
 

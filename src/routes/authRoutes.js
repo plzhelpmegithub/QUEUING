@@ -1,8 +1,10 @@
 const { register, login, listUsers, updateProfile } = require('../services/authService');
+const { guardRecaptcha } = require('../services/recaptchaService');
 
 async function authRoutes(fastify) {
 
   fastify.post('/auth/register', async (request, reply) => {
+    if (!await guardRecaptcha(request, reply, 'register')) return;
     const { userId, password, email, role, name, phone, birthDate } = request.body || {};
     if (!userId || !password) {
       return reply.status(400).send({ error: 'userId와 password는 필수입니다.' });
@@ -20,6 +22,7 @@ async function authRoutes(fastify) {
   });
 
   fastify.post('/auth/login', async (request, reply) => {
+    if (!await guardRecaptcha(request, reply, 'login')) return;
     const { userId, password } = request.body || {};
     if (!userId || !password) {
       return reply.status(400).send({ error: 'userId와 password는 필수입니다.' });

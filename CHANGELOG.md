@@ -1,3 +1,99 @@
+## [2026-09-08 12:55] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[redis-api-chart/values.yaml]**: Google reCAPTCHA v3 활성화 여부, 검증 정책 및 외부 Kubernetes Secret 참조 설정을 추가.
+- **[redis-api-chart/templates/deployment.yaml]**: reCAPTCHA 활성화 시 API Pod에 Secret Key와 검증 환경변수를 주입하도록 연결.
+- **[redis-api-chart/Chart.yaml]**: 차트 템플릿 변경을 반영하여 차트 버전을 `1.0.5`로 증가.
+- **[redis-api-chart/README.md / README.MD]**: Helm Secret 생성 방법, 운영 values override 및 Site Key/Secret Key 분리 원칙 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** API `.env.example`에는 reCAPTCHA 설정이 있지만 Helm 배포에서는 API Pod로 해당 환경변수가 전달되지 않음.
+- **원인(Cause):** Helm 차트의 `values.yaml`과 Deployment 템플릿에 reCAPTCHA 설정 및 Secret 참조가 누락되어 있었음.
+- **해결(Solution):** `recaptcha.enabled: true`인 경우에만 외부 `recaptcha-credentials` Secret과 `RECAPTCHA_*` 환경변수를 주입하도록 추가했다. 기본값은 false로 유지한다.
+
+## [2026-09-08 10:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/recaptchaService.js]**: Google reCAPTCHA v3 서버 검증 서비스를 추가. `siteverify` 응답의 성공 여부, action, 점수, 허용 hostname을 확인하고 실패 시 핵심 요청을 차단하도록 구성.
+- **[src/routes/authRoutes.js / src/routes/queueRoutes.js / src/routes/cancelQueueRoutes.js / src/routes/seatRoutes.js]**: 로그인·회원가입·대기열 진입·취소표 대기열/좌석 선점·결제 확정 요청에 action별 reCAPTCHA 검증 적용.
+- **[.env.example]**: 개발용 `RECAPTCHA_SECRET_KEY`, `RECAPTCHA_REQUIRED`, `RECAPTCHA_SCORE_THRESHOLD`, `RECAPTCHA_ALLOWED_HOSTNAMES` 설정 예시 추가.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 프론트엔드만의 로딩 화면이나 검증 표시로는 API를 직접 호출하는 매크로 요청을 차단할 수 없음.
+- **원인(Cause):** 서버가 Google reCAPTCHA 토큰의 유효성·action·점수를 확인하지 않으면 클라이언트 검증을 우회할 수 있음.
+- **해결(Solution):** 프론트엔드는 보호 요청 직전에 v3 토큰을 발급하고, API는 Google `siteverify`에 서버 비밀 키로 재검증한다. `RECAPTCHA_SECRET_KEY`가 없을 때는 개발 기능이 깨지지 않도록 검증을 비활성화한다.
+- **보완:** reCAPTCHA 실패 응답 후 원래 라우트가 계속 실행되지 않도록 `guardRecaptcha()`가 `false`를 반환하고 라우트 핸들러를 즉시 종료하게 했다.
+
+## [2026-09-08 09:56] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: `POST /admin/simulation/cancel-seats` 엔드포인트에 standby 대기자 자동 프로모션 로직 추가.
+  - 더미 좌석 취소 후, 취소된 좌석 수만큼 standby 대기열 상위 유저를 `promoteStandby()`로 자동 승격.
+  - 승격된 유저는 `admittedKey`로 이동 + Admission Token 즉시 발급.
+  - 응답에 `promotedCount`, `promotions` 필드 추가.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시뮬레이션 매진 후 대기열에 진입한 유저의 순번이 줄어들지 않음.
+- **원인(Cause):** 시뮬레이션 매진(`sellout`)이 대기열을 거치지 않고 좌석을 직접 SOLD 처리. `cancel-seats`로 좌석이 해제되어도 standby → admitted 프로모션이 없어 대기열이 진행되지 않음. `admitBatch()`는 eligible queue(`waitingKey`)만 처리하고 standby queue(`standbyKey`)는 무시.
+- **해결(Solution):** `cancel-seats`에서 좌석 취소 완료 후 `getNextStandby()` + `promoteStandby()`를 취소 좌석 수만큼 반복 호출. 프론트엔드 `pollPosition()`에서 `admitted` 상태 감지 시 `/queue/enter`로 기존 토큰을 가져와 좌석 선택 페이지로 이동.
+
+## [2026-09-08 09:25] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: HINCRBY 실시간 좌석 카운터 도입 — 5초 TTL 캐시를 대체.
+  - **카운터 키**: `seat:counter:{eventId}:{sessionDate}:{sessionTime}` (Redis Hash, TTL 없음)
+  - **`seatCounterKey()`**: eventId + session으로 카운터 키를 생성하는 헬퍼.
+  - **`adjustSeatCounter(eventId, context, from, to)`**: 상태 전환 시 HINCRBY로 `from -1, to +1` 원자적 갱신. 카운터 미초기화 시 skip.
+  - **`initSeats()`**: 좌석 생성 시 `total`, `available` 카운터 HINCRBY로 누적 초기화.
+  - **`holdSeat()`**: 성공 시 `available -1, held +1`.
+  - **`confirmSeat()`**: 성공 시 `held -1, sold +1`.
+  - **`cancelSeat()`**: 성공 시 `sold -1, available +1`.
+  - **`releaseSeat()`**: AVAILABLE 복귀 경로만 `held -1, available +1`. standby 재배정(HELD→HELD)은 카운터 변경 없음.
+  - **`cleanupEventSeats()`**: `seat:counter:{eventId}:*` 키도 함께 삭제.
+  - **`recoverSeatsFromMariaDB()`**: sessionStats에 `total`/`sold` 추적 추가, 복구 완료 후 카운터 동기화.
+  - **`reconcileSeatCounters(eventId, context)`**: 실제 좌석 SCAN 후 카운터를 재계산·덮어쓰기하는 수동 보정 함수. exports에 추가.
+  - **`getAvailableCount()`**: 카운터 HGETALL 1회로 즉시 응답(~0.1ms). 카운터 미존재 시 `reconcileSeatCounters()`로 자동 초기화 후 반환.
+  - 기존 5초 TTL 캐시(`seat:count:*`) 로직 완전 제거.
+
+- **[src/routes/seatRoutes.js]**: `POST /seats/reconcile` 엔드포인트 추가.
+  - body: `{ eventId, sessionDate?, sessionTime? }` → 카운터 재계산 후 결과 반환.
+  - 카운터 drift 발생 시 어드민에서 수동 호출용.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **배경:** JMeter 테스트에서 `GET /seats/available` 11.2초 → 5초 TTL 캐시로 1차 개선 후 HINCRBY 카운터로 2차 개선.
+- **원리:** 좌석 상태가 변하는 4개 지점(hold/confirm/cancel/release)에서 O(1) HINCRBY로 카운터 갱신. 조회는 HGETALL 1회(4필드)로 완료. 좌석이 수만 개로 늘어도 응답 시간 불변.
+- **drift 대비:** `reconcileSeatCounters()`가 SCAN 기반 실제 좌석 수를 세서 카운터를 덮어쓰므로, 서버 재시작·Redis 장애 복구 후 `POST /seats/reconcile` 1회 호출로 정합성 복원 가능.
+
+## [2026-09-07 19:30] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: `getAvailableCount()` Redis 5초 TTL 캐시 적용.
+  - 캐시 키: `seat:count:{eventId}:{sessionDate}:{sessionTime}` — 회차별로 독립 캐싱.
+  - 캐시 히트 시 SCAN + pipeline + filter 전체 생략 → 응답 ~1ms.
+  - 3회 `.filter()` 호출을 단일 `for` 루프로 통합 (캐시 미스 시에도 절반 정도 빨라짐).
+  - `eventId` 미지정 시 `EVENT_KEY`에서 조회하는 로직을 캐시 키 생성 전으로 이동해 캐시가 정확히 매칭되도록 수정.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** JMeter 7,292건 부하 테스트에서 `GET /seats/available` 평균 11.2초, APDEX 0.004.
+- **원인(Cause):** `getAvailableCount()`가 `getAllSeats()`로 전체 좌석 SCAN(6,600석 기준 SCAN 60+회 순차 왕복) 후 3번 filter → 숫자 4개만 반환. 동시 100명이 같은 계산을 매번 새로 실행.
+- **해결(Solution):** Redis `seat:count:*` 키에 결과를 5초 TTL로 캐싱. 5초 내 재요청은 GET 1회(~0.1ms)로 응답. 다음 단계로 HINCRBY 실시간 카운터 도입 예정.
+
+## [2026-09-07 17:45] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/eventRoutes.js]**: `PATCH /events/:eventId/close-time` 엔드포인트에서 즉시 마감 시 이벤트 `status`를 `closed`로 업데이트하도록 수정.
+  - `ticketCloseAt ≤ 현재시간`이면 `isImmediatelyClosed = true` 판정.
+  - Redis `EVENT_LIST_KEY`의 카드에 `status: 'closed'` 반영 → `GET /events` 폴링에서 즉시 감지 가능.
+  - 현재 활성 이벤트(`EVENT_KEY`)의 `status`도 `closed`로 갱신.
+  - DB `events` 테이블의 `status` 컬럼도 `closed`로 동시 업데이트.
+  - `cancelled`, `sold_out` 상태인 경우 status 덮어쓰기 방지.
+  - 미래 마감 시간 설정(`ticketCloseAt > now`)은 기존과 동일하게 `ticketCloseAt`만 저장 (status 변경 없음).
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 어드민 "즉시 마감" 클릭 후 메인 페이지 뱃지가 "예매중"으로 유지됨.
+- **원인(Cause):** `close-time` 엔드포인트가 `ticketCloseAt`만 설정하고 `event.status`를 `closed`로 변경하지 않아, `GET /events` 응답에서 `status: 'open'`이 유지되었음. 메인 페이지 10초 폴링은 `status` 변경 여부로 감지하므로 업데이트 불가.
+- **해결(Solution):** 즉시 마감 시 Redis 카드·Event_KEY·DB 모두 `status = 'closed'`로 동기 업데이트. 이후 메인 페이지 폴링이 변경을 감지하면 자동으로 뱃지와 카드를 갱신.
+
 ## [2026-09-07 12:21] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -7,6 +103,12 @@
 - **[.env.example / .gitignore]**: 로컬 SMTP 테스트 환경변수 예시 추가 및 환경변수·Secret 원본 파일의 커밋 방지 규칙 추가.
 - **[redis-api-chart/README.md]**: Helm SMTP 설정과 인프라 담당자 작업 절차 문서화.
 - **[redis-api-chart/reademe.txt]**: 비밀번호를 명령행에 직접 입력하도록 안내하던 오래된 내용을 보안 안내로 교체.
+
+## [2026-09-07 15:25] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: DB 관리자 제공 파일 적용. `waiting_queue` INSERT 3곳(`enter()` standby/eligible, `enterStandby()`)에 `membership_at_join` 컬럼 추가. `enter()` 및 `enterStandby()` 진입 시점에 `isPriorityUser()` 결과를 기반으로 `membershipAtJoin(0|1)` 값을 산출하여 저장. 응답 객체에도 `membershipAtJoin` 필드 추가.
+- **[src/services/dbService.js]**: `waiting_queue` `addColumns()` 목록에 `membership_at_join TINYINT(1) NOT NULL DEFAULT 0` 추가. 서버 재시작 시 컬럼이 없는 환경에서도 자동 생성됨.
 
 ## [2026-09-07 10:50] 업데이트 로그
 

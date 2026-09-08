@@ -23,7 +23,7 @@ replicaCount: 2
 image:
   repository: "mover14/redis-api-backend"
   pullPolicy: IfNotPresent
-  tag: "1.0.7"
+  tag: "1.0.8"
 
 # -----------------------------------------------------------------------------
 # [이미지 풀 시크릿] 프라이빗 레지스트리 인증이 필요할 때 사용.
@@ -149,6 +149,22 @@ dbPasswordSecret:
   key: "MARIADB_ROOT_PASSWORD"
 
 # -----------------------------------------------------------------------------
+# [Google reCAPTCHA v3] API 요청 봇 검증 설정.
+# enabled가 false이면 기존 배포처럼 reCAPTCHA 환경변수를 파드에 주입하지 않는다.
+# true로 바꾸면 아래 Secret이 queuing-a 네임스페이스에 미리 존재해야 한다.
+# Secret에는 실제 Google reCAPTCHA Secret Key를 평문이 아닌 형태로 보관한다.
+# 운영 환경에서는 allowedHostnames를 실제 프론트엔드 도메인으로 변경한다.
+# -----------------------------------------------------------------------------
+recaptcha:
+  enabled: false
+  required: true
+  scoreThreshold: "0.5"
+  allowedHostnames: "localhost"
+  secret:
+    name: "recaptcha-credentials"
+    key: "RECAPTCHA_SECRET_KEY"
+
+# -----------------------------------------------------------------------------
 # [리소스 제한] 파드의 CPU/메모리 할당량.
 #   requests : 스케줄링 시 보장받을 최소 리소스. 이 값 기준으로 노드에 배치.
 #   limits   : 절대 초과할 수 없는 상한. 초과하면 CPU는 쓰로틀링, 메모리는 OOMKill.
@@ -158,7 +174,7 @@ dbPasswordSecret:
 # -----------------------------------------------------------------------------
 resources:
   requests:
-    cpu: "100m"
+    cpu: "200m"
     memory: "128Mi"
   limits:
     cpu: "500m"

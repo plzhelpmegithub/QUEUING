@@ -39,6 +39,21 @@ const STATUS = {
   CANCELLED: 'CANCELLED',
 };
 
+function seatCounterKey(eventId, context = {}) {
+  const n = normalizeSessionContext({ eventId, ...context });
+  return `seat:counter:${eventId}:${n.sessionDate}:${n.sessionTime}`;
+}
+
+async function adjustSeatCounter(eventId, context, from, to) {
+  const key = seatCounterKey(eventId, context);
+  const exists = await redis.exists(key);
+  if (!exists) return;
+  const pipe = redis.pipeline();
+  if (from) pipe.hincrby(key, from, -1);
+  if (to) pipe.hincrby(key, to, 1);
+  await pipe.exec();
+}
+
 async function initSeats(seatIds, section = '', price = 0, session = {}) {
   const eventId = seatIds[0]?.split(':')[0] || '';
   const sessionContext = normalizeSessionContext({ eventId, ...session });
@@ -57,6 +72,10 @@ async function initSeats(seatIds, section = '', price = 0, session = {}) {
     });
   }
   await pipeline.exec();
+
+  const cKey = seatCounterKey(eventId, sessionContext);
+  await redis.hincrby(cKey, 'total', seatIds.length);
+  await redis.hincrby(cKey, 'available', seatIds.length);
 
   const values = seatIds.map(id => [id, eventId, sessionContext.sessionDate, sessionContext.sessionTime, section, price, 'AVAILABLE', '', null]);
   const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
@@ -119,6 +138,8 @@ async function holdSeat(userId, seatId, admissionToken, requestedContext = {}) {
       [userId, seatId],
       `seat:hold ${seatId}`,
     );
+
+    await adjustSeatCounter(sessionContext.eventId, sessionContext, 'available', 'held');
 
     return {
       success: true,
@@ -184,6 +205,7 @@ async function releaseSeat(userId, seatId) {
   }
 
   await redis.hset(seatKey, { status: STATUS.AVAILABLE, heldBy: '', heldAt: '' });
+  await adjustSeatCounter(sessionContext.eventId, sessionContext, 'held', 'available');
   await publishSeatEvent(EVENT_TYPE.RELEASED, { seatId, userId });
 
   await syncToMariaDB(
@@ -257,6 +279,14 @@ async function cleanupEventSeats(eventId) {
   } while (cursor !== '0');
 
   console.log(`[Seat] cleanup — ${eventId} 좌석 키 ${deleted}개 삭제`);
+
+  let counterCursor = '0';
+  do {
+    const [nextCursor, cKeys] = await redis.scan(counterCursor, 'MATCH', `seat:counter:${eventId}:*`, 'COUNT', 100);
+    counterCursor = nextCursor;
+    if (cKeys.length > 0) await redis.del(...cKeys);
+  } while (counterCursor !== '0');
+
   return { deleted };
 }
 
@@ -290,6 +320,7 @@ async function confirmSeat(userId, seatId, requestedContext = {}) {
   );
 
   await redis.hset(seatKey, { status: STATUS.SOLD });
+  await adjustSeatCounter(sessionContext.eventId, sessionContext, 'held', 'sold');
   await cancelTimer(seatId);
   await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
 
@@ -351,6 +382,7 @@ async function cancelSeat(userId, seatId) {
     heldBy: '',
     heldAt: '',
   });
+  await adjustSeatCounter(sessionContext.eventId, sessionContext, 'sold', 'available');
 
   await redis.del(getScopedKey(SOLD_OUT_KEY, sessionContext));
   await redis.del(getScopedKey('event:ticketing-status', sessionContext));
@@ -395,17 +427,41 @@ async function isSoldOut(context = {}) {
   };
 }
 
-async function getAvailableCount(eventId, context = {}) {
+async function reconcileSeatCounters(eventId, context = {}) {
   const allSeats = await getAllSeats(eventId, context);
-  const available = allSeats.filter(s => s.status === STATUS.AVAILABLE);
-  const held = allSeats.filter(s => s.status === STATUS.HELD);
-  const sold = allSeats.filter(s => s.status === STATUS.SOLD);
-  return {
-    total: allSeats.length,
-    available: available.length,
-    held: held.length,
-    sold: sold.length,
-  };
+  const counts = { total: 0, available: 0, held: 0, sold: 0 };
+  for (const s of allSeats) {
+    counts.total++;
+    if (s.status === STATUS.AVAILABLE) counts.available++;
+    else if (s.status === STATUS.HELD) counts.held++;
+    else if (s.status === STATUS.SOLD) counts.sold++;
+  }
+  if (eventId) {
+    const key = seatCounterKey(eventId, context);
+    await redis.hset(key, counts);
+  }
+  console.log(`[SeatCounter] reconcile ${eventId}: total=${counts.total} avail=${counts.available} held=${counts.held} sold=${counts.sold}`);
+  return counts;
+}
+
+async function getAvailableCount(eventId, context = {}) {
+  if (!eventId) {
+    const info = await redis.hgetall(EVENT_KEY);
+    eventId = info && info.eventId ? info.eventId : null;
+  }
+  if (eventId) {
+    const key = seatCounterKey(eventId, context);
+    const counter = await redis.hgetall(key);
+    if (counter && counter.total !== undefined) {
+      return {
+        total: Number(counter.total),
+        available: Math.max(0, Number(counter.available) || 0),
+        held: Math.max(0, Number(counter.held) || 0),
+        sold: Math.max(0, Number(counter.sold) || 0),
+      };
+    }
+  }
+  return reconcileSeatCounters(eventId, context);
 }
 
 async function recoverSeatsFromMariaDB(eventId, options = {}) {
@@ -450,12 +506,19 @@ async function recoverSeatsFromMariaDB(eventId, options = {}) {
     else if (status === STATUS.HELD) held++;
     else if (status === STATUS.SOLD) sold++;
     const sessionKey = `${row.session_date || ''}|${row.session_time || ''}`;
-    const stats = sessionStats.get(sessionKey) || { date: row.session_date || '', time: row.session_time || '', available: 0, held: 0 };
+    const stats = sessionStats.get(sessionKey) || { date: row.session_date || '', time: row.session_time || '', total: 0, available: 0, held: 0, sold: 0 };
+    stats.total++;
     if (status === STATUS.AVAILABLE) stats.available++;
     else if (status === STATUS.HELD) stats.held++;
+    else if (status === STATUS.SOLD) stats.sold++;
     sessionStats.set(sessionKey, stats);
   }
   await pipeline.exec();
+
+  for (const stats of sessionStats.values()) {
+    const cKey = seatCounterKey(eventId, { sessionDate: stats.date, sessionTime: stats.time });
+    await redis.hset(cKey, { total: stats.total, available: stats.available, held: stats.held, sold: stats.sold });
+  }
 
   for (const stats of sessionStats.values()) {
     if (stats.available === 0 && stats.held === 0) {
@@ -476,4 +539,4 @@ async function recoverSeatsFromMariaDB(eventId, options = {}) {
   return { recovered: true, total: rows.length, available, held, sold, existing: existingKeys.length };
 }
 
-module.exports = { initSeats, holdSeat, confirmSeat, cancelSeat, releaseSeat, getSeatTimer, getAllSeats, isSoldOut, getAvailableCount, cleanupEventSeats, recoverSeatsFromMariaDB, STATUS };
+module.exports = { initSeats, holdSeat, confirmSeat, cancelSeat, releaseSeat, getSeatTimer, getAllSeats, isSoldOut, getAvailableCount, cleanupEventSeats, recoverSeatsFromMariaDB, reconcileSeatCounters, STATUS };

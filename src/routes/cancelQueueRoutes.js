@@ -3,6 +3,7 @@ const membershipService = require('../services/membershipService');
 const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
 const { getRawToken } = require('../services/tokenService');
+const { guardRecaptcha } = require('../services/recaptchaService');
 
 function getQueueContext(request, eventId = '') {
   const body = request.body || {};
@@ -17,6 +18,7 @@ function getQueueContext(request, eventId = '') {
 async function cancelQueueRoutes(fastify) {
 
   fastify.post('/cancel-queue/join', async (request, reply) => {
+    if (!await guardRecaptcha(request, reply, 'cancel_queue_join')) return;
     const { userId } = request.body || {};
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
@@ -82,6 +84,7 @@ async function cancelQueueRoutes(fastify) {
 
   // Secret Link 보유자만 배정된 좌석을 선점할 수 있게 한다.
   fastify.post('/cancel-queue/hold', async (request, reply) => {
+    if (!await guardRecaptcha(request, reply, 'cancel_seat_hold')) return;
     const { userId, eventId, seatId } = request.body || {};
     if (!userId || !eventId || !seatId) {
       return reply.status(400).send({ error: 'userId, eventId, seatId는 필수입니다.' });

@@ -3,6 +3,7 @@ const { getReservationsBySeat, getAllReservations, getReservationsByUser } = req
 const { sendEmail } = require('../services/notificationService');
 const redis = require('../config/redis');
 const pool = require('../config/mariadb');
+const { guardRecaptcha } = require('../services/recaptchaService');
 
 const GRADE_MAP = {
   Floor: 'VIP', A1: 'S', A2: 'S', A3: 'S', A4: 'S',
@@ -60,6 +61,7 @@ async function seatRoutes(fastify) {
   });
 
   fastify.post('/seats/hold', async (request, reply) => {
+    if (!await guardRecaptcha(request, reply, 'seat_hold')) return;
     const { userId, seatId, token, eventId, sessionDate, sessionTime } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
@@ -73,6 +75,7 @@ async function seatRoutes(fastify) {
   });
 
   fastify.post('/seats/confirm', async (request, reply) => {
+    if (!await guardRecaptcha(request, reply, 'seat_confirm')) return;
     const { userId, seatId, eventId, sessionDate, sessionTime } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
@@ -172,6 +175,13 @@ async function seatRoutes(fastify) {
     const { eventId, sessionDate, sessionTime } = request.query || {};
     const result = await seatService.getAvailableCount(eventId, { sessionDate, sessionTime });
     return reply.send(result);
+  });
+
+  fastify.post('/seats/reconcile', async (request, reply) => {
+    const { eventId, sessionDate, sessionTime } = request.body || {};
+    if (!eventId) return reply.status(400).send({ error: 'eventId가 필요합니다.' });
+    const result = await seatService.reconcileSeatCounters(eventId, { sessionDate, sessionTime });
+    return reply.send({ success: true, ...result });
   });
 
   fastify.get('/seats', async (request, reply) => {

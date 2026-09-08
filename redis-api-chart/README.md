@@ -1,5 +1,5 @@
 # 📂 D:\claude_share\api\redis-api-chart Directory Documentation
-QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설정과 데이터베이스·SMTP 자격증명 연결을 분리하여, 실제 비밀번호가 Helm values나 Git 저장소에 들어가지 않도록 구성한다.
+QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설정과 데이터베이스·SMTP·reCAPTCHA 자격증명 연결을 분리하여, 실제 비밀번호와 Google Secret Key가 Helm values나 Git 저장소에 들어가지 않도록 구성한다.
 
 ## 🏗 Directory Structure
 - `Chart.yaml`: 차트 이름, 차트 버전, 애플리케이션 버전 등 Helm 메타데이터 정의
@@ -22,8 +22,37 @@ QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설
 
 ### `templates/deployment.yaml`
 - **목적:** Redis, MariaDB, AWS LocalStack 및 선택적 SMTP 설정을 API Pod에 주입한다.
-- **주요 기능:** `smtp.enabled: true`일 때 `SMTP_HOST`, `SMTP_PORT`를 values에서 읽고 `SMTP_USER`, `SMTP_PASS`를 `secretKeyRef`로 주입한다. `smtp.enabled: false`일 때 SMTP 환경변수를 만들지 않아 애플리케이션의 AWS SES fallback이 유지된다.
+- **주요 기능:** `recaptcha.enabled: true`일 때 `RECAPTCHA_SECRET_KEY`를 외부 Secret에서 주입하고, `RECAPTCHA_REQUIRED`, `RECAPTCHA_SCORE_THRESHOLD`, `RECAPTCHA_ALLOWED_HOSTNAMES`를 values에서 주입한다. `recaptcha.enabled: false`일 때 관련 환경변수를 만들지 않아 기존 배포 흐름을 유지한다. `smtp.enabled: true`일 때 `SMTP_HOST`, `SMTP_PORT`를 values에서 읽고 `SMTP_USER`, `SMTP_PASS`를 `secretKeyRef`로 주입한다. `smtp.enabled: false`일 때 SMTP 환경변수를 만들지 않아 애플리케이션의 AWS SES fallback이 유지된다.
 - **API 명세 / 라우팅 규칙:** 이메일 테스트 API는 API 애플리케이션의 `POST /admin/test-email` 라우트를 사용한다. SMTP 자격증명은 HTTP 응답이나 로그에 출력하지 않는다.
+
+### `recaptcha` 설정
+- **목적:** 보호된 로그인·회원가입·대기열·좌석 API에 Google reCAPTCHA v3 서버 검증을 활성화한다.
+- **주요 기능:** 기본값은 `enabled: false`다. 활성화하면 `recaptcha-credentials` Secret의 `RECAPTCHA_SECRET_KEY`를 API Pod에 주입하고, 검증 필수 여부·최소 점수·허용 hostname을 함께 설정한다.
+- **API 명세 / 라우팅 규칙:** 애플리케이션은 프론트엔드가 전달한 토큰을 Google `siteverify`로 재검증한다. 실패한 보호 요청은 HTTP 403과 `code: recaptcha_failed`를 반환한다.
+
+## 🔐 reCAPTCHA Secret 설정
+
+실제 Google Secret Key는 Helm values, Git, 프론트엔드 빌드 결과물에 기록하지 않는다. 인프라 담당자가 API가 배포되는 `queuing-a` 네임스페이스에 Secret을 먼저 생성한다.
+
+```bash
+kubectl -n queuing-a create secret generic recaptcha-credentials \
+  --from-literal=RECAPTCHA_SECRET_KEY='실제 Google Secret Key'
+```
+
+운영용 values override 예시는 다음과 같다.
+
+```yaml
+recaptcha:
+  enabled: true
+  required: true
+  scoreThreshold: "0.5"
+  allowedHostnames: "www.example.com,example.com"
+  secret:
+    name: "recaptcha-credentials"
+    key: "RECAPTCHA_SECRET_KEY"
+```
+
+`allowedHostnames`에는 브라우저가 실제 접속하는 프론트엔드 hostname을 입력한다. `localhost`와 운영 도메인은 Google reCAPTCHA 콘솔에도 각각 등록해야 한다. 개발·운영 키는 분리하는 것을 권장한다.
 
 ### `smtp` 설정
 - **목적:** Gmail SMTP 테스트를 활성화하되 App Password를 Git 또는 Helm values에 저장하지 않는다.
