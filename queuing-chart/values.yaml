@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: dororonge/queuing-worker
-  tag: "1.0.0"
+  tag: "1.0.2"
   pullPolicy: IfNotPresent
 
 resources:
