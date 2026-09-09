@@ -1,0 +1,109 @@
+# ──────────────────────────────────────────────
+# 예지님(D파트 · 관측성) 클러스터 조회 권한
+#
+# ⚠️ 이 파일은 기존 clusterrole/yeji-monitoring 을 좁히기 위한 것이다
+#
+# 이전 정의는 core API 그룹에 대해 `resources: ["*"]` 로 되어 있어서
+# Secret 까지 클러스터 전체에서 읽을 수 있었다.
+#
+#   kubectl auth can-i get secrets -A --as=system:serviceaccount:monitoring:yeji
+#   → yes
+#
+# 거기에는 DB 비밀번호(mariadb-credentials), 도커허브 토큰(dockerhub-creds),
+# Gmail 앱 비밀번호(grafana-smtp), Redis 비밀번호(redis-counter-secret),
+# ArgoCD 관리자 비밀번호가 모두 들어 있다. 모니터링에는 필요 없는 권한이다.
+#
+# RBAC 에는 "이건 빼고" 라는 거부 규칙이 없다. 허용할 자원을 하나씩 적는 것이
+# 유일한 방법이라, 아래처럼 열거한다. secrets 가 목록에 없으면 못 읽는다.
+#
+# ■ 적용
+#   kubectl apply -f shared-infra/yeji-rbac.yaml
+#
+# ■ 확인 (secrets 만 no 로 바뀌어야 한다)
+#   Y=system:serviceaccount:monitoring:yeji
+#   kubectl auth can-i get pods -A    --as=$Y   # yes
+#   kubectl auth can-i get secrets -A --as=$Y   # no
+# ──────────────────────────────────────────────
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: yeji-monitoring
+rules:
+  # ── core API 그룹 — 자원을 명시적으로 열거한다 ──
+  # 여기에 secrets 를 넣지 않는 것이 이 파일의 핵심이다.
+  - apiGroups: [""]
+    resources:
+      - pods
+      - nodes
+      - services
+      - endpoints
+      - namespaces
+      - events
+      - configmaps # Grafana 대시보드가 ConfigMap 으로 들어간다
+      - persistentvolumeclaims
+      - replicationcontrollers
+      - resourcequotas
+      - limitranges
+    verbs: ["get", "list", "watch"]
+
+  # 파드 로그 조회 — 장애 원인을 직접 확인하려면 필요하다
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+
+  # 포트포워딩 — 서비스에 직접 붙어볼 때 쓴다
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["get", "list", "create"]
+
+  # PV 는 클러스터 범위 자원이라 별도로 둔다.
+  # Prometheus/Grafana 저장소를 직접 만들 수 있도록 쓰기까지 허용한다.
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+
+  # ── 워크로드 · 오토스케일링 · 배치 ──
+  - apiGroups: ["apps"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
+  # ── 메트릭 (kubectl top) ──
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
+  # ── 모니터링 CRD (ServiceMonitor, PrometheusRule 등) ──
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
+  # ── 다른 파트 현황 조회 ──
+  - apiGroups: ["argoproj.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["keda.sh"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: yeji-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: yeji-monitoring
+subjects:
+  - kind: ServiceAccount
+    name: yeji
+    namespace: monitoring
