@@ -163,8 +163,10 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "kube_deployment_status_replicas",
-                        "legendFormat": "{{deployment}} 파드 수"
+                        "editorMode": "code",
+                        "expr": "kube_deployment_status_replicas{deployment=~\"api|backend-counter|email-worker|realtime-ws\"}",
+                        "legendFormat": "{{deployment}} 파드 수",
+                        "range": true
                       },
                       "version": "v0"
                     },
@@ -223,6 +225,8 @@
                       "mode": "off"
                     }
                   },
+                  "max": 10,
+                  "min": 0,
                   "thresholds": {
                     "mode": "absolute",
                     "steps": [
@@ -616,8 +620,10 @@
                   "color": {
                     "mode": "thresholds"
                   },
+                  "max": 100,
+                  "min": 0,
                   "thresholds": {
-                    "mode": "percentage",
+                    "mode": "absolute",
                     "steps": [
                       {
                         "color": "green",
@@ -625,11 +631,11 @@
                       },
                       {
                         "color": "orange",
-                        "value": 60
+                        "value": 70
                       },
                       {
                         "color": "red",
-                        "value": 80
+                        "value": 90
                       }
                     ]
                   },
@@ -685,7 +691,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum(rate(http_server_requests_seconds_sum[1m])) by (uri) / sum(rate(http_server_requests_seconds_count[1m])) by (uri)",
+                        "expr": "sum(rate(http_server_requests_seconds_sum{uri!=\"\"}[1m])) by (uri) / sum(rate(http_server_requests_seconds_count{uri!=\"\"}[1m])) by (uri)",
                         "legendFormat": "__auto",
                         "range": true
                       },
@@ -702,7 +708,7 @@
           "description": "",
           "id": 7,
           "links": [],
-          "title": "New panel",
+          "title": "트래픽 지연/에러 시계열",
           "vizConfig": {
             "group": "timeseries",
             "kind": "VizConfig",
