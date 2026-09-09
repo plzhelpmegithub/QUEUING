@@ -92,7 +92,7 @@ env:
   # --- Redis 연결 (redis.js / timerService.js) ---
   # C파트(지예님)가 realtime 네임스페이스에 배포한 Redis 마스터.
   # 대기열, 좌석 상태, 이벤트 캐시 등 실시간 데이터 저장소.
-  redisHost: "redis-master.realtime.svc.cluster.local"
+  redisHost: "queuing-redis.wxbnsp.ng.0001.apn2.cache.amazonaws.com"
   redisPort: "6379"
 
   # --- MariaDB 연결 (mariadb.js) ---
@@ -107,9 +107,9 @@ env:
   # SES/SNS 이메일·푸시 알림용. 온프레미스에서는 LocalStack으로 대체.
   # AWS_ENDPOINT를 안 넣으면 알림 기능이 100% 실패하므로 반드시 설정.
   # 자격증명은 LocalStack 관례상 더미값("test") 사용.
-  awsEndpoint: "http://localstack.queuing-localstack.svc.cluster.local:4566"
-  awsAccessKeyId: "test"
-  awsSecretAccessKey: "test"
+  awsEndpoint: ""
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
 
   # --- Node.js 실행 환경 ---
   # "production"이면 디버그 로그 축소, 에러 스택트레이스 숨김 등 최적화 적용.
