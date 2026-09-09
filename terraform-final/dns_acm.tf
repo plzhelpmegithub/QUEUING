@@ -28,7 +28,17 @@ locals {
   frontend_domain = var.frontend_domain != "" ? var.frontend_domain : var.domain_name
   api_domain      = "${var.api_subdomain}.${var.domain_name}"
   www_domain      = "www.${var.domain_name}"
-  zone_id         = var.create_route53_zone ? aws_route53_zone.main[0].zone_id : data.aws_route53_zone.existing[0].zone_id
+  # ⚠️ [0] 인덱스를 쓰지 않는다.
+  # Terraform 의 삼항 연산자는 선택되지 않은 쪽도 평가한다. 두 branch 중 하나는
+  # 항상 count = 0 이라 빈 목록이 되는데, 거기에 [0] 을 걸면
+  # "Invalid index" 로 plan 자체가 실패한다.
+  #   https://developer.hashicorp.com/terraform/language/expressions/conditionals
+  #
+  # one() 은 빈 목록에 null, 원소 1개인 목록에는 그 원소를 돌려준다.
+  # 스플랫([*])은 빈 목록에도 안전하므로 양쪽 다 평가되어도 터지지 않는다.
+  #
+  # create_route53_zone = false(지금 설정)에서 실제로 걸리는 자리였다.
+  zone_id = var.create_route53_zone ? one(aws_route53_zone.main[*].zone_id) : one(data.aws_route53_zone.existing[*].zone_id)
 }
 
 # ── 호스팅 영역 ──
@@ -158,6 +168,55 @@ resource "aws_route53_record" "frontend_www" {
   zone_id = local.zone_id
   name    = local.www_domain
   type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.frontend.domain_name
+    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+# ──────────────────────────────────────────────
+# IPv6 (AAAA) 레코드 — CloudFront 만
+#
+# ■ 출처: 찬규(A) 안. 2026-09-09 푸시에서 AAAA 레코드가 추가된 것을 가져왔다.
+#
+# CloudFront 는 기본적으로 듀얼스택(IPv4 + IPv6)이라 AAAA 를 걸면 실제로
+# IPv6 로 접속된다. 국내 모바일 통신망 일부가 IPv6 우선이라 그쪽 경로가 짧아진다.
+#
+# ■ ALB 쪽 AAAA 는 가져오지 않았다
+# 찬규 안에는 api.queuing.kr 에도 AAAA 가 있었다. 하지만 우리 ALB 는
+# ip_address_type 이 기본값 "ipv4" 이고, VPC·서브넷에 IPv6 CIDR 을 할당하지
+# 않았다. 듀얼스택 ALB 는 서브넷에 IPv6 CIDR 이 있어야 만들 수 있으므로,
+# 지금 구성에서 ALB 용 AAAA 를 걸면 레코드는 생기지만 응답할 주소가 없다.
+#
+# IPv6 로 API 까지 받으려면 ① VPC 에 IPv6 CIDR 할당 ② 서브넷에 IPv6 할당
+# ③ ALB ip_address_type = "dualstack" ④ 그다음 AAAA — 이 순서가 전부 필요하다.
+# 지금 단계에서는 과하다고 보고 CloudFront 만 적용했다.
+#
+# ⚠️ 온프레미스에서 IPv6 때문에 이미 한 번 당했다
+# worker1/2 에서 containerd 가 AAAA 를 먼저 물어서 이미지 pull 이
+# "network is unreachable" 로 실패했다(shared-infra/node-setup.md). AWS 에서는
+# VPC 에 IPv6 가 아예 없어서 같은 문제가 생기지 않는다. 나중에 IPv6 를 켜기로
+# 하면 그 기록을 먼저 볼 것.
+# ──────────────────────────────────────────────
+
+resource "aws_route53_record" "frontend_aaaa" {
+  zone_id = local.zone_id
+  name    = local.frontend_domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.frontend.domain_name
+    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "frontend_www_aaaa" {
+  zone_id = local.zone_id
+  name    = local.www_domain
+  type    = "AAAA"
 
   alias {
     name                   = aws_cloudfront_distribution.frontend.domain_name

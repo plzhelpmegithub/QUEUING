@@ -4,7 +4,10 @@
 
 resource "aws_s3_bucket" "frontend" {
   bucket        = "${var.project}-frontend-${data.aws_caller_identity.current.account_id}"
-  force_destroy = true
+  # 찬규 안에서 가져옴 — 내 쪽은 무조건 true 였다.
+  # true 면 버킷에 파일이 있어도 terraform destroy 가 통째로 지운다. 개발 중에는
+  # 편하지만 prod 에서 실수 한 번이면 프론트엔드가 사라진다.
+  force_destroy = var.environment != "prod"
 
   tags = { Name = "${var.project}-frontend" }
 }
@@ -31,6 +34,13 @@ resource "aws_cloudfront_distribution" "frontend" {
   price_class         = "PriceClass_200"
 
   aliases = [local.frontend_domain, local.www_domain]
+
+  # WAF 연결 (찬규 안에서 가져옴) — waf.tf 참고.
+  # waf_enabled = false 면 null 이 들어가고 WAF 없이 동작한다.
+  # one() 을 쓴다 — waf_enabled = false 면 빈 목록이 되고, [0] 이면 거기서 터진다.
+  # (삼항은 양쪽을 다 평가한다. 부하 테스트 때 false 로 내릴 자리라 실제로 걸린다)
+  # one() 은 빈 목록에 null 을 주고, web_acl_id = null 은 "WAF 없음"을 뜻한다.
+  web_acl_id = var.waf_enabled ? one(aws_wafv2_web_acl.cloudfront[*].arn) : null
 
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
@@ -127,12 +137,20 @@ resource "aws_cloudfront_distribution" "frontend" {
     error_code         = 403
     response_code      = 200
     response_page_path = "/index.html"
+
+    # 찬규 안에서 가져옴. 지정하지 않으면 기본 300초라, 배포 직후 잘못 캐시된
+    # 403/404 가 5분간 유지된다. 시연 중에 이러면 원인을 찾기 어렵다.
+    error_caching_min_ttl = 10
   }
 
   custom_error_response {
     error_code         = 404
     response_code      = 200
     response_page_path = "/index.html"
+
+    # 찬규 안에서 가져옴. 지정하지 않으면 기본 300초라, 배포 직후 잘못 캐시된
+    # 403/404 가 5분간 유지된다. 시연 중에 이러면 원인을 찾기 어렵다.
+    error_caching_min_ttl = 10
   }
 
   restrictions {
@@ -171,4 +189,55 @@ resource "aws_s3_bucket_policy" "frontend" {
       }
     }]
   })
+}
+
+
+# ──────────────────────────────────────────────
+# S3 버저닝 · 저장 암호화
+#
+# ■ 출처: 찬규(A) 안. 내 쪽에 아예 빠져 있던 것을 가져왔다.
+#
+# 버저닝 — 프론트엔드 배포는 S3 에 파일을 덮어쓰는 방식이다. 잘못 빌드된
+# 번들을 올렸을 때 되돌릴 방법이 버저닝뿐이다. 없으면 이전 파일이 사라진다.
+# 찬규님이 프론트엔드를 계속 손보는 중이라 실제로 쓰일 가능성이 높다.
+#
+# 암호화 — 정적 파일이라 민감 데이터는 없지만 SSE-S3 는 추가 비용이 0 이다.
+# 끄는 쪽이 오히려 설명이 필요한 선택이 된다.
+# ──────────────────────────────────────────────
+
+resource "aws_s3_bucket_versioning" "frontend" {
+  bucket = aws_s3_bucket.frontend.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "frontend" {
+  bucket = aws_s3_bucket.frontend.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# 오래된 버전을 30일 뒤 정리한다. 버저닝을 켜면 덮어쓴 파일이 계속 쌓이는데,
+# 프론트엔드 번들은 배포마다 통째로 바뀌어서 방치하면 용량이 계속 늘어난다.
+resource "aws_s3_bucket_lifecycle_configuration" "frontend" {
+  bucket = aws_s3_bucket.frontend.id
+
+  rule {
+    id     = "expire-old-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.frontend]
 }

@@ -47,7 +47,27 @@ resource "aws_eks_cluster" "main" {
     bootstrap_cluster_creator_admin_permissions = true
   }
 
-  depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
+  # ── 컨트롤 플레인 로그 (찬규 안에서 가져옴) ──
+  #
+  # 이 줄이 없으면 아래 CloudWatch 로그 그룹만 생기고 내용은 영원히 비어 있다.
+  # 통합 직후 내 쪽이 그 상태였다 — 로그 그룹은 만들었는데 클러스터에서
+  # 내보내도록 켜지 않았다.
+  #
+  #   api           : kubectl 요청/응답. 누가 무엇을 했는지.
+  #   audit         : 리소스 변경 감사. "대시보드가 왜 초기화됐는지" 같은 추적에 쓴다.
+  #   authenticator : IAM 인증 실패. RBAC 가 막았을 때 원인이 여기 남는다.
+  #
+  # ⚠️ 비용: 수집 $0.50/GB + 보관. audit 은 양이 많다. 아껴야 하면
+  #    ["api", "authenticator"] 만 켠다.
+  enabled_cluster_log_types = ["api", "audit", "authenticator"]
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_cluster_policy,
+
+    # 로그 그룹이 먼저 있어야 한다. 없으면 EKS 가 이름 그대로 자동 생성하는데,
+    # 그때는 retention 이 "만료 없음"(= 무기한 과금)으로 잡힌다.
+    aws_cloudwatch_log_group.eks_cluster,
+  ]
 
   tags = { Name = "${var.project}-eks" }
 }
@@ -161,6 +181,23 @@ resource "aws_eks_node_group" "main" {
 
   instance_types = [var.eks_node_instance_type]
 
+  # ⚠️ AL2023 을 명시한다.
+  #
+  # 찬규 안은 ami_type = "AL2_x86_64" 였다. AL2 기반 EKS 최적화 AMI 는
+  # K8s 1.32 까지만 배포되고 2025-11-26 에 발행이 중단됐다. 1.33 부터는
+  # AL2023 또는 Bottlerocket 만 나온다. 찬규님 기본값이 1.30 이어서 그쪽에서는
+  # 문제가 없었지만, 통합본은 1.34 이므로 AL2 를 그대로 쓰면 노드그룹 생성이
+  # 실패한다.
+  #   https://docs.aws.amazon.com/eks/latest/userguide/eks-ami-deprecation-faqs.html
+  #
+  # 1.30 이상 클러스터의 새 관리형 노드그룹은 지정하지 않아도 AL2023 이
+  # 기본값이지만, 눈에 보이게 적어둔다.
+  #   https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html
+  #
+  # AL2 → AL2023 은 cgroup v1 → v2 전환을 포함한다. 앱이 cgroup 경로를
+  # 직접 읽지 않으면 영향 없다 — 우리 4개 파트 모두 해당 없음.
+  ami_type = "AL2023_x86_64_STANDARD"
+
   launch_template {
     id      = aws_launch_template.eks_nodes.id
     version = aws_launch_template.eks_nodes.latest_version
@@ -188,8 +225,127 @@ resource "aws_eks_node_group" "main" {
     #  원인을 찾기가 매우 어려운 종류라 명시해둔다)
     aws_nat_gateway.main,
     aws_route_table_association.private,
+
+    # 네트워킹 애드온이 먼저 자리를 잡은 뒤에 노드를 띄운다.
+    #
+    # EKS 는 클러스터를 만들 때 vpc-cni/kube-proxy 를 self-managed 로 미리
+    # 깔아둔다. 그 상태에서 관리형 애드온을 OVERWRITE 로 덮으면 DaemonSet 이
+    # 재시작되는데, 하필 그때 노드가 조인 중이면 파드에 IP 가 붙지 않는
+    # 구간이 생긴다. 이 의존성이 없으면 Terraform 이 둘을 병렬로 진행한다.
+    #
+    # (coredns 는 반대다 — Deployment 라서 스케줄될 노드가 있어야 한다.
+    #  그래서 coredns 쪽에 depends_on = [aws_eks_node_group.main] 이 있고,
+    #  여기에 넣으면 순환 의존이 된다)
+    aws_eks_addon.vpc_cni,
+    aws_eks_addon.kube_proxy,
   ]
 
   tags = { Name = "${var.project}-eks-nodes" }
+
+  # ── desired_size 를 테라폼이 되돌리지 않게 한다 (찬규 안에서 가져옴) ──
+  #
+  # HPA 가 파드를 늘려 노드가 모자라면 Cluster Autoscaler(또는 Karpenter)가
+  # 이 노드그룹의 desired_size 를 올린다. 그 상태에서 terraform apply 를 하면
+  # 변수값(기본 2)으로 되돌려 버려서, 부하가 걸린 중에 노드가 줄어든다.
+  #
+  # ⚠️ 대신 apply 로는 노드 수를 바꿀 수 없게 된다. 바꾸려면
+  #    eksctl/콘솔에서 직접 조정하거나 이 블록을 일시적으로 주석 처리한다.
+  lifecycle {
+    ignore_changes = [scaling_config[0].desired_size]
+  }
 }
 
+
+# ──────────────────────────────────────────────
+# 노드 접속용 SSM 권한 (찬규 안에서 가져옴)
+#
+# 이 정책이 붙으면 SSH 키·22번 포트·베스천 호스트 없이 노드에 들어갈 수 있다.
+#   aws ssm start-session --target i-xxxxxxxx
+#
+# 온프레미스에서 노드 디스크가 83% 까지 찼을 때, IPv6 를 끄려고 sysctl 을
+# 만질 때 모두 노드에 직접 들어가야 했다. AWS 에서 프라이빗 서브넷에 있는
+# 노드에 들어갈 방법이 이것뿐이다 — 없으면 노드 안을 볼 수 없다.
+#
+# 보안상으로도 SSH 키를 돌려쓰는 것보다 낫다. 접속 기록이 CloudTrail 에
+# 남고, 권한을 IAM 으로 회수할 수 있다.
+# ──────────────────────────────────────────────
+
+resource "aws_iam_role_policy_attachment" "eks_node_ssm" {
+  role       = aws_iam_role.eks_node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# ──────────────────────────────────────────────
+# EKS 관리형 애드온 (찬규 안에서 가져옴)
+#
+# ■ 왜 테라폼으로 관리하나
+# 이 세 개는 EKS 가 클러스터 생성 시 "self-managed" 로 알아서 깔아준다.
+# 그래서 없어도 클러스터는 돈다. 차이는 업그레이드 때 드러난다.
+#   self-managed : K8s 버전을 올릴 때 각 컴포넌트를 수동으로 맞춰야 한다.
+#                  버전이 어긋나면 CoreDNS 가 안 뜨거나 파드에 IP 가 안 붙는다.
+#   관리형 애드온 : AWS 가 호환 버전을 보장하고, 콘솔/CLI 로 업데이트한다.
+#
+# 온프레미스에서 1.31.14 로 고정해두고 손대지 못한 것이 이 이유였다.
+#
+# ■ 각각이 하는 일
+#   vpc-cni    : 파드에 VPC IP 를 직접 준다. 파드가 ElastiCache·RDS 에
+#                NAT 없이 바로 붙는 근거. (Calico 를 대체)
+#   kube-proxy : NodePort → 파드 라우팅. ALB 트래픽이 파드에 닿는 경로.
+#   coredns    : 클러스터 내부 DNS. redis-master.realtime.svc.cluster.local
+#                같은 이름 해석. 이게 죽으면 파드끼리 서로를 못 찾는다.
+#
+# resolve_conflicts_on_update = "OVERWRITE"
+#   EKS 가 미리 깔아둔 self-managed 버전과 설정이 충돌할 때 애드온 쪽으로
+#   덮어쓴다. 이게 없으면 첫 apply 에서 "conflict" 로 실패한다.
+#
+# ⚠️ coredns 는 노드가 있어야 스케줄된다. 노드그룹보다 먼저 만들면
+#    Degraded 상태로 멈춘다 — depends_on 이 그래서 필요하다.
+#
+# ■ EBS CSI 애드온은 여기가 아니라 irsa.tf 에 있다
+#   권한을 노드 역할이 아니라 ServiceAccount 에 줘야 해서 IRSA 와 묶여 있다.
+# ──────────────────────────────────────────────
+
+resource "aws_eks_addon" "vpc_cni" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "vpc-cni"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  tags = { Name = "${var.project}-addon-vpc-cni" }
+}
+
+resource "aws_eks_addon" "kube_proxy" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "kube-proxy"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  tags = { Name = "${var.project}-addon-kube-proxy" }
+}
+
+resource "aws_eks_addon" "coredns" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "coredns"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [aws_eks_node_group.main]
+
+  tags = { Name = "${var.project}-addon-coredns" }
+}
+
+# ──────────────────────────────────────────────
+# 애플리케이션 로그 그룹 (찬규 안에서 가져옴)
+#
+# 파드 stdout 을 CloudWatch 로 보내려면 이 그룹 + Fluent Bit(DaemonSet)가
+# 필요하다. 그룹만 만들어두고 Fluent Bit 는 Helm 으로 따로 깐다.
+#
+# ■ 왜 필요한가
+# 지금은 kubectl logs 로만 본다. 파드가 재시작되면 이전 로그가 사라져서,
+# 9/4 에 A파트가 "Connection is closed" 로 죽었을 때 재현 전 로그를 볼 수
+# 없었다. CloudWatch 로 보내두면 파드가 죽어도 남는다.
+# ──────────────────────────────────────────────
+
+resource "aws_cloudwatch_log_group" "app" {
+  name              = "/eks/${var.project}/app"
+  retention_in_days = 14
+
+  tags = { Name = "${var.project}-app-logs" }
+}

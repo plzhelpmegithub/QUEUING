@@ -2,7 +2,8 @@
 
 output "route53_nameservers" {
   description = "도메인 등록기관(가비아 등) 관리 화면의 네임서버란에 이 4개를 넣어야 한다"
-  value       = var.create_route53_zone ? aws_route53_zone.main[0].name_servers : []
+  # 위와 같은 이유로 스플랫 + flatten. 빈 목록이면 [] 가 된다.
+  value = var.create_route53_zone ? flatten(aws_route53_zone.main[*].name_servers) : []
 }
 
 output "service_urls" {
@@ -176,7 +177,8 @@ output "monthly_cost_estimate" {
 
 output "rds_endpoint" {
   description = "RDS MariaDB 주소 — 앱의 DB_HOST 에 이 값을 넣는다"
-  value       = var.use_rds ? aws_db_instance.mariadb[0].address : "(use_rds=false — D-Cloud ${var.dcloud_host} 사용)"
+  # use_rds = false(지금 기본값)에서 [0] 이면 터진다. 스플랫 + join 으로 바꿨다.
+  value = var.use_rds ? join("", aws_db_instance.mariadb[*].address) : "(use_rds=false — D-Cloud ${var.dcloud_host} 사용)"
 }
 
 output "sqs_queue_url" {
@@ -249,4 +251,83 @@ output "post_apply_checklist" {
      REDIS_HOST     → terraform output -raw redis_endpoint
      KEDA queueURL  → terraform output -raw sqs_queue_url
   GUIDE
+}
+
+# ──────────────────────────────────────────────
+# 2026-09-09 통합 2차 (찬규님 EKS 전환 반영) 추가 출력
+# ──────────────────────────────────────────────
+
+output "secrets_manager_arn" {
+  description = "애플리케이션 시크릿 ARN. ESO/CSI Driver 설정에 넣는다."
+  value       = aws_secretsmanager_secret.api.arn
+}
+
+output "secrets_read_policy_arn" {
+  description = <<-DESC
+    이 시크릿만 읽는 IAM 정책 ARN.
+    External Secrets Operator 또는 Secrets Store CSI Driver 의
+    ServiceAccount 역할에 붙여야 파드가 값을 읽을 수 있다.
+    아직 어디에도 붙어 있지 않다 — 설치할 쪽에서 연결한다.
+  DESC
+  value       = aws_iam_policy.secrets_read.arn
+}
+
+output "waf_status" {
+  description = "WAF 적용 상태. 부하 테스트 전에 확인할 것."
+  value = var.waf_enabled ? format(
+    "켜짐 — CloudFront 만 보호. Rate Limit %d건/5분(IP당). ⚠️ 부하 테스트 시 waf_enabled=false 로 두거나 한도를 올릴 것.",
+    var.waf_rate_limit
+  ) : "꺼짐 — 웹 공격 필터 없음"
+}
+
+output "cloudwatch_log_groups" {
+  description = "로그를 볼 위치. aws logs tail <이름> --follow"
+  value = {
+    eks_control_plane = aws_cloudwatch_log_group.eks_cluster.name
+    application       = aws_cloudwatch_log_group.app.name
+  }
+}
+
+output "node_ssm_access" {
+  description = "노드 안에 들어가는 방법 (SSH 키·베스천 불필요)"
+  value       = <<-DESC
+    # 1) 노드 인스턴스 ID 확인
+    aws ec2 describe-instances \
+      --filters "Name=tag:eks:cluster-name,Values=${aws_eks_cluster.main.name}" \
+                "Name=instance-state-name,Values=running" \
+      --query 'Reservations[].Instances[].[InstanceId,PrivateIpAddress]' --output table
+
+    # 2) 접속 (Session Manager 플러그인 필요)
+    aws ssm start-session --target <i-xxxxxxxx>
+
+    # 디스크·메모리 확인 — 온프레미스에서 83% 까지 찼던 그 점검
+    #   df -h /var/lib/containerd ; free -h ; sudo crictl images
+  DESC
+}
+
+output "flow_logs_query" {
+  description = "VPC Flow Logs 조회 방법"
+
+  # ⚠️ flow_logs[0] 처럼 인덱스로 쓰지 않는다.
+  # 삼항 연산자는 선택되지 않은 쪽도 평가하기 때문에, flow_logs_enabled = false
+  # 로 두면 빈 목록에 [0] 을 걸어 "Invalid index" 로 plan 이 실패한다.
+  # join 은 목록이 비면 빈 문자열을 돌려주므로 어느 경우에도 안전하다.
+  value = var.flow_logs_enabled ? format(<<-DESC
+    로그 그룹: %s  (보관 %d일, 수집 대상 %s)
+
+    # 막힌 통신만 보기 — 보안그룹/화이트리스트 문제 추적
+    aws logs start-query --log-group-name %s       --start-time $(date -d '1 hour ago' +%%s) --end-time $(date +%%s)       --query-string 'fields @timestamp, srcAddr, dstAddr, dstPort, action
+                      | filter action = "REJECT" | sort @timestamp desc | limit 50'
+
+    # 외부 D-Cloud DB 로 나가는 통신이 실제로 가는지 (use_rds = false 일 때)
+    aws logs start-query --log-group-name %s       --start-time $(date -d '1 hour ago' +%%s) --end-time $(date +%%s)       --query-string 'fields @timestamp, srcAddr, dstAddr, action
+                      | filter dstAddr = "%s" | limit 50'
+  DESC
+    , join("", aws_cloudwatch_log_group.flow_logs[*].name)
+    , var.flow_logs_retention_days
+    , var.flow_logs_traffic_type
+    , join("", aws_cloudwatch_log_group.flow_logs[*].name)
+    , join("", aws_cloudwatch_log_group.flow_logs[*].name)
+    , var.dcloud_host
+  ) : "Flow Logs 꺼짐 (flow_logs_enabled = false)"
 }

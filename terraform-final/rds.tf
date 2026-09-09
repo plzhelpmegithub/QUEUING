@@ -52,7 +52,7 @@ resource "aws_db_instance" "mariadb" {
   port     = 3306
 
   db_subnet_group_name   = aws_db_subnet_group.main[0].name
-  vpc_security_group_ids = [aws_security_group.rds.id]
+  vpc_security_group_ids = [aws_security_group.rds[0].id]
 
   # 프라이빗 서브넷 안에서만 접근된다. 인터넷에서 직접 붙을 수 없다.
   publicly_accessible = false

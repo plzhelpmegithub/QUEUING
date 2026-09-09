@@ -10,6 +10,16 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets = aws_subnet.public[*].id
 
+  # 헤더 형식이 잘못된 요청을 ALB 단에서 버린다.
+  #
+  # 기본값이 false 다. 켜지 않으면 규격을 어긴 헤더가 그대로 뒤로 전달되어,
+  # ALB 와 뒤쪽 서버가 같은 요청을 다르게 해석하는 상황(HTTP request smuggling)
+  # 이 가능해진다. AWS Foundational Security Best Practices 의 ELB.4 항목이다.
+  # 비용이 없고 정상 트래픽에는 영향이 없다.
+  #
+  # 어느 안에도 없었다 — 통합하면서 추가한다.
+  drop_invalid_header_fields = true
+
   idle_timeout = 3600
 
   tags = { Name = "${var.project}-alb" }
@@ -25,7 +35,7 @@ resource "aws_lb_target_group" "ws" {
   target_type = "instance"
 
   health_check {
-    path                = "/healthz"
+    path                = var.health_check_path_ws
     port                = var.nodeport_ws
     interval            = 15
     timeout             = 5
@@ -50,8 +60,23 @@ resource "aws_lb_target_group" "api" {
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
 
+  # ⚠️ "/events" 로 되어 있던 것을 고쳤다 (근거 없이 고른 값이었다)
+  #
+  # /events 는 DB 와 Redis 를 모두 타는 실제 업무 엔드포인트다. 온프레미스
+  # 부하 테스트에서 A파트 조회 계열이 11초까지 늘어졌는데, 아래 timeout 은 5초다.
+  # 그러면 부하가 몰리는 순간 헬스체크가 먼저 타임아웃하고, ALB 가 노드를
+  # 타겟그룹에서 빼버린다. 트래픽이 가장 많을 때 받을 노드가 사라지는 셈이다.
+  # 티켓 오픈 직후에 정확히 이 형태로 무너진다.
+  #
+  # 헬스체크의 역할은 "이 노드로 요청을 보내도 되는가"까지다. "시스템 전체가
+  # 정상인가"는 Prometheus 알림이 맡는다. 그래서 가볍고 빠른 경로를 쓴다.
+  #
+  # ⚠️ 다만 A파트 /health 는 Redis 연결을 확인하지 않는다. 9/5 Redis 장애 때
+  #    /health 는 200 인데 /events 는 500 이었다. 찬규님께 /health 가 Redis
+  #    ping 을 포함하도록 요청해둔 상태다. 그게 반영되면 이 헬스체크가
+  #    "가볍지만 의미 있는" 상태가 된다.
   health_check {
-    path                = "/events"
+    path                = var.health_check_path_api
     port                = var.nodeport_api
     interval            = 15
     timeout             = 5

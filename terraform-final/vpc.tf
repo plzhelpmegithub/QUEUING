@@ -133,3 +133,35 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private.id
 }
+
+# ──────────────────────────────────────────────
+# S3 게이트웨이 VPC 엔드포인트
+#
+# ■ 출처: 어느 안에도 없었다. 통합하면서 추가한다.
+#
+# ECR 에서 이미지를 받을 때 실제 레이어 데이터는 S3 에서 온다. 엔드포인트가
+# 없으면 그 트래픽이 전부 NAT 게이트웨이를 지나고, 처리 요금이 GB 당 $0.045 다.
+# 노드가 2대에서 10대로 늘어나는 순간 같은 이미지를 8번 더 받는다.
+#
+# 게이트웨이 엔드포인트는 요금이 없다. 프라이빗 라우팅 테이블에 S3 접두사
+# 목록으로 가는 경로 하나가 추가되는 방식이라, NAT 를 지나지 않고 바로 간다.
+# 인터페이스 엔드포인트(ECR API 용)와 달리 시간당 요금도 없다.
+#
+# ⚠️ 이것만으로 ECR 트래픽 전부가 NAT 를 우회하지는 않는다.
+# ECR API 호출(인증·매니페스트 조회)은 여전히 NAT 를 지난다. 그것까지 없애려면
+# com.amazonaws.<리전>.ecr.api / .ecr.dkr 인터페이스 엔드포인트가 필요한데,
+# 이쪽은 엔드포인트당 시간당 요금이 붙는다(AZ 2개면 월 약 $15/개). 지금 규모에서는
+# 오히려 NAT 요금보다 비싸질 수 있어 넣지 않았다.
+# ──────────────────────────────────────────────
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+
+  # 프라이빗 라우팅 테이블에만 붙인다. 퍼블릭 서브넷은 IGW 로 바로 나가므로
+  # NAT 를 거치지 않아 절약할 것이 없다.
+  route_table_ids = [aws_route_table.private.id]
+
+  tags = { Name = "${var.project}-vpce-s3" }
+}

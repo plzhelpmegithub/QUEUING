@@ -28,7 +28,12 @@ nodeport_api = 30084 # A파트 redis-api-chart/values.yaml
 nodeport_ws  = 30081 # C파트 realtime-ws-chart/values.yaml
 
 # ── RDS ──
-use_rds              = true # false 면 D-Cloud 를 계속 쓴다 (NAT EIP 화이트리스트 필요)
+# ⚠️ 기본값이 false 로 바뀌었다 (2026-09-09)
+# 찬규님이 rds.tf 를 비우고 "외부 D-Cloud MariaDB 유지"로 결정했다.
+# false 로 두면 NAT 의 EIP 를 D-Cloud 화이트리스트에 등록해야 한다
+# (apply 후 `terraform output nat_eip` → `terraform output dcloud_whitelist_guide`).
+# RDS 로 옮기기로 정하면 true 로 바꾸고 db_password 를 채운다.
+use_rds              = false
 db_instance_class    = "db.t3.micro"
 db_allocated_storage = 20
 db_name              = "queuing_db"
@@ -50,7 +55,54 @@ api_subdomain = "api"
 
 # .kr 은 Route 53 에서 등록이 안 된다. 호스팅케이알에서 산 도메인의 네임서버를
 # apply 후 output route53_nameservers 값으로 바꿔야 인증서 검증이 끝난다.
-create_route53_zone = true
+# ⚠️ 호스팅 영역을 이미 콘솔에서 만들었으면 반드시 false
+# true 로 두면 queuing.kr 호스팅 영역이 2개가 되고, 등록기관에 등록한
+# 네임서버는 옛 영역을 가리켜서 ACM 검증이 끝나지 않는다(apply 가 45분 대기 후 실패).
+create_route53_zone = false
 
 # ── D-Cloud (use_rds = false 일 때만) ──
 # dcloud_db_password = "..."
+
+
+# ──────────────────────────────────────────────
+# WAF (찬규 안에서 추가됨)
+# ──────────────────────────────────────────────
+waf_enabled    = true
+waf_rate_limit = 2000
+
+# ⚠️ 부하 테스트 직전에는 아래처럼 바꿔두고, 끝나면 되돌릴 것.
+# JMeter 를 한 대에서 돌리면 가상 사용자 100명이 모두 같은 출처 IP 로 보여서
+# 2,000건/5분 제한에 바로 걸린다. 그러면 응답 지연의 원인이 앱인지 WAF 인지
+# 구분할 수 없다.
+#   waf_enabled = false
+
+# ──────────────────────────────────────────────
+# Redis 노드 수
+# ──────────────────────────────────────────────
+redis_num_replicas = 1 # 1 = Primary + Replica (Multi-AZ). 0 = 단일 노드
+
+# ──────────────────────────────────────────────
+# Secrets Manager 에 들어갈 값 (찬규 안에서 추가됨)
+#
+# ⚠️ 여기에 직접 적지 말고 환경변수로 넘기는 편이 안전하다.
+#   export TF_VAR_smtp_user='...'
+#   export TF_VAR_smtp_pass='...'
+#   export TF_VAR_recaptcha_secret_key='...'
+#
+# 어느 쪽이든 tfstate 에는 평문으로 남는다. tfstate 는 .gitignore 로 제외됨.
+# ──────────────────────────────────────────────
+# smtp_user            = "chlwldp02naver@gmail.com"
+# smtp_pass            = "..."   # Gmail 앱 비밀번호 16자리, 공백 제거
+# recaptcha_secret_key = "..."
+
+# ──────────────────────────────────────────────
+# VPC Flow Logs
+#
+# 배포 3~4일 뒤 실제 사용량을 확인할 것. 예상보다 많으면 traffic_type 을
+# "REJECT" 로 낮추면 양이 크게 준다.
+#   aws logs describe-log-groups --log-group-name-prefix /aws/vpc-flow-logs \
+#     --query 'logGroups[].[logGroupName,storedBytes]' --output table
+# ──────────────────────────────────────────────
+flow_logs_enabled        = true
+flow_logs_traffic_type   = "ALL" # 비용이 부담되면 "REJECT"
+flow_logs_retention_days = 7

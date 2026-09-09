@@ -34,20 +34,60 @@ resource "aws_elasticache_replication_group" "redis" {
   replication_group_id = "${var.project}-redis"
   description          = "Queuing platform shared Redis"
   node_type            = var.redis_node_type
-  num_cache_clusters   = 2
+  # 노드 수 = Primary 1 + Replica(redis_num_replicas)
+  # 찬규 안의 변수화 방식을 가져왔다. 0 으로 두면 단일 노드가 되고,
+  # 그때는 자동 페일오버/Multi-AZ 를 켤 수 없다(AWS 가 거부한다).
+  num_cache_clusters = var.redis_num_replicas + 1
   engine               = "redis"
-  engine_version       = "7.1"
+  # ⚠️ 온프레미스는 Redis 8.10.1 인데 여기는 7.1 이다 — 오타가 아니다.
+  #
+  # ElastiCache 의 engine = "redis" 는 Redis OSS 7.1 이 최대 버전이다. Redis 8 은
+  # ElastiCache 에 없고, AWS 는 그 위 버전을 Valkey(8.x, 9.x)로 제공한다.
+  #   https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/engine-versions.html
+  #
+  # ■ 8 → 7.1 로 내려가도 되는지 확인했다
+  # 우리 코드가 쓰는 명령어를 전부 뽑아봤다.
+  #   C파트 : lrange rpush ltrim expire publish subscribe psubscribe
+  #           get set sadd smembers hgetall pipeline/exec
+  #   A파트 : eval hgetall hincrby hset scan zadd zrange pipeline
+  # 전부 Redis 7.1 이하에서 지원된다. 7.4 이상에서만 되는 것(HEXPIRE,
+  # SINTERCARD, Functions/FCALL)이나 8 전용 명령은 쓰지 않는다.
+  #
+  # ■ Valkey 로 바꿀 수도 있다
+  # engine = "valkey", engine_version = "8.x" 로 두면 더 최신이고 AWS 가
+  # 노드 단가를 낮게 책정한다. 프로토콜이 호환되므로 ioredis 클라이언트도
+  # 그대로 쓴다. 다만 팀이 한 번도 Valkey 로 테스트한 적이 없고, 발표에서
+  # "왜 Redis 가 아니라 Valkey 인가"를 설명해야 한다. 지금은 온프레미스와
+  # 같은 계열(Redis)을 유지한다 — 바꾸기로 하면 한 줄이다.
+  engine_version = "7.1"
   port                 = 6379
   parameter_group_name = aws_elasticache_parameter_group.redis.name
 
   subnet_group_name  = aws_elasticache_subnet_group.redis.name
   security_group_ids = [aws_security_group.redis.id]
 
-  automatic_failover_enabled = true
-  multi_az_enabled           = true
+  automatic_failover_enabled = var.redis_num_replicas > 0
+  multi_az_enabled           = var.redis_num_replicas > 0
 
   at_rest_encryption_enabled = true
   transit_encryption_enabled = false
+
+  # ── 백업·유지보수 창 (찬규 안에서 가져옴) ──
+  #
+  # 온프레미스 Redis 에는 이게 없었다. 9/5 에 이미지 태그를 잘못 바꿔
+  # redis-master 가 ImagePullBackOff 로 3분간 내려갔을 때, 데이터가 남은 건
+  # 파드만 죽고 볼륨이 살아 있었기 때문이다 — 운이 좋았던 것이고 백업은
+  # 없었다. 스냅샷이 있으면 그런 상황에서 복구 지점이 생긴다.
+  #
+  # snapshot_retention_limit : 자동 스냅샷 보관 일수. 1 = 매일 1회, 1일치.
+  # snapshot_window    05:00-06:00 UTC = 한국 14:00~15:00
+  # maintenance_window mon 06:00-07:00 UTC = 한국 월요일 15:00~16:00
+  #
+  # ⚠️ 두 창이 겹치지 않아야 한다. 또 시연/부하테스트 시간과 겹치지 않는지
+  #    확인할 것 — 유지보수 창에는 페일오버가 일어날 수 있다.
+  snapshot_retention_limit = 1
+  snapshot_window          = "05:00-06:00"
+  maintenance_window       = "mon:06:00-mon:07:00"
 
   tags = { Name = "${var.project}-redis" }
 }
