@@ -7,9 +7,9 @@
 # K8s의 NetworkPolicy와 유사한 역할.
 #
 # [트래픽 허용 체인]
-#   인터넷(80/443) → [ALB SG] → (3000) → [EC2 SG] → (3306) → [RDS SG]
-#                                    │
-#                                    └──→ (6379) → [Redis SG]
+#   인터넷(80/443) → [ALB SG] → (NodePort) → [EKS Worker Node SG] → (6379) → [Redis SG]
+#                                                    │
+#                                                    └──→ NAT GW → 외부 D-Cloud MariaDB
 #
 # [보안 원칙]
 #   - 최소 권한: 각 SG는 필요한 소스에서만 필요한 포트만 허용
@@ -68,12 +68,12 @@ resource "aws_security_group" "alb" {
 }
 
 # -----------------------------------------------------------------------------
-# [EC2 Security Group] API 서버용 — ALB에서만 3000 포트 허용.
+# [EKS Worker Node Security Group] K8s 노드용 — ALB에서 NodePort 허용.
 #
 # ingress:
-#   - 3000 (API) : ALB Security Group에 속한 리소스에서만 접근 가능.
-#     → 인터넷에서 EC2로 직접 접근 불가. 반드시 ALB를 경유해야 함.
-#     → security_groups = [SG ID]로 지정하면 해당 SG에 속한 리소스만 허용.
+#   - 30000~32767 (NodePort 범위) : ALB에서 K8s NodePort로 접근.
+#     → ALB → Worker Node:NodePort → kube-proxy → Pod:3000
+#     → 인터넷에서 Worker Node로 직접 접근 불가. 반드시 ALB를 경유해야 함.
 #
 # egress:
 #   - 전체 허용 : Redis, RDS 연결 + 외부 API 호출(SMTP, reCAPTCHA 등).
@@ -81,13 +81,13 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "ecs" {
   name_prefix = "${local.name_prefix}-ecs-"
   vpc_id      = aws_vpc.main.id
-  description = "EC2 API - inbound from ALB only"
+  description = "EKS Worker Nodes - inbound from ALB and self"
 
-  # ALB에서만 EC2의 API 포트(3000) 접근 허용
+  # ALB에서 K8s NodePort 범위 접근 허용 (30000~32767)
   ingress {
-    description     = "API from ALB"
-    from_port       = 3000
-    to_port         = 3000
+    description     = "NodePort from ALB"
+    from_port       = 30000
+    to_port         = 32767
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]   # ALB SG에 속한 리소스만
   }
@@ -99,44 +99,26 @@ resource "aws_security_group" "ecs" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${local.name_prefix}-ec2-sg" }
-
-  lifecycle { create_before_destroy = true }
-}
-
-# -----------------------------------------------------------------------------
-# [RDS Security Group] MariaDB용 — EC2에서만 3306 포트 허용.
-#
-# ingress:
-#   - 3306 (MySQL/MariaDB) : EC2 Security Group에 속한 인스턴스에서만 접근.
-#     → 인터넷은 물론, ALB에서도 DB에 직접 접근 불가.
-#     → 데이터베이스는 API 서버를 통해서만 접근할 수 있다.
-# -----------------------------------------------------------------------------
-resource "aws_security_group" "rds" {
-  name_prefix = "${local.name_prefix}-rds-"
-  vpc_id      = aws_vpc.main.id
-  description = "RDS MariaDB - inbound from EC2 only"
-
-  # EC2 인스턴스에서만 MariaDB 포트(3306) 접근 허용
+  # Worker Node 간 통신 허용 (Pod-to-Pod, kube-proxy 등)
   ingress {
-    description     = "MariaDB from EC2"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs.id]   # EC2 SG에 속한 리소스만
-  }
-
-  egress {
+    description = "Node to Node"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    self        = true
   }
 
-  tags = { Name = "${local.name_prefix}-rds-sg" }
+  tags = { Name = "${local.name_prefix}-eks-node-sg" }
 
   lifecycle { create_before_destroy = true }
 }
+
+# -----------------------------------------------------------------------------
+# [RDS Security Group] — 제거됨.
+# 외부 D-Cloud MariaDB를 사용하므로 RDS SG는 불필요.
+# API Pod → NAT Gateway → IGW → 외부 DB로 통신하며,
+# EKS Worker Node SG의 egress(전체 허용)로 외부 DB 접근이 가능.
+# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 # [Redis Security Group] ElastiCache용 — EC2에서만 6379 포트 허용.

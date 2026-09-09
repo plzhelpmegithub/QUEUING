@@ -1,3 +1,54 @@
+## [2026-09-08 21:55] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[terraform/]**: WAF 추가, Redis Multi-AZ 전환, RDS 제거, ALB ACM 자동발급.
+
+  **1. WAF (신규 — waf.tf)**
+  - `aws_wafv2_web_acl.cloudfront`: CloudFront 앞단 WAF (us-east-1에 생성).
+  - 규칙 4개: CommonRuleSet(OWASP Top 10), SQLiRuleSet(SQL Injection), KnownBadInputs(Log4j 등), Rate Limiting(IP당 요청 제한).
+  - `cloudfront.tf`에 `web_acl_id` 연동. `waf_enabled` 변수로 On/Off 가능.
+
+  **2. Redis Multi-AZ (elasticache.tf 전면 재작성)**
+  - `aws_elasticache_cluster` → `aws_elasticache_replication_group`으로 교체.
+  - Primary(AZ-a) + Replica(AZ-c) 구성. 자동 페일오버(automatic_failover) 활성화.
+  - AES-256 at-rest 암호화 추가. 일일 스냅샷 백업.
+  - 변수: `redis_num_cache_nodes` → `redis_num_replicas` (기본값 1 = Multi-AZ).
+
+  **3. RDS 제거 (rds.tf 비움)**
+  - 외부 D-Cloud MariaDB 사용. AWS RDS 리소스 전체 제거.
+  - `security.tf`: RDS Security Group(`aws_security_group.rds`) 제거.
+  - `variables.tf`: db_instance_class, db_allocated_storage, db_name, db_username 제거. db_password만 유지(외부 DB용).
+  - `outputs.tf`: rds_endpoint 제거.
+  - `secrets.tf`: DB_PASSWORD 주석을 "외부 D-Cloud MariaDB"로 갱신.
+  - API Pod → NAT Gateway → IGW → 외부 DB로 접속.
+
+  **4. ALB ACM 자동발급 (alb.tf + route53.tf)**
+  - `aws_acm_certificate.alb`: api.queuing.kr용 ACM 인증서 ap-northeast-2에서 자동 발급.
+  - `aws_acm_certificate_validation.alb`: Route 53 DNS 검증 자동 완료 대기.
+  - `route53.tf`: ALB ACM 검증용 CNAME 레코드 추가.
+  - HTTPS 리스너: `acm_certificate_arn` 수동 변수 → `domain_name` 기반 자동 적용.
+  - HTTP 리스너: `acm_certificate_arn` 조건 → `domain_name` 조건으로 변경.
+  - `variables.tf`: `acm_certificate_arn` 변수 제거 (자동화로 불필요).
+  - `terraform.tfvars.example`: RDS 제거, Redis Multi-AZ, WAF, ALB ACM 자동화 반영.
+
+---
+
+## [2026-09-08 15:15] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[terraform/]**: EC2 Auto Scaling Group → EKS + Managed Node Group 아키텍처 전환.
+  - **eks.tf** (신규): EKS Cluster, OIDC Provider, EKS Addons(vpc-cni, coredns, kube-proxy), Managed Node Group, IAM Roles(Cluster/Node), Launch Template, ASG↔ALB 연결.
+  - **ec2.tf**: EC2 ASG 리소스 제거 (eks.tf로 대체).
+  - **user_data.sh.tpl**: 미사용 처리 (EKS 최적화 AMI가 kubelet/Docker 자동 설정).
+  - **main.tf**: tls provider 추가 (OIDC 인증서 지문 조회용), 아키텍처 다이어그램 EKS로 갱신.
+  - **alb.tf**: Target Group 포트를 3000 → NodePort(30084)로 변경. 헬스체크도 NodePort 경유.
+  - **security.tf**: EC2 SG → EKS Worker Node SG로 전환. NodePort 범위(30000-32767) 허용, 노드 간 self-referencing 통신 추가.
+  - **variables.tf**: EC2 변수 제거, EKS 변수 추가 (eks_cluster_version, eks_node_instance_type, eks_node_volume_size, k8s_nodeport).
+  - **outputs.tf**: EC2 출력 → EKS 출력 (cluster name/endpoint, kubeconfig 명령어, node group, OIDC URL).
+  - **terraform.tfvars.example**: EKS 설정 예시.
+
+---
+
 ## [2026-09-08 14:45] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -43,6 +94,42 @@
   - **secrets.tf**: DB 비밀번호·SMTP·reCAPTCHA Secret Key를 Secrets Manager JSON으로 통합 관리.
   - **outputs.tf**: ALB DNS, ECR URL, RDS/Redis 엔드포인트, CloudWatch 로그 그룹 등 핵심 출력.
   - **terraform.tfvars.example**: 변수 예시 파일 (실제 값은 .gitignore 처리).
+
+## [2026-09-08 16:28] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[redis-api-chart/values.yaml]**: MariaDB 기본 접속 계정을 `team2`에서 `root`로 변경하여 현재 DB 사용 계획과 일치시킴.
+- **[redis-api-chart/Chart.yaml]**: 차트 버전을 `1.0.7`로 증가.
+- **[redis-api-chart/README.md / README.MD]**: root DB 계정과 `mariadb-credentials` Secret의 관계를 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** API Pod의 `DB_USER`가 `team2`로 설정되어 root 계정 접속 계획과 불일치.
+- **원인(Cause):** Helm values의 이전 DB 계정 기본값이 남아 있었음.
+- **해결(Solution):** `env.dbUser: root`로 변경하고 Secret의 `MARIADB_ROOT_PASSWORD`에는 root 계정 비밀번호를 사용하도록 정리했다.
+
+## [2026-09-08 16:26] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[redis-api-chart/templates/namespace.yaml]**: Namespace 이름도 `.Release.Namespace`를 사용하도록 변경하여 API 차트의 배포 대상 네임스페이스 일관성을 보완.
+- **[redis-api-chart/Chart.yaml]**: 차트 버전을 `1.0.6`으로 증가.
+- **[redis-api-chart/README.md / README.MD]**: Namespace 리소스까지 포함한 Helm 릴리스 네임스페이스 운영 원칙을 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** API 차트의 일부 리소스와 Namespace 생성 템플릿이 `queuing-a`로 고정되어 배포 대상 네임스페이스 변경 시 일관성이 깨짐.
+- **원인(Cause):** `templates/namespace.yaml`의 Namespace 이름이 하드코딩되어 있었음.
+- **해결(Solution):** Namespace 이름과 namespaced 리소스의 `metadata.namespace`를 모두 `.Release.Namespace` 기준으로 통일했다.
+
+## [2026-09-08 16:25] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[redis-api-chart/templates/deployment.yaml / service.yaml / hpa.yaml / serviceaccount.yaml]**: 하드코딩된 `queuing-a`를 `.Release.Namespace`로 변경하여 API Helm 릴리스와 namespaced 리소스의 네임스페이스를 일치시킴.
+- **[redis-api-chart/Chart.yaml]**: 차트 버전을 `1.0.5`로 증가.
+- **[redis-api-chart/README.md / README.MD]**: 동일 네임스페이스 배포 원칙과 기존 릴리스 확인 절차를 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `helm upgrade ... -n queuing-a` 실행 시 `api has no deployed releases`가 발생하지만 API Pod는 `queuing-a`에서 실행됨.
+- **원인(Cause):** Helm 릴리스 네임스페이스와 차트 템플릿에 하드코딩된 리소스 네임스페이스가 달랐음.
+- **해결(Solution):** API 차트의 namespaced 리소스가 `.Release.Namespace`를 사용하도록 통일했다. 기존 릴리스의 실제 위치는 `helm list -A --all`로 확인한다.
 
 ## [2026-09-08 12:55] 업데이트 로그
 

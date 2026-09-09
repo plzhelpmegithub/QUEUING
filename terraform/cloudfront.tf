@@ -228,6 +228,13 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
+  # ---------------------------------------------------------------------------
+  # [WAF 연동] Web ACL을 CloudFront에 적용.
+  # waf.tf에서 생성한 WAF Web ACL의 ARN을 연결한다.
+  # WAF가 비활성화(waf_enabled=false)이면 빈 문자열 → WAF 미적용.
+  # ---------------------------------------------------------------------------
+  web_acl_id = var.waf_enabled ? aws_wafv2_web_acl.cloudfront[0].arn : ""
+
   tags = { Name = "${local.name_prefix}-frontend-cdn" }
 
   depends_on = [aws_s3_bucket.frontend]

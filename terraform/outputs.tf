@@ -24,9 +24,9 @@ output "vpc_id" {
   value       = aws_vpc.main.id
 }
 
-# Private Subnet IDs: EC2, RDS, Redis가 배치된 서브넷.
+# Private Subnet IDs: EKS Worker Node, Redis가 배치된 서브넷.
 output "private_subnet_ids" {
-  description = "Private Subnet IDs (EC2, RDS, Redis)"
+  description = "Private Subnet IDs (EKS, Redis)"
   value       = aws_subnet.private[*].id
 }
 
@@ -59,62 +59,59 @@ output "alb_zone_id" {
 
 
 # =============================================================================
-# 컨테이너 이미지 — 현재 배포된 이미지 확인
+# EKS — 클러스터 정보
 # =============================================================================
 
-# 현재 EC2에서 실행 중인 Docker 이미지. 배포 확인 시 참조.
-output "api_image" {
-  description = "현재 EC2에서 실행하는 Docker 이미지"
-  value       = "${var.api_image_repo}:${var.api_image_tag}"
+# EKS 클러스터 이름: Helm, kubectl 명령에서 사용.
+output "eks_cluster_name" {
+  description = "EKS 클러스터 이름"
+  value       = aws_eks_cluster.main.name
+}
+
+# EKS API 엔드포인트: kubectl이 연결하는 주소.
+output "eks_cluster_endpoint" {
+  description = "EKS API Server 엔드포인트"
+  value       = aws_eks_cluster.main.endpoint
+}
+
+# kubeconfig 설정 명령어: 이 명령을 실행하면 kubectl이 EKS에 연결됨.
+# 예: aws eks update-kubeconfig --name queuing-prod-cluster --region ap-northeast-2
+output "eks_kubeconfig_command" {
+  description = "kubeconfig 설정 명령어 (복사해서 실행)"
+  value       = "aws eks update-kubeconfig --name ${aws_eks_cluster.main.name} --region ${var.aws_region}"
+}
+
+# Node Group 이름: 노드 상태 확인 시 사용.
+# 예: aws eks describe-nodegroup --cluster-name <cluster> --nodegroup-name <name>
+output "eks_node_group_name" {
+  description = "EKS Managed Node Group 이름"
+  value       = aws_eks_node_group.main.node_group_name
+}
+
+# OIDC Provider URL: IRSA(IAM Roles for Service Accounts) 설정 시 참조.
+output "eks_oidc_provider_url" {
+  description = "EKS OIDC Provider URL (IRSA 설정용)"
+  value       = aws_eks_cluster.main.identity[0].oidc[0].issuer
 }
 
 
 # =============================================================================
-# EC2 Auto Scaling — ASG, Launch Template 정보
+# ElastiCache — Redis Multi-AZ 엔드포인트
 # =============================================================================
 
-# ASG 이름: CLI에서 인스턴스 목록 조회, 스케일링 조작 시 사용.
-# 예: aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names <asg_name>
-output "asg_name" {
-  description = "Auto Scaling Group 이름"
-  value       = aws_autoscaling_group.api.name
+# Redis Primary 엔드포인트: "호스트" 형식.
+# Multi-AZ 구성에서 Primary 장애 시 자동으로 새 Primary를 가리킴.
+# K8s ConfigMap의 REDIS_HOST에 이 값을 설정.
+output "redis_primary_endpoint" {
+  description = "ElastiCache Redis Primary 엔드포인트 (쓰기용)"
+  value       = aws_elasticache_replication_group.redis.primary_endpoint_address
 }
 
-# Launch Template ID: 인스턴스 템플릿 수정/버전 관리 시 참조.
-# 예: aws ec2 describe-launch-template-versions --launch-template-id <lt_id>
-output "launch_template_id" {
-  description = "Launch Template ID"
-  value       = aws_launch_template.api.id
-}
-
-# AMI ID: 현재 사용 중인 AMI 확인.
-output "ec2_ami_id" {
-  description = "EC2 인스턴스 AMI ID"
-  value       = var.ec2_ami_id
-}
-
-
-# =============================================================================
-# RDS — 데이터베이스 엔드포인트
-# =============================================================================
-
-# RDS 엔드포인트: "호스트:포트" 형식.
-# Bastion 또는 SSM을 통해서만 접속 가능 (Private Subnet 배치).
-output "rds_endpoint" {
-  description = "RDS MariaDB 엔드포인트"
-  value       = aws_db_instance.mariadb.endpoint
-}
-
-
-# =============================================================================
-# ElastiCache — Redis 엔드포인트
-# =============================================================================
-
-# Redis 엔드포인트: "호스트:포트" 형식.
-# EC2 User Data에서 자동 주입되므로 수동 설정 불필요.
-output "redis_endpoint" {
-  description = "ElastiCache Redis 엔드포인트"
-  value       = "${aws_elasticache_cluster.redis.cache_nodes[0].address}:${aws_elasticache_cluster.redis.cache_nodes[0].port}"
+# Redis Reader 엔드포인트: 읽기 전용 트래픽을 Replica로 분산.
+# 읽기가 많은 워크로드(가격 스냅샷 조회 등)에서 사용하면 Primary 부하 감소.
+output "redis_reader_endpoint" {
+  description = "ElastiCache Redis Reader 엔드포인트 (읽기 분산용)"
+  value       = aws_elasticache_replication_group.redis.reader_endpoint_address
 }
 
 
@@ -177,4 +174,15 @@ output "frontend_url" {
 output "api_url" {
   description = "API 접속 URL"
   value       = var.domain_name != "" ? "https://${var.api_subdomain}.${var.domain_name}" : "http://${aws_lb.api.dns_name}"
+}
+
+
+# =============================================================================
+# WAF — Web Application Firewall
+# =============================================================================
+
+# WAF Web ACL ARN: CloudFront에 연결된 WAF 식별자.
+output "waf_web_acl_arn" {
+  description = "WAF Web ACL ARN (CloudFront 연동)"
+  value       = var.waf_enabled ? aws_wafv2_web_acl.cloudfront[0].arn : "WAF 비활성화"
 }

@@ -70,6 +70,31 @@ resource "aws_route53_record" "acm_frontend_validation" {
 
 
 # =============================================================================
+# ALB ACM 인증서 DNS 검증 레코드
+# =============================================================================
+#
+# ALB용 ACM 인증서(api.queuing.kr) 발급 시 DNS 검증용 CNAME 등록.
+# CloudFront용(us-east-1)과 별도로, ALB용(ap-northeast-2) 인증서도 자동 발급.
+# =============================================================================
+resource "aws_route53_record" "acm_alb_validation" {
+  for_each = var.domain_name != "" ? {
+    for dvo in aws_acm_certificate.alb[0].domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
+
+  zone_id         = aws_route53_zone.main[0].zone_id
+  name            = each.value.name
+  type            = each.value.type
+  ttl             = 60
+  records         = [each.value.record]
+  allow_overwrite = true
+}
+
+
+# =============================================================================
 # 프론트엔드 DNS 레코드 — CloudFront 연결
 # =============================================================================
 

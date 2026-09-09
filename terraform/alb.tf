@@ -7,7 +7,7 @@
 # 인터넷(또는 CloudFront)에서 오는 HTTP(S) 요청을 ECS Fargate 태스크로 분배.
 #
 # [트래픽 흐름]
-#   사용자 → (CloudFront) → ALB:80/443 → Target Group → EC2:3000
+#   사용자 → (CloudFront) → ALB:80/443 → Target Group → EC2:NodePort(30084) → Pod:3000
 #
 # [K8s 대비 차이점]
 #   K8s NodePort    : 고정 포트(30084)로 노드에 직접 접근. 로드밸런싱 없음.
@@ -42,11 +42,14 @@ resource "aws_lb" "api" {
 #
 #   port        : 대상 포트. ECS 컨테이너의 EXPOSE 포트(3000)와 일치.
 #   protocol    : HTTP (ALB ↔ ECS 구간은 VPC 내부이므로 HTTP로 충분).
-#   target_type : "instance" = EC2 인스턴스 ID 기반으로 등록.
-#                 ASG가 인스턴스를 자동으로 Target Group에 등록/해제.
+#   target_type : "instance" = EC2 Worker Node를 인스턴스 ID로 등록.
+#                 EKS Node Group의 ASG가 자동으로 Target Group에 등록/해제.
+#   port        : K8s NodePort (30084). Worker Node의 이 포트로 트래픽 전달.
+#                 kube-proxy가 NodePort → Pod:3000으로 라우팅.
 #
 #   health_check : 태스크가 정상인지 주기적으로 확인.
 #     path     : GET /health 요청 (API의 헬스체크 엔드포인트)
+#     port     : traffic-port = Target Group의 포트(NodePort)로 헬스체크
 #     interval : 15초마다 확인 (K8s livenessProbe periodSeconds: 15와 동일)
 #     matcher  : HTTP 200 응답이면 정상으로 판정
 #     healthy_threshold   : 3번 연속 성공하면 "정상"으로 복귀
@@ -57,7 +60,7 @@ resource "aws_lb" "api" {
 # -----------------------------------------------------------------------------
 resource "aws_lb_target_group" "api" {
   name        = "${local.name_prefix}-api-tg"
-  port        = 3000
+  port        = var.k8s_nodeport
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "instance"
@@ -94,9 +97,9 @@ resource "aws_lb_listener" "http" {
   port              = 80
   protocol          = "HTTP"
 
-  # ACM 인증서가 있으면 → HTTPS로 리다이렉트 (보안 강제)
+  # 도메인이 설정되어 있으면 → HTTPS로 리다이렉트 (보안 강제)
   dynamic "default_action" {
-    for_each = var.acm_certificate_arn != "" ? [1] : []
+    for_each = var.domain_name != "" ? [1] : []
     content {
       type = "redirect"
       redirect {
@@ -107,9 +110,9 @@ resource "aws_lb_listener" "http" {
     }
   }
 
-  # ACM 인증서가 없으면 → HTTP 그대로 Target Group으로 전달
+  # 도메인이 없으면 → HTTP 그대로 Target Group으로 전달
   dynamic "default_action" {
-    for_each = var.acm_certificate_arn == "" ? [1] : []
+    for_each = var.domain_name == "" ? [1] : []
     content {
       type             = "forward"
       target_group_arn = aws_lb_target_group.api.arn
@@ -117,23 +120,60 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+# =============================================================================
+# [ALB용 ACM 인증서] — ap-northeast-2에서 자동 발급
+# =============================================================================
+#
+# CloudFront용 ACM은 us-east-1(cloudfront.tf)에서 발급하지만,
+# ALB용 ACM은 ALB와 같은 리전(ap-northeast-2)에서 발급해야 한다.
+#
+# domain_name 설정 시 자동으로:
+#   1. api.queuing.kr 인증서 요청
+#   2. Route 53 DNS 검증 CNAME 자동 등록 (route53.tf)
+#   3. ACM이 도메인 소유권 확인 후 인증서 발급 (보통 몇 분)
+#   4. HTTPS 리스너에 자동 적용
+#
+# ⚠️ 수동 acm_certificate_arn 변수는 제거됨. 도메인 설정만으로 자동 발급·적용.
+# =============================================================================
+resource "aws_acm_certificate" "alb" {
+  count = var.domain_name != "" ? 1 : 0
+
+  domain_name       = "${var.api_subdomain}.${var.domain_name}"
+  validation_method = "DNS"
+
+  tags = { Name = "${local.name_prefix}-alb-cert" }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# --- ALB ACM 인증서 DNS 검증 완료 대기 ---
+resource "aws_acm_certificate_validation" "alb" {
+  count = var.domain_name != "" ? 1 : 0
+
+  certificate_arn         = aws_acm_certificate.alb[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.acm_alb_validation : record.fqdn]
+}
+
+
 # -----------------------------------------------------------------------------
-# [HTTPS Listener (포트 443)] SSL/TLS 암호화 수신. ACM 인증서 필요.
+# [HTTPS Listener (포트 443)] SSL/TLS 암호화 수신. ACM 인증서 자동 발급.
 #
-#   count             : ACM 인증서 ARN이 지정됐을 때만 생성 (없으면 0 = 생략).
+#   count             : domain_name이 설정됐을 때만 생성 (도메인 없으면 HTTP만 사용).
 #   ssl_policy        : TLS 1.3 지원하는 최신 보안 정책. 취약한 암호 스위트 차단.
-#   certificate_arn   : ACM에서 발급받은 SSL 인증서. ALB가 TLS 종단(termination) 처리.
+#   certificate_arn   : 위에서 자동 발급한 ACM 인증서. ALB가 TLS 종단(termination) 처리.
 #
-# TLS 종단이란: ALB가 HTTPS를 복호화하고, ECS로는 평문 HTTP로 전달.
-#   → ECS 컨테이너에 인증서를 넣을 필요 없음. 인증서 갱신도 ACM이 자동 처리.
+# TLS 종단이란: ALB가 HTTPS를 복호화하고, EKS Pod로는 평문 HTTP로 전달.
+#   → Pod에 인증서를 넣을 필요 없음. 인증서 갱신도 ACM이 자동 처리.
 # -----------------------------------------------------------------------------
 resource "aws_lb_listener" "https" {
-  count             = var.acm_certificate_arn != "" ? 1 : 0
+  count             = var.domain_name != "" ? 1 : 0
   load_balancer_arn = aws_lb.api.arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = var.acm_certificate_arn
+  certificate_arn   = aws_acm_certificate_validation.alb[0].certificate_arn
 
   default_action {
     type             = "forward"

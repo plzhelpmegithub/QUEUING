@@ -10,31 +10,29 @@ environment = "prod"
 # --- VPC ---
 vpc_cidr = "10.0.0.0/16"
 
-# --- EC2 (API 서버) ---
-ec2_ami_id        = "ami-0bc151a94289adb52"   # 사용자 지정 AMI (ap-northeast-2)
-ec2_instance_type = "t3.micro"                 # 개발: t3.micro / 프로덕션: t3.small 이상
-ec2_volume_size   = 20                         # GiB (Docker 이미지 + OS + 로그)
+# --- EKS 클러스터 ---
+eks_cluster_version    = "1.30"          # K8s 버전 (온프레미스와 맞출 것)
+eks_node_instance_type = "t3.medium"     # Worker Node. 개발: t3.medium / 프로덕션: t3.large
+eks_node_volume_size   = 30              # GiB (Docker 이미지 캐시 + OS + kubelet)
+k8s_nodeport           = 30084           # Helm 차트의 Service NodePort와 일치
 
-# --- API Docker 이미지 ---
-api_image_repo             = "mover14/redis-api-backend"  # Docker Hub 직접 사용. ECR 전환 시 ECR URL로 변경
-api_image_tag              = "1.0.8"
+# --- Node Group 스케일링 ---
+api_desired_count = 2                    # Worker Node 기본 수
+api_min_count     = 1                    # 최소 Worker Node
+api_max_count     = 10                   # 최대 Worker Node (Cluster Autoscaler 범위)
 
-# --- Auto Scaling ---
-api_desired_count          = 2
-api_min_count              = 1
-api_max_count              = 10
-api_autoscaling_cpu_target = 70
+# --- 외부 D-Cloud MariaDB ---
+# DB_HOST, DB_PORT, DB_USER는 K8s ConfigMap/환경변수로 주입.
+# DB_PASSWORD만 Secrets Manager에서 관리.
+db_password = "YOUR_DB_PASSWORD_HERE"
 
-# --- RDS (MariaDB) ---
-db_instance_class    = "db.t3.micro"    # 개발: db.t3.micro / 프로덕션: db.t3.small 이상
-db_allocated_storage = 20               # GiB
-db_name              = "queuing_db"
-db_username          = "team2"
-db_password          = "YOUR_DB_PASSWORD_HERE"
+# --- ElastiCache (Redis Multi-AZ) ---
+redis_node_type    = "cache.t3.micro"   # 개발: cache.t3.micro / 프로덕션: cache.t3.small 이상
+redis_num_replicas = 1                  # 1 = Multi-AZ (Primary + Replica 1). 0 = 단일 노드
 
-# --- ElastiCache (Redis) ---
-redis_node_type       = "cache.t3.micro"   # 개발: cache.t3.micro / 프로덕션: cache.t3.small 이상
-redis_num_cache_nodes = 1
+# --- WAF (Web Application Firewall) ---
+waf_enabled    = true                   # CloudFront WAF 활성화
+waf_rate_limit = 2000                   # 5분간 IP당 최대 요청 수 (기본 2000)
 
 # --- SMTP (Gmail) ---
 smtp_user = ""
@@ -51,7 +49,12 @@ frontend_subdomain   = "www"                     # www.queuing.kr
 api_subdomain        = "api"                     # api.queuing.kr
 
 # --- 도메인 (선택사항) ---
-# 설정하면 Route 53 + ACM 인증서 + DNS 레코드 자동 생성
-# 비워두면 CloudFront 기본 URL + ALB DNS로 접속
-domain_name         = "queuing.kr"               # 루트 도메인
-acm_certificate_arn = ""                          # ALB용 ACM 인증서 (ap-northeast-2). 별도 발급 필요
+# 설정하면 다음이 자동 생성된다:
+#   - Route 53 Hosted Zone + NS 레코드
+#   - CloudFront용 ACM 인증서 (us-east-1) + DNS 검증
+#   - ALB용 ACM 인증서 (ap-northeast-2) + DNS 검증
+#   - www.도메인 → CloudFront, api.도메인 → ALB DNS 레코드
+#
+# 비워두면 DNS/ACM 리소스가 생성되지 않고,
+# CloudFront 기본 URL + ALB DNS로 접속.
+domain_name = "queuing.kr"               # 루트 도메인

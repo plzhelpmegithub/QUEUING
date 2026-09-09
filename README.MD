@@ -678,6 +678,18 @@ Secret 키:   RECAPTCHA_SECRET_KEY
 
 실제 Secret Key는 프론트엔드 S3 파일이나 Helm values에 넣지 않는다. 프론트엔드에는 Google Site Key만 빌드 환경변수로 포함하고, API는 Secret Key로 Google `siteverify` 검증을 수행한다. 차트 상세 구조와 생성 명령은 `redis-api-chart/README.md`를 참조한다.
 
+### Kubernetes Helm 차트의 네임스페이스 설정
+
+API Helm 차트의 Namespace, Deployment, Service, HPA, ServiceAccount는 Helm 릴리스의 `.Release.Namespace`를 사용한다. API 리소스를 `queuing-a`에 배포할 때는 Helm 릴리스도 `queuing-a`로 지정해야 한다. 기본 MariaDB 접속 계정은 `root`이며, 비밀번호는 `mariadb-credentials` Secret에서 주입한다.
+
+```bash
+helm upgrade --install api /root/chart/redis-api-chart \
+  -n queuing-a \
+  --create-namespace
+```
+
+기존 릴리스가 `default`에 이미 생성되어 있다면 `helm list -A --all`로 릴리스 위치를 먼저 확인한 뒤, 기존 릴리스를 임의로 삭제하지 않고 네임스페이스 이전 계획을 세운다.
+
 ## 배포·확인 시 주의
 
 - 소스 변경은 API 프로세스가 다시 시작되어야 적용된다. 공유 디렉터리에서 실행 중인 `node --watch`가 파일 변경을 감지하지 못하는 환경에서는 담당자가 API 프로세스를 수동 재시작해야 한다.

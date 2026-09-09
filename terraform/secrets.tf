@@ -11,11 +11,10 @@
 #   AWS Secrets   : AES-256 자동 암호화, 버전 관리, 감사 로그(CloudTrail),
 #                   자동 교체(rotation) 기능 내장.
 #
-# [ECS에서 참조하는 방식]
-#   Task Definition의 "secrets" 블록에서 ARN으로 참조:
-#     valueFrom = "<Secret ARN>:DB_PASSWORD::"
-#   → ECS Agent가 태스크 시작 시 Secrets Manager에서 값을 가져와 환경변수로 주입.
-#   → 이미지나 Task Definition에 평문 비밀번호가 기록되지 않음.
+# [EKS Pod에서 참조하는 방식]
+#   IRSA(IAM Roles for Service Accounts) + CSI Driver 또는
+#   K8s ExternalSecret Operator로 Secrets Manager 값을 K8s Secret으로 동기화.
+#   → Pod 환경변수로 주입. 이미지나 Helm values에 평문 비밀번호가 기록되지 않음.
 # =============================================================================
 
 
@@ -41,7 +40,7 @@ resource "aws_secretsmanager_secret" "api" {
 #
 # 저장되는 JSON 구조:
 #   {
-#     "DB_PASSWORD": "...",          ← RDS MariaDB 마스터 비밀번호
+#     "DB_PASSWORD": "...",          ← 외부 D-Cloud MariaDB 비밀번호
 #     "SMTP_USER": "...",            ← Gmail SMTP 로그인 이메일
 #     "SMTP_PASS": "...",            ← Gmail App Password
 #     "RECAPTCHA_SECRET_KEY": "..."  ← Google reCAPTCHA v3 서버 키
@@ -52,7 +51,7 @@ resource "aws_secretsmanager_secret" "api" {
 #
 # [값 변경 시]
 # terraform.tfvars에서 변수 값을 수정하고 terraform apply하면
-# 새 Secret Version이 자동 생성된다. ECS 태스크 재시작 시 새 값 반영.
+# 새 Secret Version이 자동 생성된다. EKS Pod 재시작 시 새 값 반영.
 # -----------------------------------------------------------------------------
 resource "aws_secretsmanager_secret_version" "api" {
   secret_id = aws_secretsmanager_secret.api.id

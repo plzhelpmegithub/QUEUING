@@ -15,8 +15,8 @@
 #                             (Redis)
 #
 # [온프레미스 → AWS 매핑]
-#   K8s Deployment     → EC2 Auto Scaling Group  (ec2.tf)
-#   K8s HPA            → Auto Scaling Policy     (ec2.tf)
+#   K8s Deployment     → EKS + Managed Node Group (eks.tf)
+#   K8s HPA            → 기존 HPA 그대로 사용     (Helm 차트)
 #   K8s NodePort       → ALB + Target Group      (alb.tf)
 #   온프레미스 Redis    → ElastiCache             (elasticache.tf)
 #   외부 MariaDB       → RDS                     (rds.tf)
@@ -38,6 +38,10 @@ terraform {
     aws = {
       source  = "hashicorp/aws"   # HashiCorp 공식 AWS 프로바이더
       version = "~> 5.0"          # 5.0 이상 ~ 6.0 미만
+    }
+    tls = {
+      source  = "hashicorp/tls"   # OIDC Provider 인증서 지문 조회용
+      version = "~> 4.0"
     }
   }
 

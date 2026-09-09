@@ -49,121 +49,83 @@ variable "vpc_cidr" {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EC2 / API 서버
+# EKS 클러스터
 # ─────────────────────────────────────────────────────────────────────────────
 
-variable "ec2_ami_id" {
-  description = "EC2 인스턴스에 사용할 AMI ID."
+variable "eks_cluster_version" {
+  description = "EKS K8s 버전. AWS가 마이너 패치를 자동 적용."
   type        = string
-  default     = "ami-0bc151a94289adb52"
-  # 사용자 지정 AMI. Amazon Linux 2 기반.
-  # 리전별로 AMI ID가 다르므로 ap-northeast-2 전용.
+  default     = "1.30"
+  # 지원 버전 확인: aws eks describe-addon-versions --kubernetes-version 1.30
+  # EKS는 보통 4개 마이너 버전을 동시 지원 (1.27~1.30 등).
+  # 온프레미스 K8s 버전과 맞추는 것을 권장.
 }
 
-variable "ec2_instance_type" {
-  description = "EC2 인스턴스 유형. vCPU와 메모리 크기를 결정."
+variable "eks_node_instance_type" {
+  description = "EKS Worker Node EC2 인스턴스 유형."
   type        = string
-  default     = "t3.micro"
-  # t3.micro  : 2 vCPU, 1 GiB RAM (프리티어, 개발/테스트)
-  # t3.small  : 2 vCPU, 2 GiB RAM (소규모 프로덕션)
-  # t3.medium : 2 vCPU, 4 GiB RAM (중규모 프로덕션)
-  # 현재 K8s: requests 200m CPU, 128Mi RAM → t3.micro면 충분.
-  # 부하 테스트 후 필요 시 상향.
+  default     = "t3.medium"
+  # t3.small  : 2 vCPU, 2 GiB RAM (개발/테스트)
+  # t3.medium : 2 vCPU, 4 GiB RAM (소규모 프로덕션, 권장 최소)
+  # t3.large  : 2 vCPU, 8 GiB RAM (중규모 프로덕션)
+  # ⚠️ t3.micro/small은 Pod 수 제한이 낮아 EKS에 비권장.
+  #    t3.medium은 최대 17개 Pod 실행 가능 (ENI 기준).
 }
 
-variable "ec2_volume_size" {
-  description = "EC2 루트 볼륨 크기(GiB). Docker 이미지 저장 공간 포함."
+variable "eks_node_volume_size" {
+  description = "Worker Node EBS 루트 볼륨 크기(GiB)."
   type        = number
-  default     = 20
+  default     = 30
   # gp3 기본: 3,000 IOPS, 125 MiB/s 포함.
-  # Docker 이미지(~500MB) + OS + 로그 고려하여 20GiB.
+  # Docker 이미지 레이어 캐시 + OS + kubelet 로그 고려하여 30GiB.
 }
 
-variable "api_image_repo" {
-  description = "API Docker 이미지 저장소. Docker Hub 경로 또는 ECR URL."
-  type        = string
-  default     = "mover14/redis-api-backend"
-  # Docker Hub에서 직접 Pull한다.
-  # ECR로 전환할 때 이 값만 ECR URL로 변경하면 된다.
-  # 예: "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/queuing-prod-api"
+variable "k8s_nodeport" {
+  description = "K8s API Service의 NodePort. ALB Target Group이 이 포트로 트래픽 전달."
+  type        = number
+  default     = 30084
+  # Helm 차트(redis-api-chart)의 Service NodePort와 일치해야 한다.
+  # 온프레미스 K8s에서 사용하던 NodePort: 30084.
 }
 
-variable "api_image_tag" {
-  description = "API Docker 이미지 태그(버전). Dockerfile 빌드 시 지정한 태그와 일치해야 한다."
-  type        = string
-  default     = "1.0.8"
-}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EKS Node Group 스케일링
+# ─────────────────────────────────────────────────────────────────────────────
 
 variable "api_desired_count" {
-  description = "Auto Scaling Group이 유지할 기본 인스턴스 수."
+  description = "EKS Node Group이 유지할 기본 Worker Node 수."
   type        = number
   default     = 2
-  # K8s replicaCount: 2와 동일.
+  # K8s Node 수. Pod 스케일링은 HPA가 담당 (Helm 차트에서 설정).
 }
 
 variable "api_min_count" {
-  description = "Auto Scaling 최소 인스턴스 수. 트래픽이 없어도 이 수만큼은 항상 실행."
+  description = "Node Group 최소 Worker Node 수. 이 수만큼은 항상 실행."
   type        = number
   default     = 1
-  # K8s HPA minReplicas: 1과 동일.
 }
 
 variable "api_max_count" {
-  description = "Auto Scaling 최대 인스턴스 수. CPU 과부하 시 이 수까지 스케일 아웃."
+  description = "Node Group 최대 Worker Node 수. Cluster Autoscaler가 이 범위 내에서 조절."
   type        = number
   default     = 10
-  # K8s HPA maxReplicas: 10과 동일.
-}
-
-variable "api_autoscaling_cpu_target" {
-  description = "CPU 사용률이 이 값(%)을 넘으면 인스턴스를 추가. 밑돌면 축소."
-  type        = number
-  default     = 70
-  # K8s HPA targetCPUUtilizationPercentage: 70과 동일.
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RDS (MariaDB)
+# 외부 D-Cloud MariaDB
 # ─────────────────────────────────────────────────────────────────────────────
-
-variable "db_instance_class" {
-  description = "RDS 인스턴스 유형. vCPU와 메모리 크기를 결정."
-  type        = string
-  default     = "db.t3.micro"
-  # db.t3.micro : 2 vCPU, 1 GiB RAM (프리티어 대상, 개발/테스트용)
-  # db.t3.small : 2 vCPU, 2 GiB RAM (소규모 프로덕션)
-  # db.t3.medium: 2 vCPU, 4 GiB RAM (중규모 프로덕션)
-}
-
-variable "db_allocated_storage" {
-  description = "RDS 초기 스토리지 크기(GiB). max_allocated_storage까지 자동 확장."
-  type        = number
-  default     = 20
-  # max_allocated_storage = 이 값 × 2 = 40GiB 까지 자동 확장.
-  # gp3 스토리지: 기본 3,000 IOPS, 125 MiB/s 처리량 포함.
-}
-
-variable "db_name" {
-  description = "RDS 인스턴스 생성 시 자동으로 만들 데이터베이스 이름."
-  type        = string
-  default     = "queuing_db"
-  # API 코드의 DB_NAME 환경변수와 일치해야 한다.
-}
-
-variable "db_username" {
-  description = "RDS 마스터 사용자 이름."
-  type        = string
-  default     = "team2"
-  # 온프레미스 DB_USER: "team2"와 동일하게 유지.
-}
+# RDS는 사용하지 않음. 외부 D-Cloud MariaDB에 NAT Gateway를 통해 접속.
+# DB_HOST, DB_PORT, DB_USER는 K8s ConfigMap이나 환경변수로 주입.
+# DB_PASSWORD만 Secrets Manager에 저장 (secrets.tf).
+# ─────────────────────────────────────────────────────────────────────────────
 
 variable "db_password" {
-  description = "RDS 마스터 비밀번호. terraform.tfvars에 작성하고 절대 커밋하지 않는다."
+  description = "외부 D-Cloud MariaDB 비밀번호. terraform.tfvars에 작성하고 절대 커밋하지 않는다."
   type        = string
   sensitive   = true
-  # plan/apply 출력에서 "(sensitive value)"로 마스킹됨.
-  # Secrets Manager에도 저장되어 ECS Task가 런타임에 참조.
+  # Secrets Manager에 저장되어 EKS Pod가 런타임에 참조.
 }
 
 
@@ -172,7 +134,7 @@ variable "db_password" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 variable "redis_node_type" {
-  description = "ElastiCache 노드 유형. 메모리 크기를 결정."
+  description = "ElastiCache 노드 유형. Primary/Replica 모두 이 유형으로 생성."
   type        = string
   default     = "cache.t3.micro"
   # cache.t3.micro : 0.5 GiB (프리티어 대상, 개발/테스트)
@@ -181,11 +143,13 @@ variable "redis_node_type" {
   # 좌석 6,600개 기준 Redis 메모리 ~50MB 사용 → micro면 충분.
 }
 
-variable "redis_num_cache_nodes" {
-  description = "Redis 클러스터 노드 수. 1이면 단일 노드(Cluster Mode 비활성화)."
+variable "redis_num_replicas" {
+  description = "Redis Replica 수. 1이면 Primary + Replica 1 = Multi-AZ 구성. 0이면 단일 노드."
   type        = number
   default     = 1
-  # 고가용성이 필요하면 Replication Group으로 전환 권장 (별도 리소스).
+  # 1 = Primary(AZ-a) + Replica(AZ-c), 자동 페일오버 활성화
+  # 2 = Primary + Replica 2, 읽기 분산 강화
+  # 0 = 단일 노드 (개발 환경, Multi-AZ/페일오버 비활성화)
 }
 
 
@@ -285,11 +249,29 @@ variable "domain_name" {
   #   www.queuing.kr → CloudFront, api.queuing.kr → ALB 자동 연결.
 }
 
-variable "acm_certificate_arn" {
-  description = "ALB용 ACM 인증서 ARN (ap-northeast-2). 지정하면 HTTPS(443) 리스너 활성화."
-  type        = string
-  default     = ""
-  # CloudFront용 인증서는 Terraform이 us-east-1에 자동 발급 (cloudfront.tf).
-  # 이 변수는 ALB 전용. api.queuing.kr HTTPS가 필요하면 ap-northeast-2에서 별도 발급:
-  #   aws acm request-certificate --domain-name api.queuing.kr --validation-method DNS
+# acm_certificate_arn 변수는 제거됨.
+# domain_name 설정 시 CloudFront용(us-east-1)과 ALB용(ap-northeast-2) ACM 인증서가
+# 모두 자동으로 발급되고 DNS 검증·적용된다.
+# → cloudfront.tf (프론트엔드 HTTPS)
+# → alb.tf (API HTTPS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAF (Web Application Firewall)
+# ─────────────────────────────────────────────────────────────────────────────
+
+variable "waf_enabled" {
+  description = "true면 CloudFront에 WAF를 적용하여 웹 공격 방어 활성화."
+  type        = bool
+  default     = true
+  # WAF 비용: Web ACL $5 + Rule $1×4 + 요청당 $0.60/100만건 ≈ 월 $10~15
+}
+
+variable "waf_rate_limit" {
+  description = "WAF Rate Limiting: 5분간 동일 IP에서 허용할 최대 요청 수."
+  type        = number
+  default     = 2000
+  # 2000 = 5분간 2,000건 = 약 6.7 req/sec.
+  # 정상 사용자에게 충분하지만, 매크로/봇의 과도한 요청은 차단.
+  # 예매 오픈 시 정상 사용자가 초당 1~2회 새로고침 = 5분에 300~600건.
 }
