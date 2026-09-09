@@ -1,0 +1,56 @@
+# =============================================================================
+# terraform.tfvars 예시 — 실제 값으로 채운 뒤 terraform.tfvars 로 저장한다
+# =============================================================================
+# ⚠️ terraform.tfvars 는 .gitignore 에 들어 있다. 절대 커밋하지 말 것.
+#    비밀번호는 파일 대신 환경변수로 넘기는 편이 더 안전하다.
+#      export TF_VAR_db_password='...'
+# =============================================================================
+
+project     = "queuing"
+region      = "ap-northeast-2"
+environment = "dev" # prod 로 두면 RDS 다중 AZ·삭제 보호가 켜진다
+
+# ── 네트워크 ──
+vpc_cidr = "10.0.0.0/16" # 온프레미스 192.168.0.0/24 와 겹치지 않아야 한다
+
+# ── EKS ──
+# ⚠️ 1.33 이하는 확장 지원 구간이라 시간당 $0.60 — 표준 지원의 6배다.
+#    1.31 로 두면 컨트롤플레인만 월 $438 이 된다(1.34 는 월 $73).
+eks_cluster_version    = "1.34"
+eks_node_instance_type = "t3.medium"
+eks_node_desired_size  = 2
+eks_node_min_size      = 2
+eks_node_max_size      = 4
+eks_node_volume_size   = 30
+
+# ── NodePort — 각 파트 Helm 차트의 service.nodePort 와 반드시 같아야 한다 ──
+nodeport_api = 30084 # A파트 redis-api-chart/values.yaml
+nodeport_ws  = 30081 # C파트 realtime-ws-chart/values.yaml
+
+# ── RDS ──
+use_rds              = true # false 면 D-Cloud 를 계속 쓴다 (NAT EIP 화이트리스트 필요)
+db_instance_class    = "db.t3.micro"
+db_allocated_storage = 20
+db_name              = "queuing_db"
+db_username          = "team2"
+db_password          = "CHANGE_ME" # ⚠️ 실제 값으로. 또는 TF_VAR_db_password 로 전달
+
+# ── ElastiCache ──
+redis_node_type = "cache.t3.micro"
+
+# ── SES ──
+# 이 주소로 인증 메일이 간다. 링크를 눌러야 발송이 가능해진다.
+ses_sender_email = "chlwldp02naver@gmail.com"
+
+# ── 도메인 ──
+# 비워두면 Route 53·ACM·DNS 레코드를 만들지 않고 CloudFront/ALB 기본 주소를 쓴다.
+# 처음 배포할 때는 비워두고 검증한 뒤 채우는 편이 안전하다.
+domain_name   = "queuing.kr"
+api_subdomain = "api"
+
+# .kr 은 Route 53 에서 등록이 안 된다. 호스팅케이알에서 산 도메인의 네임서버를
+# apply 후 output route53_nameservers 값으로 바꿔야 인증서 검증이 끝난다.
+create_route53_zone = true
+
+# ── D-Cloud (use_rds = false 일 때만) ──
+# dcloud_db_password = "..."
