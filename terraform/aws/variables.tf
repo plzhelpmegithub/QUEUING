@@ -21,3 +21,8 @@ variable "vpc_cidr" {
   type        = string
   default     = "10.0.0.0/16"
 }
+variable "ses_sender_email" {
+  description = "SES 발신용 이메일 주소"
+  type        = string
+  default     = "noreply@example.com"  # 실제 이전 시 정확한 값으로 변경 필요
+}
