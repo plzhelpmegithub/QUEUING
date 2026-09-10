@@ -107,3 +107,117 @@ subjects:
   - kind: ServiceAccount
     name: yeji
     namespace: monitoring
+---
+# ══════════════════════════════════════════════
+# 추가 (2026-09-09): 본인 네임스페이스 안에서만 Secret 읽기
+#
+# ■ 왜 필요해졌나
+# 위 ClusterRole 에서 secrets 를 뺀 뒤, 예지님이 VM Grafana 의 SMTP 를 설정하려는데
+# Gmail 앱 비밀번호를 읽을 수 없어 막혔다. 그 값은 monitoring 네임스페이스의
+# grafana-smtp Secret 안에 있다.
+#
+# ■ ClusterRole 이 아니라 Role 인 것이 핵심이다
+# ClusterRole 에 secrets 를 다시 넣으면 클러스터 전체가 열린다 — queuing-a 의
+# DB 비밀번호(mariadb-credentials), 도커허브 토큰(dockerhub-creds),
+# argocd 관리자 비밀번호까지 전부 읽히게 된다. 그건 되돌리는 것이다.
+#
+# Role 은 네임스페이스 안에서만 유효하다. 아래 세 개는 예지님이 직접 운영하는
+# 네임스페이스이고, 그 안의 Secret 은 본인이 만든 것들이다.
+#   monitoring : grafana-smtp (본인이 만든 Gmail 앱 비밀번호)
+#   redis      : redis-counter-secret (본인 Redis 비밀번호)
+#   queuing-d  : 카운터 앱 설정
+#
+# 이 구조는 AWS 이관 후와도 같다. terraform-final/eks_access.tf 에서 예지님은
+# 이 세 네임스페이스에 AmazonEKSEditPolicy(= Secret 읽기·쓰기 포함)를 받고,
+# 클러스터 전체로는 AmazonEKSViewPolicy(= secrets 없음)만 받는다.
+#
+# ■ 적용 (지예님이 실행)
+#   kubectl apply -f shared-infra/yeji-rbac.yaml
+#
+#   ⚠️ 세 네임스페이스가 모두 있어야 한다. 없으면 그 Role 만 실패한다.
+#      kubectl get ns monitoring redis queuing-d
+#
+# ■ 확인
+#   Y=system:serviceaccount:monitoring:yeji
+#   kubectl auth can-i get secrets -n monitoring --as=$Y   # yes 로 바뀜
+#   kubectl auth can-i get secrets -n queuing-a --as=$Y    # no 유지
+#   kubectl auth can-i get secrets -A          --as=$Y     # no 유지
+#
+# ■ 예지님이 SMTP 값 꺼내는 법
+#   kubectl -n monitoring get secret grafana-smtp \
+#     -o jsonpath='{.data.user}' | base64 -d; echo
+#   kubectl -n monitoring get secret grafana-smtp \
+#     -o jsonpath='{.data.password}' | base64 -d; echo
+# ══════════════════════════════════════════════
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yeji-secrets-read
+  namespace: monitoring
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yeji-secrets-read
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yeji-secrets-read
+subjects:
+  - kind: ServiceAccount
+    name: yeji
+    namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yeji-secrets-read
+  namespace: redis
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yeji-secrets-read
+  namespace: redis
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yeji-secrets-read
+subjects:
+  - kind: ServiceAccount
+    name: yeji
+    namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yeji-secrets-read
+  namespace: queuing-d
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yeji-secrets-read
+  namespace: queuing-d
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yeji-secrets-read
+subjects:
+  - kind: ServiceAccount
+    name: yeji
+    namespace: monitoring

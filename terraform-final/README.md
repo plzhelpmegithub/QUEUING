@@ -432,3 +432,573 @@ ElastiCache 의 `engine = "redis"` 는 **7.1 이 최대**다. Redis 8 은 없고
 | --- | --- |
 | **VPC Flow Logs** (`flow_logs.tf`) | CloudWatch, 보관 7일, 60초 집계. IAM 신뢰 정책에 `aws:SourceAccount` 조건(혼동된 대리인 방지) 포함. `flow_logs_traffic_type` 으로 `REJECT` 만 받게 줄일 수 있다 |
 | **보안그룹 규칙 `description`** | 모든 SG 와 모든 규칙에 설명. 찬규 안의 방식. ⚠️ description 은 나중에 수정할 수 없고 규칙을 지웠다 다시 만들어야 한다 |
+
+---
+
+# IAM 정리 (2026-09-09, 4차)
+
+지예님이 IAM 사용자를 **콘솔에서 직접 만들어 팀원들에게 전달하고 PowerUserAccess 를
+부여한 상태**라는 것이 확인되어, 테라폼이 계정을 또 만들지 않도록 껐다.
+
+## 껐을 때 무엇이 사라지나
+
+| 변수 | 기본값 | 껐을 때 만들지 않는 것 |
+| --- | --- | --- |
+| `create_team_iam_users` | `false` | 팀원 IAM 사용자 4명, 액세스 키 4개, 콘솔 비밀번호 4개, 그룹·공통정책 |
+| `create_ses_smtp_user` | `false` | SES SMTP 전용 사용자와 액세스 키 |
+
+**기본값으로 `apply` 하면 IAM 사용자와 액세스 키가 0개 생성된다.**
+남는 IAM 리소스는 역할(Role)과 정책뿐이고, 그것들은 파드·노드·서비스가 쓴다
+(IRSA, 노드 역할, Flow Logs 역할 등). 사람이 쓰는 자격증명은 하나도 만들지 않는다.
+
+## 왜 켜두면 해로운가
+
+`iam_team.tf` 는 사용자 이름을 `team_members` 의 `username` 그대로 만든다
+(`jiye-c`, `chankyu-a`, `geona-b`, `yeji-d`).
+
+- 같은 이름이 이미 있으면 `apply` 가 **`EntityAlreadyExists` 로 실패**한다.
+- 이름이 다르면 **중복 사용자 4명**이 더 생긴다.
+- 액세스 키와 콘솔 비밀번호가 **`tfstate` 에 평문으로** 기록된다.
+
+파일은 지우지 않고 남겼다. 나중에 계정을 테라폼으로 관리하기로 하면
+`create_team_iam_users = true` 한 줄로 되돌릴 수 있다. 그때는 콘솔에서 만든
+사용자를 먼저 지우거나 `terraform import` 해야 한다.
+
+## EKS 접근 권한은 그대로 유지한다
+
+**PowerUserAccess 는 AWS API 권한이고, 쿠버네티스 RBAC 는 완전히 별개다.**
+`authentication_mode = "API"` 이므로 클러스터의 K8s API 에 붙으려면 Access Entry 가
+있어야 한다. PowerUser 만 있는 팀원은 `aws eks update-kubeconfig` 는 되지만
+`kubectl get pods` 는 거부된다.
+
+그래서 `eks_access.tf` 는 그대로 둔다. 다만 이제 테라폼이 사용자를 만들지 않으므로,
+principal ARN 을 **계정 ID + 사용자 이름으로 조립**한다.
+
+```hcl
+"arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${m.username}"
+```
+
+⚠️ **`team_members` 의 `username` 이 실제 IAM 사용자 이름과 정확히 같아야 한다.**
+다르면 존재하지 않는 사용자에게 권한을 주는 셈이 된다. 확인:
+
+```bash
+aws iam list-users --query 'Users[].UserName' --output table
+```
+
+## ⚠️ PowerUserAccess 의 범위에 대해
+
+참고로 적어둔다. `PowerUserAccess` 는 IAM·Organizations·Account 를 제외한
+**거의 모든 AWS 동작을 허용**한다. 여기에는 `eks:CreateAccessEntry` 와
+`eks:AssociateAccessPolicy` 도 포함된다.
+
+즉 팀원이 스스로에게 `AmazonEKSClusterAdminPolicy` 를 붙일 수 있고, 클러스터·RDS·
+ElastiCache 를 삭제할 수도 있고, Secrets Manager 값을 읽을 수도 있다.
+
+`eks_access.tf` 의 네임스페이스 분리는 **실수를 막는 가드레일**로는 유효하지만,
+PowerUser 가 함께 있는 한 **의도적인 우회를 막지는 못한다.** 4명이 서로 신뢰하는
+팀이라면 지금 구성으로 충분하고, 더 좁히려면 PowerUserAccess 대신 필요한 서비스만
+허용하는 정책으로 바꿔야 한다 — 그건 별도 작업이다.
+
+---
+
+# CI/CD (2026-09-09, 5차)
+
+## 결정
+
+| | 어디서 | 왜 |
+| --- | --- | --- |
+| **Jenkins** | 별도 EC2 (`jenkins.tf`) | 파드 안에서는 `docker build` 가 안 된다. Kaniko 로 Jenkinsfile 을 다시 쓰는 대신 지금 구조를 유지한다. 노드 메모리도 총 8Gi 라 여유가 없다 |
+| **ArgoCD** | EKS 안 (`argocd` 네임스페이스) | 쿠버네티스 워크로드라 그대로 옮겨간다. Helm 으로 설치 |
+
+## 액세스 키를 만들지 않는다
+
+| 무엇이 | 어떻게 인증하나 |
+| --- | --- |
+| Jenkins → ECR push | **EC2 인스턴스 프로파일** (`aws_iam_instance_profile.jenkins`) |
+| ArgoCD Image Updater → ECR 태그 조회 | **IRSA** (`aws_iam_role.argocd_image_updater`) |
+| 노드 → ECR pull | 노드 역할의 `AmazonEC2ContainerRegistryReadOnly` |
+
+ECR 토큰은 12시간마다 만료된다. Secret 에 한 번 넣어두는 방식은 반나절 뒤
+조용히 멈춘다 — "왜 새 이미지를 안 잡지" 하고 헤매게 되는 종류의 고장이다.
+위 세 가지는 모두 SDK 가 토큰을 자동 갱신한다.
+
+## ECR 저장소 — 2개에서 4개로
+
+네 파트 전부 젠킨스로 빌드하는데 저장소가 2개뿐이었다.
+
+| 파트 | 지금 (Docker Hub) | ECR |
+| --- | --- | --- |
+| A 찬규 | `mover14/redis-api-backend` | `queuing/api-server` |
+| B 건아 | `dororonge/queuing-worker` | `queuing/worker` |
+| C 지예 | `chlwldp/realtime-ws` | `queuing/realtime-ws` |
+| D 예지 | `ttomang/backend-counter` | `queuing/counter` |
+
+각 파트가 자기 `values.yaml` 의 `image.repository` 를 바꿔야 한다.
+
+```bash
+terraform output ecr_repositories
+```
+
+## Jenkins 쪽에서 바뀌는 것
+
+Jenkinsfile 에서 실질적으로 바뀌는 건 로그인 한 줄이다.
+
+```bash
+# 지금 (Docker Hub)
+docker login -u <계정> -p <토큰>
+
+# AWS (ECR) — 인스턴스 프로파일을 자동으로 집어간다. 키를 넣지 않는다.
+aws ecr get-login-password --region ap-northeast-2 | docker login \
+  --username AWS --password-stdin <계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com
+```
+
+```bash
+terraform output ecr_login_command   # 완성된 명령
+terraform output jenkins_url         # 접속 주소 + 최초 비밀번호 확인법
+```
+
+⚠️ **Jenkins EC2 에는 SSH 를 열지 않았다.** 22번 포트가 없고 키 페어도 지정하지
+않았다. 접속은 SSM 으로 한다.
+
+```bash
+aws ssm start-session --target <인스턴스ID>
+```
+
+⚠️ **`jenkins_allowed_cidr` 기본값이 `0.0.0.0/0` 이다.** 최초 설정을 마치기 전까지
+젠킨스는 비밀번호가 없는 상태다. 사무실 공인 IP 로 좁힐 것.
+
+## ArgoCD Image Updater 연결
+
+```bash
+kubectl -n argocd annotate serviceaccount argocd-image-updater \
+  eks.amazonaws.com/role-arn=$(terraform output -raw argocd_image_updater_role_arn)
+kubectl -n argocd rollout restart deployment argocd-image-updater
+```
+
+⚠️ ServiceAccount 이름이 `argocd-image-updater` 라고 가정하고 신뢰 정책을 썼다
+(Helm 차트 기본값). 다르게 깔았으면 `irsa.tf` 의 `sub` 조건을 실제 이름으로
+바꿔야 한다. 이름이 틀리면 역할을 맡지 못하고, 이때도 조용히 실패한다.
+
+Application 어노테이션의 이미지 주소도 ECR 로 바꾼다.
+
+```yaml
+argocd-image-updater.argoproj.io/image-list: ws=<ECR주소>/queuing/realtime-ws
+```
+
+---
+
+# 6차 — validate 통과와 반복 배포 대응 (2026-09-09)
+
+## terraform validate 가 잡아낸 것
+
+**보안그룹 `description` 은 ASCII 만 받는다.**
+
+```
+Error: "ingress.0.description" doesn't comply with restrictions
+       ("^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$")
+```
+
+5차에서 찬규 안을 따라 모든 SG 규칙에 `description` 을 붙였는데, 한글로 썼다.
+허용 문자 집합에 한글이 없다.
+
+`validate` 는 4건만 보여줬지만 실제로는 **19건**이었다. AWS 로 전송되는 문자열
+전체를 훑어서 전부 영문으로 바꿨다. 한글 설명은 `#` 주석에 남겼다 —
+주석은 AWS 로 가지 않는다.
+
+| 파일 | 건수 |
+| --- | --- |
+| `security_groups.tf` | 12 |
+| `jenkins.tf` | 3 |
+| `secrets.tf` | 2 |
+| `ecr.tf` · `waf.tf` | 각 1 |
+
+## ⚠️ validate 가 **못** 잡는 것도 있었다
+
+`ecr.tf` 의 `Desc` 태그 값에 괄호와 em 대시를 썼다.
+
+```
+"A 찬규 — 예매 API (기존 mover14/redis-api-backend)"
+```
+
+AWS 태그 값 허용 문자는 **글자·숫자·공백과 `_ . : / = + - @`** 뿐이다.
+괄호 `(` `)` 와 em 대시 `—` 는 들어가지 않는다. (한글 자체는 글자라서 허용된다.)
+
+이건 스키마 위반이 아니라 **AWS API 가 거부**하는 것이라 `validate` 를 통과하고
+`apply` 도중에 실패한다. EKS 생성에 15분이 걸리므로 한참 뒤에 터진다.
+
+**교훈: `validate` 통과가 apply 성공을 뜻하지 않는다.**
+
+## plan 이 db_password 를 물어보던 문제
+
+`use_rds = false` 라 RDS 를 만들지 않는데도 비밀번호를 물었다.
+`secrets.tf` 의 삼항 연산자가 양쪽 branch 를 모두 평가하기 때문이다.
+
+기본값을 `""` 로 주고, 대신 `rds.tf` 에 `precondition` 을 넣어
+`use_rds = true` 인데 비어 있으면 apply 전에 명확히 막도록 했다.
+
+## apply / destroy 를 반복할 때
+
+비용 때문에 하루에도 여러 번 켰다 끄기로 했다. 그 방식에서 걸리는 것 셋을 고쳤다.
+
+### 🔴 두 번째 apply 가 반드시 실패하던 문제
+
+`aws_secretsmanager_secret` 의 `recovery_window_in_days = 7` 이었다.
+`destroy` 는 시크릿을 실제로 지우지 않고 "7일 뒤 삭제 예정"으로만 표시한다.
+그 상태로 다시 apply 하면 같은 이름을 만들 수 없다.
+
+```
+InvalidRequestException: You can not create this secret because
+a secret with this name is already scheduled for deletion.
+```
+
+`environment` 가 `prod` 가 아니면 `0`(즉시 삭제)이 되게 바꿨다.
+
+### 🔴 NAT 공인 IP 가 매번 바뀌던 문제
+
+`use_rds = false` 라 A파트가 외부 D-Cloud MariaDB 에 붙는다. D-Cloud 는 출발지
+IP 로 접근을 허용하므로, NAT 의 EIP 가 화이트리스트에 등록되어 있어야 한다.
+
+`destroy` 하면 EIP 가 반납되고 다시 apply 하면 새 주소를 받는다.
+**apply 할 때마다 D-Cloud 관리자에게 재등록을 요청해야 한다** — 하루에 여러 번
+반복하는 방식에서는 불가능하다.
+
+`nat_eip_allocation_id` 변수를 추가했다. 값을 넣으면 기존 EIP 를 재사용하고
+새로 만들지 않는다.
+
+```bash
+# 1) 현재 EIP 의 할당 ID 확인
+terraform state show aws_eip.nat
+
+# 2) 테라폼 관리에서만 떼어낸다 (AWS 에서는 지워지지 않는다)
+terraform state rm aws_eip.nat
+
+# 3) terraform.tfvars 에 넣는다
+#    nat_eip_allocation_id = "eipalloc-xxxxxxxx"
+```
+
+⚠️ **destroy 전에 해야 한다.** destroy 후에는 EIP 가 이미 반납된 뒤다.
+
+붙어 있지 않은 EIP 는 시간당 $0.005(월 약 $3.6)다. 재등록 수고에 비하면 싸다.
+
+`nat_eip` 출력은 `aws_eip.nat` 이 아니라 `aws_nat_gateway.main.public_ip` 를
+읽도록 바꿨다. 두 경우 모두에서 실제 나가는 주소를 준다.
+
+### ⚠️ Jenkins 고아 볼륨
+
+`delete_on_termination = false` 였다. destroy 후 볼륨이 남지만, 다시 apply 해도
+테라폼이 그 볼륨을 새 인스턴스에 붙여주지 않는다. 결과적으로 젠킨스 설정은
+어차피 사라지고 요금만 내는 볼륨이 apply 마다 하나씩 쌓인다. `true` 로 바꿨다.
+
+젠킨스 설정을 유지하려면 apply/destroy 대상에서 빼는 편이 낫다.
+`jenkins_enabled = false` 로 두고 젠킨스만 계속 켜두거나, JCasC 로 설정을
+깃에 넣는다.
+
+## 절약액
+
+| 항목 | 시간당 |
+| --- | --- |
+| EKS 컨트롤플레인 | $0.10 |
+| 워커노드 t3.medium ×2 | $0.083 |
+| NAT 게이트웨이 | $0.045 |
+| ElastiCache ×2 | $0.034 |
+| ALB | $0.023 |
+| **합계** | **약 $0.29** |
+
+하루 8시간만 켜면 월 $256 → 약 $75.
+
+**destroy 해도 남는 비용**: 호스팅 영역 $0.50/월, NAT EIP $3.6/월,
+ECR·S3 저장 몇 센트. 합쳐서 월 $5 정도.
+
+**시간 비용**: apply 20~30분, destroy 15~20분. 대부분 EKS 클러스터
+생성·삭제 시간이라 줄일 방법이 없다.
+
+## 검사 스크립트
+
+`terraform validate` 로 잡히지 않는 것들을 위해 다음을 확인했다.
+같은 종류의 실수가 반복되면 스크립트로 만들어 둘 것.
+
+- AWS 로 전송되는 `description` / `comment` 의 비 ASCII
+- 보안그룹 description 허용 문자셋과 255자 제한
+- 태그 값 문자셋 (`local` 참조까지 따라감)
+- 삼항 연산자 안의 `[0]` 인덱스 (양쪽 branch 가 모두 평가된다)
+- `count` 가 붙은 리소스를 `[0]` 없이 참조하는 곳
+- heredoc 안의 `${...}` 가 의도치 않게 보간되는 곳
+- 정의됐지만 아무데서도 참조되지 않는 리소스
+
+---
+
+# 프론트엔드 배포 (2026-09-09, 찬규님 문의)
+
+## 테라폼은 파일을 올리지 않는다
+
+`aws_s3_bucket.frontend` 와 CloudFront 는 만들지만, **빌드 산출물을 올리는
+리소스는 없다.** 의도한 것이다.
+
+| 테라폼에 넣으면 | |
+| --- | --- |
+| 상태 추적 | 올린 파일 하나하나가 상태에 들어간다. 빌드마다 해시가 바뀌어 `plan` 이 매번 수백 개 변경으로 뜬다 |
+| destroy 결합 | **`terraform destroy` 가 웹사이트 파일까지 지운다.** 하루에 여러 번 destroy 하는 지금 방식과 정면으로 충돌한다 |
+| 권한 결합 | 프론트 배포는 하루 여러 번, 인프라 변경은 가끔이다. 묶으면 배포마다 인프라 권한이 필요해진다 |
+| 캐시 무효화 | 테라폼으로 CloudFront invalidation 을 다룰 방법이 마땅치 않다 (`null_resource` + `local-exec` 은 상태 추적이 안 된다) |
+
+## 그러면 손으로 하나 — 아니다
+
+백엔드 4개가 이미 젠킨스로 간다. 프론트만 손으로 하면 누가 언제 무엇을
+올렸는지 기록이 남지 않는다. **젠킨스 잡으로 한다.**
+
+테라폼이 해주는 것은 **권한과 주소**까지다.
+
+```bash
+terraform output frontend_deploy_guide
+```
+
+## 젠킨스에 붙은 권한 (`jenkins.tf`)
+
+`aws_iam_role_policy.jenkins_frontend` 를 추가했다. 이게 없으면 젠킨스가
+S3 에 쓸 수도, 캐시를 무효화할 수도 없다.
+
+| 대상 | 허용 |
+| --- | --- |
+| S3 버킷 (이 버킷만) | `ListBucket` `GetObject` `PutObject` `DeleteObject` |
+| CloudFront (이 배포만) | `CreateInvalidation` `GetInvalidation` `ListInvalidations` |
+
+인스턴스 프로파일이라 **액세스 키를 넣지 않는다.**
+
+## 캐시를 두 갈래로 나눈다
+
+CloudFront `default_ttl` 이 3600초다. 캐시 헤더 없이 그냥 올리면 새 파일을
+올려도 **최대 1시간 동안 옛 화면**이 보인다.
+
+```bash
+# 1) 해시 붙은 자산 — 1년 캐시. 파일명이 매번 바뀌므로 무효화가 필요 없다
+aws s3 sync ./dist s3://<버킷> --delete --exclude "index.html" \
+  --cache-control "public,max-age=31536000,immutable"
+
+# 2) index.html — 캐시하지 않는다. 이 파일이 새 자산을 가리킨다
+aws s3 cp ./dist/index.html s3://<버킷>/index.html \
+  --cache-control "no-cache,no-store,must-revalidate" --content-type "text/html"
+
+# 3) index.html 만 무효화
+aws cloudfront create-invalidation --distribution-id <배포ID> --paths "/index.html"
+```
+
+⚠️ **`/*` 로 전체 무효화하지 말 것.** 월 1,000건까지 무료이고 그 뒤로는
+경로당 $0.005 다. 배포마다 전체를 무효화하면 금방 넘긴다. 위처럼 나누면
+배포당 1건만 쓴다.
+
+⚠️ `./dist` 는 Vite 기준이다. CRA 면 `./build`.
+
+## 프론트엔드에서 바꿔야 할 주소
+
+```
+API : https://api.queuing.kr
+WS  : wss://api.queuing.kr/ws
+```
+
+WebSocket 은 CloudFront 를 거치지 않고 ALB 로 직접 간다.
+
+---
+
+# 7차 — 실제 배포에서 배운 것 (2026-09-09)
+
+인프라 113개를 만들고 프론트엔드와 C파트를 AWS 에서 띄우면서 드러난 것들이다.
+문서보다 실제 배포가 정확했던 항목이 여럿이라, 근거를 바로잡아 기록한다.
+
+## 🔴 내가 틀렸던 것 — D-Cloud 화이트리스트
+
+**"NAT EIP 를 D-Cloud 화이트리스트에 등록해야 한다"는 사실이 아니었다.**
+
+EKS 파드에서 직접 붙어 확인한 결과다.
+
+```
+CURRENT_USER() = team2@%
+GRANT ALL PRIVILEGES ON *.* TO `team2`@`%`
+```
+
+호스트가 `%` 라 어느 IP 에서든 접속된다. 등록 절차 자체가 없었다.
+이전 세션에서 `'team2'@'118.131.22.85'` 형태를 봤다는 기록을 근거로 IP 에
+묶여 있다고 단정했는데, **검증하지 않은 추론이었다.** 그 잘못된 전제가
+`outputs.tf`, `vpc.tf`, `variables.tf`, README 여러 곳에 퍼져 있었다.
+
+전부 정정했다. `dcloud_whitelist_guide` 출력은 `dcloud_db_access` 로 바꿨다.
+
+### 대신 진짜 문제가 드러났다
+
+`team2@%` 에 `ON *.*` 전권이다. 즉 `211.46.52.164:13306` 에 네트워크로 닿는
+사람이면 누구나 비밀번호만 알면 모든 DB 에 전권으로 들어온다. 화이트리스트가
+없는 게 아니라 **애초에 열려 있었다.** MySQL 프로토콜은 평문이고 인증서가
+자체 서명이라 클라이언트가 `--skip-ssl` 로 검증을 끄고 붙는다.
+
+완화 방법은 세 가지다. `use_rds = true` 로 RDS 이전(월 약 $15, 문제가 통째로
+사라짐) / `team2@%` 를 좁히기(D-Cloud 관리자 권한 필요) / 최소한 비밀번호 교체.
+발표에서 접근 통제 질문이 나오면 정직하게 답해야 하는 부분이다.
+
+## 🔴 CloudFront — apply 를 중단시킨 것
+
+`forwarded_values.headers` 에 `Upgrade` 를 넣어 배포 생성이 실패했다.
+
+```
+InvalidArgument: The parameter Header Name with value Upgrade is not allowed.
+```
+
+공식 헤더 표에서 `Upgrade` 는 "Caching based on header values is supported: No" 다.
+CloudFront 가 WebSocket 업그레이드를 직접 처리하므로 화이트리스트에 넣을 수 없고,
+넣을 필요도 없다. `Sec-WebSocket-*` 는 허용된다.
+
+## 🔴 CloudFront — 경로가 절반 빠져 있었다
+
+프론트가 API 를 상대경로로 호출하는데(`fetch("/membership/subscribe")`),
+개발 중에는 Vite 프록시가 넘겨주지만 S3+CloudFront 에는 프록시가 없다.
+Behavior 에 없는 경로는 S3 로 떨어지고, 파일이 없어 403 → `custom_error_response`
+로 **`index.html` 이 200 으로** 돌아온다. API 가 JSON 대신 HTML 을 200 으로 받아서
+"파싱 실패"로만 보인다. 404 였다면 금방 알았을 것이다.
+
+두 사람이 각자 다른 출처를 봤고 **양쪽 다 반쪽이었다.**
+
+| 출처 | 놓친 것 |
+| --- | --- |
+| 지예 — `src/` 의 fetch 호출 | `/sse` `/cancel-queue` `/health` (EventSource 라 정규식에 안 걸림) |
+| 찬규 — `vite.config.js` proxy | `/api` `/actuator` `/prom-api` |
+
+합집합 17개 + `/ws` 2개 + 기본 1개 = 20개. CloudFront 한도는 25개다.
+
+⚠️ `/queue*` 는 `/cancel-queue` 를 잡지 못한다. 경로 패턴은 앞에서부터 맞춘다.
+
+## 🔴 ElastiCache — A파트가 뜨지 못한 원인
+
+```
+ReplyError: ERR unknown command 'config', with args beginning with:
+            'SET' 'notify-keyspace-events' 'Ex'
+```
+
+앱이 `CONFIG SET` 을 직접 호출하는데 ElastiCache 가 그 명령을 차단한다.
+`src/app.js:81` 에서 `start()` 의 첫 줄이라 프로세스가 그대로 죽는다.
+**DB 접속 코드(82줄)까지 도달조차 못 한다** — "DB 연결이 안 된다"로 보이지만
+시도조차 못 하고 있는 것이다.
+
+파라미터 그룹은 원래 의도대로 동작하고 있었다. 앱에서 그 호출을 `try/catch` 로
+감싸면 된다. 이 파라미터 그룹은 "있으면 좋은 것"이 아니라 **없으면 A파트가
+아예 뜨지 못하는 필수 요소**다.
+
+## 🔴 빠져 있던 권한 — SNS
+
+A파트 `src/services/notificationService.js` 가 SES 뿐 아니라 SNS 도 쓴다.
+
+```js
+const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+await snsClient.send(new PublishCommand({ ... }))
+```
+
+`aws_iam_role.ses_send` 에는 `ses:*` 만 있어서 알림을 보내는 순간
+`AccessDenied` 가 났을 것이다. `sns:Publish` 등을 추가했다.
+
+⚠️ 토픽은 아직 만들지 않았다. 앱이 쓰는 `TopicArn` 이 환경변수에도 없어
+확인이 필요하다. 정해지면 `aws_sns_topic` 을 추가하고 Resource 를 좁힐 것.
+
+## ⚠️ 네임스페이스를 먼저 만들면 helm 이 실패한다
+
+일부 차트가 `templates/namespace.yaml` 로 네임스페이스를 직접 만든다.
+`kubectl create namespace` 로 미리 만들어두면 helm 이 소유권 메타데이터가
+없다며 거부한다. 라벨·어노테이션으로 인수시키면 된다 (`eks_access.tf` 주석 참고).
+
+## ⚠️ Secret 키 이름은 차트마다 다르다
+
+A파트는 `mariadb-credentials` 의 **`MARIADB_ROOT_PASSWORD`** 를 참조한다.
+`password` 로 만들면 환경변수가 조용히 비고, 원인을 찾기 어렵다.
+차트를 배포하기 전에 반드시 확인할 것.
+
+```bash
+kubectl -n queuing-a get deploy api -o jsonpath='{.spec.template.spec.containers[0].env}'
+```
+
+## ⚠️ Helm values 키 경로를 확인하고 --set 할 것
+
+C파트는 `config.redisHost` 가 아니라 **`env.redisHost`** 다. 틀린 키로 `--set`
+하면 helm 이 새 키를 만들고 실제 값은 기본값(온프레미스 주소) 그대로 남는다.
+**에러 없이 조용히 틀리는** 종류라 배포 후 반드시 주입된 값을 확인해야 한다.
+
+```bash
+kubectl -n realtime get deploy realtime-ws -o jsonpath='{.spec.template.spec.containers[0].env}'
+```
+
+## 각 파트가 AWS 로 가려면 코드/차트 수정이 필요하다
+
+온프레미스 전용 설정이 `--set` 으로 못 넘기는 자리에 박혀 있다.
+
+| 파트 | 무엇이 박혀 있나 | 누가 고쳐야 하나 |
+| --- | --- | --- |
+| A 찬규 | `timerService.js:44` 의 `CONFIG SET` | 찬규 (코드) |
+| B 건아 | 템플릿에 LocalStack 주소와 더미 키(`test/test`) 하드코딩 | 건아 (차트) |
+| C 지예 | 없음 — `--set env.redisHost` 로 해결 | — |
+| D 예지 | 차트가 자체 Redis 포함. nodePort 30083 은 ALB 타겟그룹 없음 | 확인 필요 |
+
+## 배포 성공 상태 (2026-09-09 기준)
+
+| | |
+| --- | --- |
+| 프론트엔드 S3 + CloudFront | ✅ `https://queuing.kr` |
+| C파트 WebSocket | ✅ `https://api.queuing.kr/healthz` → 200, `/rooms` → `[]` |
+| ElastiCache 연결 | ✅ `[Redis] Connected`, 채널 구독까지 |
+| D-Cloud DB 접속 | ✅ EKS 에서 `SELECT 1` 성공 |
+| A파트 | ❌ 찬규님 코드 수정 대기 |
+| B·D파트 | ❌ 미배포 |
+
+---
+
+# destroy 후 다시 apply 할 때 막히는 것들
+
+같은 이름의 리소스가 AWS 에 남아 있는데 상태 파일에는 없으면 apply 가 실패한다.
+destroy/apply 를 반복하는 지금 방식에서 실제로 겪은 것들이다.
+
+## CloudWatch 로그 그룹 (2026-09-09 발생)
+
+```
+ResourceAlreadyExistsException: The specified log group already exists
+  with aws_cloudwatch_log_group.flow_logs[0]
+```
+
+테라폼이 destroy 때 지우지만, VPC Flow Logs 서비스가 마지막 배치를 쓰면서
+같은 이름으로 다시 만들어버린다. 로그 그룹은 쓰는 쪽이 있으면 자동 생성된다.
+
+```bash
+aws logs delete-log-group --log-group-name /aws/vpc-flow-logs/queuing
+terraform apply     # 나머지는 이어서 만들어진다
+```
+
+**예방** — destroy 할 때 Flow Log 를 먼저 지운다.
+
+```bash
+terraform destroy -target=aws_flow_log.vpc
+terraform destroy
+```
+
+## Secrets Manager
+
+`recovery_window_in_days` 가 0 이 아니면 destroy 가 실제로 지우지 않고
+"삭제 예정"으로만 표시한다. 같은 이름을 다시 만들 수 없다.
+
+```bash
+aws secretsmanager describe-secret --secret-id queuing/api-secrets --query "[Name,DeletedDate]"
+aws secretsmanager delete-secret --secret-id queuing/api-secrets --force-delete-without-recovery
+```
+
+dev 에서는 `environment != "prod"` 조건으로 0 이 되도록 해뒀다.
+
+## apply 전 점검
+
+```bash
+aws logs describe-log-groups --log-group-name-prefix /aws/vpc-flow-logs --query "logGroups[].logGroupName"
+aws logs describe-log-groups --log-group-name-prefix /aws/eks/queuing-eks --query "logGroups[].logGroupName"
+aws logs describe-log-groups --log-group-name-prefix /eks/queuing --query "logGroups[].logGroupName"
+aws secretsmanager describe-secret --secret-id queuing/api-secrets --query "[Name,DeletedDate]"
+aws ec2 describe-addresses --allocation-ids <nat_eip_allocation_id> --query "Addresses[].PublicIp"
+```
+
+앞 네 개는 비어 있어야 하고, 마지막 EIP 는 나와야 한다
+(`nat_eip_allocation_id` 로 재사용하기 때문이다).
+
+## 이어서 apply 해도 된다
+
+실패해도 성공한 리소스는 상태에 기록되어 있다. 원인을 고치고
+`terraform apply` 를 다시 실행하면 이미 만들어진 것은 건너뛴다.
+`terraform destroy` 로 처음부터 다시 할 필요가 없다.

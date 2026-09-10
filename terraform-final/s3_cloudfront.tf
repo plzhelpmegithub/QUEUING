@@ -100,7 +100,19 @@ resource "aws_cloudfront_distribution" "frontend" {
 
       forwarded_values {
         query_string = true
-        headers      = ["Host", "Origin", "Upgrade", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol"]
+        # ⚠️ "Upgrade" 를 넣으면 안 된다 (2026-09-09 apply 실패로 확인).
+        #   InvalidArgument: The parameter Header Name with value Upgrade
+        #   is not allowed.
+        #
+        # CloudFront 공식 문서의 헤더 표에서 Upgrade 는
+        # "Caching based on header values is supported: No" 다.
+        # CloudFront 가 WebSocket 업그레이드를 직접 처리하기 때문에 화이트리스트에
+        # 넣을 수 없고, 넣을 필요도 없다.
+        #   https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+        #
+        # 같은 이유로 Connection, Transfer-Encoding, Cache-Control 등도 금지다.
+        # Sec-WebSocket-* 는 "Other-defined headers" 라 허용된다.
+        headers      = ["Host", "Origin", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol"]
         cookies { forward = "all" }
       }
 
@@ -113,7 +125,50 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   # API 경로들 → ALB
   dynamic "ordered_cache_behavior" {
-    for_each = ["/events*", "/seats*", "/auth*", "/queue*", "/rooms*", "/publish/*", "/reservations*"]
+    # ⚠️ 프론트엔드가 실제로 호출하는 경로를 전수 조사해서 맞춘 목록이다 (2026-09-09).
+    #
+    # 프론트는 API 를 상대경로로 부른다 (fetch("/membership/subscribe") 처럼).
+    # 개발 중에는 Vite 프록시가 백엔드로 넘겨주지만, S3 + CloudFront 로 배포하면
+    # 프록시가 없다. 여기에 없는 경로는 기본 동작(S3)으로 떨어지고, 파일이 없으니
+    # 403 -> custom_error_response 로 index.html 이 돌아온다.
+    # 즉 API 호출이 에러가 아니라 "HTML 을 JSON 으로 파싱 실패"로 나타나서
+    # 원인을 찾기 매우 어렵다.
+    #
+    # 조사 결과 빠져 있던 것: wishlist(4곳) membership(3) admin(2)
+    #                        event(단수, 1) api(1) actuator(1) prom-api(1)
+    #
+    # ■ 왜 api.queuing.kr 절대경로로 바꾸지 않는가
+    # 그러면 queuing.kr -> api.queuing.kr 이 교차 출처가 되어 CORS 설정이 필요하다.
+    # 찬규님 코드 주석에도 "Vite 프록시로 호출하므로 CORS 불필요"라고 되어 있다.
+    # CloudFront 가 같은 출처에서 ALB 로 넘겨주면 그 전제가 그대로 유지된다.
+    #
+    # ⚠️ "/event/*" 는 슬래시까지 포함한다. "/event*" 로 두면 "/events" 도 함께
+    #    걸려서 위의 "/events*" 와 겹친다.
+    # ■ 두 출처를 합친 목록이다 (2026-09-09)
+    #   찬규님   : vite.config.js 의 proxy 키 (개발 중 프록시가 넘기던 경로)
+    #   지예     : src/ 의 fetch/axios 호출 경로 전수
+    # 어느 한쪽만 보면 빠지는 게 있었다.
+    #   vite.config.js 에만 있던 것 : /sse /cancel-queue /health
+    #     (EventSource 로 부르는 것이라 fetch 정규식에 걸리지 않았다)
+    #   호출부에만 있던 것          : /api /actuator /prom-api
+    #
+    # ⚠️ "/queue*" 는 "/cancel-queue" 를 잡지 못한다. 경로 패턴은 앞에서부터
+    #    맞춰보기 때문이다. 둘 다 있어야 한다.
+    #
+    # ⚠️ "/event/*" 는 슬래시를 포함한다. "/event*" 로 두면 "/events" 까지
+    #    걸려 위의 "/events*" 와 겹친다. 같은 오리진이라 동작에는 지장이 없지만
+    #    중복이라 슬래시 형태로 둔다.
+    #
+    # ⚠️ CloudFront 의 캐시 동작 수 기본 한도는 25 개다.
+    #    지금 17(아래) + 2(/ws) + 1(기본) = 20 개. 더 늘리려면 한도 상향이 필요하다.
+    for_each = [
+      "/events*", "/event/*", "/seats*", "/auth*",
+      "/queue*", "/cancel-queue*",
+      "/rooms*", "/publish/*", "/reservations*",
+      "/wishlist*", "/membership*", "/admin*",
+      "/sse*", "/health*",
+      "/api/*", "/actuator/*", "/prom-api/*",
+    ]
     content {
       path_pattern     = ordered_cache_behavior.value
       allowed_methods  = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]

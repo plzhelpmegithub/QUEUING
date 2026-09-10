@@ -3,6 +3,26 @@
 # 기존 구조: C파트 자체 Redis + A파트 Redis(192.168.0.190) → 하나로 통합됨
 # AWS: 하나의 ElastiCache를 공유 (같은 VPC 안이라 분리 불필요)
 #
+# ■ 🔴 실제로 겪은 증상 (2026-09-09) — 이 파라미터 그룹이 없으면
+#
+# A파트가 EKS 에서 CrashLoopBackOff 로 죽었다. 로그는 이랬다.
+#
+#   [Redis] Connected
+#   ReplyError: ERR unknown command 'config', with args beginning with:
+#               'SET' 'notify-keyspace-events' 'Ex'
+#
+# 앱이 src/services/timerService.js:44 에서 CONFIG SET 을 직접 호출하는데
+# ElastiCache 가 CONFIG 명령 자체를 차단한다. src/app.js:81 에서 start() 의
+# 첫 줄이라 프로세스가 그대로 종료된다(Exit 1). DB 접속 코드(82줄)까지
+# 도달조차 못 한다.
+#
+# 아래 파라미터 그룹 덕분에 기능(키 만료 알림)은 정상이다. 앱 쪽에서 그 호출을
+# try/catch 로 감싸면 된다. 즉 이 파라미터 그룹은 "있으면 좋은 것"이 아니라
+# 없으면 A파트가 아예 뜨지 못하는 필수 요소다.
+#
+# 확인:
+#   aws elasticache describe-cache-parameters #     --cache-parameter-group-name ${var.project}-redis7-params #     --query "Parameters[?ParameterName=='notify-keyspace-events']"
+#
 # ■ 커스텀 파라미터 그룹이 필요한 이유
 # A파트(찬규님)의 "10분 결제 타이머 만료 → 좌석 자동 해제" 기능은 Redis
 # keyspace notification(notify-keyspace-events=Ex)에 의존함. self-hosted

@@ -33,14 +33,22 @@ resource "aws_ses_email_identity" "sender" {
 # 테라폼의 ses_smtp_password_v4 속성이 그 변환을 해준다. 예지 안에서 이 부분을
 # 정확히 짚어놓아 그대로 가져왔다.
 resource "aws_iam_user" "ses_smtp" {
+  # create_ses_smtp_user = false (기본) 이면 만들지 않는다.
+  # 파드에서 SES API 로 보내는 경로는 아래 IRSA 역할이 담당하고, 그쪽은
+  # 액세스 키가 필요 없다. SMTP 자격증명은 Grafana 처럼 SMTP 만 지원하는
+  # 프로그램을 SES 에 붙일 때만 필요하다.
+  count = var.create_ses_smtp_user ? 1 : 0
+
   name = "${var.project}-ses-smtp"
 
   tags = { Name = "${var.project}-ses-smtp" }
 }
 
 resource "aws_iam_user_policy" "ses_smtp" {
+  count = var.create_ses_smtp_user ? 1 : 0
+
   name = "${var.project}-ses-send"
-  user = aws_iam_user.ses_smtp.name
+  user = aws_iam_user.ses_smtp[0].name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -53,7 +61,9 @@ resource "aws_iam_user_policy" "ses_smtp" {
 }
 
 resource "aws_iam_access_key" "ses_smtp" {
-  user = aws_iam_user.ses_smtp.name
+  count = var.create_ses_smtp_user ? 1 : 0
+
+  user = aws_iam_user.ses_smtp[0].name
 }
 
 # ── 파드에서 IRSA 로 직접 보내는 경로 (SMTP 대신) ──
@@ -95,7 +105,26 @@ resource "aws_iam_role_policy" "ses_send" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["ses:SendEmail", "ses:SendRawEmail"]
+      # ⚠️ SNS 를 추가했다 (2026-09-09).
+      #
+      # A파트 src/services/notificationService.js 가 SES 뿐 아니라 SNS 도 쓴다.
+      #   const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+      #   await snsClient.send(new PublishCommand({ ... }))
+      #
+      # 원래 이 역할에는 ses:* 만 있어서, 알림을 보내는 순간 AccessDenied 가
+      # 났을 것이다. 배포 전에는 드러나지 않는 종류라 코드를 읽어보고서야 찾았다.
+      #
+      # ⚠️ 토픽은 테라폼이 만들지 않는다. 앱이 어떤 TopicArn 을 쓰는지 아직
+      #    확인되지 않았다(환경변수에도 없다). 토픽 이름이 정해지면
+      #    aws_sns_topic 을 추가하고 Resource 를 그 ARN 으로 좁힐 것.
+      #    지금은 계정 안의 토픽 전체가 대상이다.
+      Action = [
+        "ses:SendEmail",
+        "ses:SendRawEmail",
+        "sns:Publish",
+        "sns:GetTopicAttributes",
+        "sns:ListTopics",
+      ]
       Resource = "*"
     }]
   })

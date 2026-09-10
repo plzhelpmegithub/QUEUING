@@ -106,3 +106,26 @@ redis_num_replicas = 1 # 1 = Primary + Replica (Multi-AZ). 0 = 단일 노드
 flow_logs_enabled        = true
 flow_logs_traffic_type   = "ALL" # 비용이 부담되면 "REJECT"
 flow_logs_retention_days = 7
+
+# ──────────────────────────────────────────────
+# Jenkins (별도 EC2)
+# ──────────────────────────────────────────────
+jenkins_enabled       = true
+jenkins_instance_type = "t3.small"
+jenkins_volume_size   = 30
+
+# ⚠️ 기본값은 인터넷 전체에 열려 있다. 최초 설정 전 젠킨스는 비밀번호가 없다.
+#    사무실 공인 IP 로 좁히는 것을 권한다.
+# jenkins_allowed_cidr = ["118.131.22.85/32"]
+
+# ──────────────────────────────────────────────
+# IAM — 기본적으로 아무 사용자도 만들지 않는다
+#
+# 팀원 계정(chan / choi / geonah / yeji)은 콘솔에서 이미 만들어 배포한 상태다.
+# ──────────────────────────────────────────────
+create_team_iam_users = false
+create_ses_smtp_user  = false
+
+# terraform apply 를 실행하는 사용자. Access Entry 대상에서 제외된다
+# (클러스터 생성자로서 자동으로 관리자 권한을 받는다).
+terraform_operator_username = "choi"

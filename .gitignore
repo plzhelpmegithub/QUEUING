@@ -1,0 +1,14 @@
+
+# ──────────────────────────────────────────────
+# 팀원 브랜치에서 읽기 전용으로 꺼내둔 사본
+#
+# 다른 사람의 차트/코드를 참고하려고 git archive 로 꺼낸 것들이다.
+# 내 브랜치에 커밋하면 남의 코드가 내 히스토리에 복제되어, 원본과
+# 어긋나기 시작하고 누가 무엇을 고쳤는지도 흐려진다.
+# 필요하면 언제든 다시 꺼낼 수 있다:
+#   git archive origin/feature/chan redis-api-chart | tar -x -C chan-chart --strip-components=1
+# ──────────────────────────────────────────────
+/chan-chart/
+/yeji-chart/
+/geonah-chart/
+/tf-ref/

@@ -14,10 +14,10 @@
 resource "aws_security_group" "alb" {
   name_prefix = "${var.project}-alb-"
   vpc_id      = aws_vpc.main.id
-  description = "ALB - 인터넷에서 오는 HTTP/HTTPS 수신"
+  description = "ALB - inbound HTTP/HTTPS from internet"
 
   ingress {
-    description = "HTTP - 443 리다이렉트용. 실제 라우팅은 하지 않는다"
+    description = "HTTP 80 - redirects to 443, no routing here"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -25,7 +25,7 @@ resource "aws_security_group" "alb" {
   }
 
   ingress {
-    description = "HTTPS - api.queuing.kr 진입점. C파트 wss:// 도 여기로 들어온다"
+    description = "HTTPS 443 - api entry point, includes C part websocket"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -33,7 +33,7 @@ resource "aws_security_group" "alb" {
   }
 
   egress {
-    description = "타겟그룹(워커 노드 NodePort)으로 전달 + 헬스체크"
+    description = "Forward to target groups (worker NodePort) and health checks"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -49,10 +49,10 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "eks_nodes" {
   name_prefix = "${var.project}-eks-nodes-"
   vpc_id      = aws_vpc.main.id
-  description = "EKS 워커 노드 - ALB 의 NodePort 트래픽과 노드 간 통신"
+  description = "EKS worker nodes - NodePort from ALB and node to node"
 
   ingress {
-    description     = "NodePort 범위 - ALB 에서만. 인터넷에서 노드로 직접은 불가"
+    description     = "NodePort range - from ALB only, not from internet"
     from_port       = 30000
     to_port         = 32767
     protocol        = "tcp"
@@ -60,7 +60,7 @@ resource "aws_security_group" "eks_nodes" {
   }
 
   ingress {
-    description = "노드 간 통신 - 파드 사이 통신과 kube-proxy 가 여기에 의존"
+    description = "Node to node - pod networking and kube-proxy depend on this"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -68,7 +68,7 @@ resource "aws_security_group" "eks_nodes" {
   }
 
   egress {
-    description = "ElastiCache/RDS + NAT 경유 외부(ECR, SQS, SES, D-Cloud DB)"
+    description = "ElastiCache/RDS and outbound via NAT (ECR, SQS, SES, D-Cloud DB)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -84,10 +84,10 @@ resource "aws_security_group" "eks_nodes" {
 resource "aws_security_group" "redis" {
   name_prefix = "${var.project}-redis-"
   vpc_id      = aws_vpc.main.id
-  description = "ElastiCache Redis - EKS 노드에서만 6379"
+  description = "ElastiCache Redis - 6379 from EKS nodes only"
 
   ingress {
-    description     = "Redis 6379 - EKS 노드에서만. 대기열/좌석/채팅 데이터"
+    description     = "Redis 6379 from EKS nodes - queue, seats, chat data"
     from_port       = 6379
     to_port         = 6379
     protocol        = "tcp"
@@ -95,7 +95,7 @@ resource "aws_security_group" "redis" {
   }
 
   egress {
-    description = "복제(Primary-Replica) 통신"
+    description = "Replication traffic (primary to replica)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -141,7 +141,7 @@ resource "aws_security_group" "rds" {
   }
 
   egress {
-    description = "RDS 자체 아웃바운드(백업/모니터링). 실사용은 인바운드뿐"
+    description = "RDS outbound (backup and monitoring), inbound is what matters"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

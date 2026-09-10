@@ -30,12 +30,22 @@
 
 resource "aws_secretsmanager_secret" "api" {
   name        = "${var.project}/api-secrets"
-  description = "QUEUING 애플리케이션 시크릿 (DB, SMTP, reCAPTCHA)"
+  description = "QUEUING application secrets (DB, SMTP, reCAPTCHA)"
 
-  # 삭제 후 7일 내에는 복구할 수 있다. 0 으로 두면 즉시 삭제된다.
-  # ⚠️ 같은 이름으로 다시 만들려면 복구 대기 기간이 끝나야 한다 —
-  #    destroy 후 바로 apply 하면 "scheduled for deletion" 오류가 난다.
-  recovery_window_in_days = 7
+  # ⚠️ 0 이어야 한다 (2026-09-09 수정). 원래 7 이었다.
+  #
+  # 7 로 두면 destroy 가 시크릿을 "7일 뒤 삭제 예정"으로만 표시하고 실제로는
+  # 남겨둔다. 그 상태에서 다시 apply 하면 같은 이름을 만들 수 없어 실패한다.
+  #
+  #   InvalidRequestException: You can not create this secret because
+  #   a secret with this name is already scheduled for deletion.
+  #
+  # 하루에도 여러 번 apply/destroy 하는 지금 방식에서는 두 번째 apply 부터
+  # 무조건 막힌다. 0 은 즉시 삭제라 그 문제가 없다.
+  #
+  # ⚠️ 실서비스로 넘어가면 7 이상으로 되돌릴 것. 실수로 지웠을 때 복구할
+  #    유일한 수단이다.
+  recovery_window_in_days = var.environment == "prod" ? 7 : 0
 
   tags = { Name = "${var.project}-api-secrets" }
 }
@@ -61,7 +71,7 @@ resource "aws_secretsmanager_secret_version" "api" {
 # 생겼을 때 자동으로 읽히지 않게 하기 위함이다.
 resource "aws_iam_policy" "secrets_read" {
   name        = "${var.project}-secrets-read"
-  description = "QUEUING api-secrets 읽기 전용"
+  description = "Read-only access to QUEUING api-secrets"
 
   policy = jsonencode({
     Version = "2012-10-17"

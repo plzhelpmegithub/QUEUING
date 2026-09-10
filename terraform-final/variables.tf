@@ -165,12 +165,13 @@ variable "team_members" {
     AWS IAM 계정을 만들 팀원 목록과, 각자 편집 권한을 가질 네임스페이스.
 
     ⚠️ namespaces 를 part 에서 유추하지 않고 직접 적는다.
-    처음에는 "queuing-${part}" 로 만들었는데 실제 클러스터와 어긋났다.
+    처음에는 "queuing-<파트문자>" 로 유추해서 만들었는데 실제 클러스터와 어긋났다.
+    (여기에 달러+중괄호를 그대로 쓰면 Terraform 이 보간하려 들어 plan 이 깨진다)
     온프레미스 매니페스트를 확인한 결과는 이렇다.
-      A 찬규 : queuing-a                      (일치)
-      C 지예 : realtime                        ← queuing-c 가 아니다
-      D 예지 : monitoring, redis, queuing-d    ← 세 개를 쓴다
-      B 건아 : queuing-b                      (확인 완료)
+      chan   (A 찬규) : queuing-a
+      geonah (B 건아) : queuing-b
+      choi   (C 지예) : realtime  ← queuing-c 가 아니다
+      yeji   (D 예지) : monitoring, redis, queuing-d  ← 세 개
 
     ⚠️ AWS 는 네임스페이스 이름의 존재와 철자를 검증하지 않는다.
     "Amazon EKS doesn't confirm the spelling or existence of the namespaces
@@ -187,35 +188,34 @@ variable "team_members" {
   }))
 
   default = [
-    # 최지예 — C파트 (실시간 WebSocket)
+    # ⚠️ username 은 실제 IAM 사용자 이름과 정확히 같아야 한다.
+    # 2026-09-09 콘솔에서 확인한 실제 이름으로 맞췄다 (chan / choi / geonah / yeji).
+    # 처음에는 jiye-c, chankyu-a 처럼 파트를 붙인 이름으로 적어뒀었는데
+    # 실제와 달랐다. 이름이 다르면 없는 사용자에게 권한을 주는 셈이 된다.
+    #   aws iam list-users --query 'Users[].UserName' --output table
+
+    # 정찬규 — A파트 (예매 대기열)
+    { username = "chan", part = "a", namespaces = ["queuing-a"] },
+
+    # 김건아 — B파트 (재판매/멤버십)
+    { username = "geonah", part = "b", namespaces = ["queuing-b"] },
+
+    # 최지예 — C파트 (실시간 WebSocket) + 인프라
     #
     # ■ 결정: realtime 을 queuing-c 로 바꾸지 않는다 (2026-09-09)
     #   realtime 에는 C파트 앱만 있는 게 아니라 팀 공용 Redis(redis-master)도 있다.
     #   찬규님 차트가 redis-master.realtime.svc.cluster.local 을 가리키므로 Redis 는
-    #   옮길 수 없고, 앱만 옮기면 네임스페이스가 두 개로 갈린다. 이름 통일 말고
-    #   얻는 것이 없는데 NodePort 30081 중복 때문에 다운타임이 생기고 ArgoCD
-    #   destination 도 고쳐야 한다. 그래서 realtime 을 그대로 쓴다.
+    #   옮길 수 없고, 앱만 옮기면 네임스페이스가 두 개로 갈린다.
     #
-    # realtime  : 실제 운영 네임스페이스 (Helm 릴리즈 + 팀 공용 Redis)
-    # queuing-c : 지금은 만들지 않는다. 나중에 이름을 맞추기로 하면 그때
-    #             네임스페이스만 만들면 권한은 이미 있다. 없는 네임스페이스에
-    #             권한을 줘도 AWS 는 오류를 내지 않는다(존재 검증을 하지 않음).
-    # argocd    : 인프라 담당이라 ArgoCD Application 을 관리한다
-    { username = "jiye-c", part = "c", namespaces = ["realtime", "queuing-c", "argocd"] },
-
-    # 정찬규 — A파트 (예매 대기열)
-    { username = "chankyu-a", part = "a", namespaces = ["queuing-a"] },
-
-    # 김건아 — B파트 (재판매/멤버십)
-    # queuing-b 로 확인됐다 (2026-09-09, 지예님 VM 에서 동작 중).
-    # 매니페스트에는 네임스페이스가 없고 Helm 릴리즈 시점에 정해지는 구조다.
-    { username = "geona-b", part = "b", namespaces = ["queuing-b"] },
+    # ⚠️ 이 사람이 terraform apply 를 실행하면 아래 Access Entry 에서 제외된다.
+    #    terraform_operator_username 설명 참고.
+    { username = "choi", part = "c", namespaces = ["realtime", "queuing-c", "argocd"] },
 
     # 최예지 — D파트 (관측성/카운터)
     # monitoring : Prometheus·Alertmanager·ServiceMonitor
     # redis      : redis-counter StatefulSet 과 PVC
     # queuing-d  : 카운터 앱
-    { username = "yeji-d", part = "d", namespaces = ["monitoring", "redis", "queuing-d"] },
+    { username = "yeji", part = "d", namespaces = ["monitoring", "redis", "queuing-d"] },
   ]
 }
 
@@ -269,8 +269,22 @@ variable "db_username" {
 }
 
 variable "db_password" {
-  description = "RDS 마스터 비밀번호 — terraform.tfvars 또는 TF_VAR_db_password 로 전달. 커밋 금지"
+  description = <<-DESC
+    RDS 마스터 비밀번호.
+
+    ⚠️ 기본값이 빈 문자열이다. use_rds = false (현재 기본값)이면 RDS 를 만들지
+    않으므로 값이 필요 없는데, secrets.tf 의 삼항 연산자가 양쪽 branch 를 모두
+    평가하기 때문에 값 자체는 있어야 한다. 빈 문자열로 두면 plan 이 묻지 않는다.
+
+    use_rds = true 로 바꿀 때는 반드시 채워야 한다. 안 채우면 rds.tf 의
+    precondition 이 apply 를 막는다.
+
+    ⚠️ terraform.tfvars 에 적지 말고 환경변수로 넘기는 편이 안전하다.
+      export TF_VAR_db_password='...'
+    어느 쪽이든 tfstate 에는 평문으로 남는다.
+  DESC
   type        = string
+  default     = ""
   sensitive   = true
 }
 
@@ -408,4 +422,137 @@ variable "health_check_path_ws" {
   description = "C파트 ALB 헬스체크 경로. 온프레미스 livenessProbe 와 같은 경로다."
   type        = string
   default     = "/healthz"
+}
+
+# ──────────────────────────────────────────────
+# 팀원 IAM 계정을 테라폼으로 만들지 여부
+# ──────────────────────────────────────────────
+
+variable "create_team_iam_users" {
+  description = <<-DESC
+    false (기본) = 팀원 IAM 계정을 만들지 않는다.
+      2026-09-09 현재 상태다. 콘솔에서 직접 만들어 전달하고 PowerUserAccess 를
+      부여한 상태이므로 테라폼이 또 만들 필요가 없다.
+      이 값이 false 여도 eks_access.tf 의 EKS 접근 권한은 정상 동작한다
+      (계정 ID + 사용자 이름으로 ARN 을 조립해서 연결한다).
+
+    true = 사용자 · 콘솔 비밀번호 · 액세스 키 · 그룹을 테라폼이 만든다.
+      ⚠️ 같은 이름의 사용자가 이미 있으면 apply 가 EntityAlreadyExists 로 실패한다.
+      ⚠️ 비밀번호와 액세스 키가 tfstate 에 평문으로 기록된다.
+      켜려면 콘솔에서 만든 사용자를 먼저 지우거나 terraform import 할 것.
+
+    ⚠️ 어느 쪽이든 team_members 의 username 은 실제 IAM 사용자 이름과
+       정확히 같아야 한다. 확인 방법:
+         aws iam list-users --query 'Users[].UserName' --output table
+  DESC
+  type        = bool
+  default     = false
+}
+
+variable "create_ses_smtp_user" {
+  description = <<-DESC
+    false (기본) = SES SMTP 전용 IAM 사용자와 액세스 키를 만들지 않는다.
+      파드가 SES API 로 메일을 보내는 경로는 IRSA 역할(ses.tf)이 담당하고,
+      그쪽은 액세스 키가 필요 없다.
+
+    true = SMTP 자격증명을 만든다.
+      Grafana 처럼 SMTP 만 지원하는 프로그램을 SES 에 붙일 때 필요하다.
+      지금 Grafana 알림은 Gmail SMTP 를 쓰고 있어서 필요 없는 상태다.
+      A·B파트 앱이 SDK 가 아니라 SMTP 로 메일을 보낸다면 true 로 둘 것.
+
+      terraform output -raw ses_smtp_password
+  DESC
+  type        = bool
+  default     = false
+}
+
+
+variable "terraform_operator_username" {
+  description = <<-DESC
+    terraform apply 를 실행하는 IAM 사용자 이름. 이 사람은 Access Entry 대상에서
+    제외된다.
+
+    ■ 왜 제외하나
+    eks.tf 의 bootstrap_cluster_creator_admin_permissions = true 때문에, 클러스터를
+    만든 주체에게는 EKS 가 자동으로 클러스터 관리자 Access Entry 를 붙여준다.
+    Access Entry 는 (클러스터, principal ARN) 조합으로 유일하므로, 같은 사람에게
+    테라폼이 또 만들려 하면 이미 있는 항목과 충돌한다.
+
+    또한 인프라 담당은 네임스페이스 하나로 묶으면 곤란하다 — 클러스터 전체
+    관리자여야 애드온·노드그룹·다른 파트 문제를 손볼 수 있다. 자동으로 붙는
+    관리자 권한이 그 역할에 맞다.
+
+    ■ 다른 계정으로 apply 한다면
+    그 사용자 이름으로 바꾼다. 빈 문자열("")로 두면 아무도 제외하지 않는다.
+    현재 값이 실제 실행 주체와 다르면 apply 중에 충돌이 날 수 있다.
+
+    확인:
+      aws sts get-caller-identity
+  DESC
+  type        = string
+  default     = "choi"
+}
+
+# ──────────────────────────────────────────────
+# Jenkins (별도 EC2)
+# ──────────────────────────────────────────────
+
+variable "jenkins_enabled" {
+  description = "true 면 Jenkins 용 EC2 를 만든다 (jenkins.tf). 월 약 $15~30."
+  type        = bool
+  default     = true
+}
+
+variable "jenkins_instance_type" {
+  description = <<-DESC
+    Jenkins EC2 크기.
+    t3.small  (2 vCPU / 2Gi) — 빌드가 가벼우면 충분. 월 약 $15
+    t3.medium (2 vCPU / 4Gi) — 도커 빌드가 무거우면. 월 약 $30
+  DESC
+  type        = string
+  default     = "t3.small"
+}
+
+variable "jenkins_volume_size" {
+  description = <<-DESC
+    Jenkins EBS 크기(GiB). 도커 이미지 레이어가 쌓이는 곳이라 넉넉해야 한다.
+    온프레미스에서 워커 노드 디스크가 83% 까지 찼던 적이 있다.
+    ⚠️ delete_on_termination = false 라서 인스턴스를 지워도 볼륨은 남는다.
+       필요 없어지면 콘솔에서 직접 지울 것.
+  DESC
+  type        = number
+  default     = 30
+}
+
+variable "jenkins_allowed_cidr" {
+  description = <<-DESC
+    Jenkins 웹 UI(8080)에 접속할 수 있는 주소 목록.
+
+    ⚠️ 기본값 0.0.0.0/0 은 인터넷 전체에 열린다. 최초 설정 전까지 젠킨스는
+       비밀번호가 없는 상태라 위험하다. 팀 사무실 공인 IP 로 좁히는 것을 권한다.
+         jenkins_allowed_cidr = ["118.131.22.85/32"]
+       (온프레미스에서 D-Cloud 가 이 주소로 접속을 인식하고 있었다)
+
+    ⚠️ 깃허브 웹훅을 쓰려면 깃허브 IP 대역도 열어야 한다. 대신 젠킨스에서
+       주기적으로 폴링하게 하면 인바운드를 열지 않아도 된다.
+  DESC
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "nat_eip_allocation_id" {
+  description = <<-DESC
+    이미 있는 EIP 를 NAT 게이트웨이에 재사용한다. 비우면 새로 만든다.
+
+    ⚠️ 근거 정정 (2026-09-09)
+    원래 "D-Cloud 화이트리스트 때문에 필수"라고 적었는데 틀렸다. team2 계정이
+    team2@% 라 어느 IP 에서든 붙는다(outputs.tf 의 dcloud_db_access 참고).
+    필수는 아니지만, 아웃바운드 주소가 매번 바뀌지 않는 편이 로그 대조나
+    나중의 IP 기반 연동에 유리해서 그대로 둔다.
+
+    현재 EIP 를 계속 쓰는 방법은 vpc.tf 의 aws_eip.nat 주석 참고.
+    붙어 있지 않은 EIP 는 시간당 $0.005 (월 약 $3.6).
+  DESC
+  type        = string
+  default     = ""
 }

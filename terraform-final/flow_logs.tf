@@ -32,6 +32,23 @@
 #   flow_logs_enabled = false
 # ──────────────────────────────────────────────
 
+# ⚠️ destroy 후 다시 apply 하면 여기서 막힐 수 있다 (2026-09-09 실제로 겪음)
+#
+#   ResourceAlreadyExistsException: The specified log group already exists
+#
+# 테라폼이 destroy 때 이 그룹을 지우지만, VPC Flow Logs 서비스가 마지막 배치를
+# 쓰면서 같은 이름으로 다시 만들어버리는 경우가 있다. CloudWatch 로그 그룹은
+# 쓰는 쪽이 없으면 자동 생성되기 때문이다. 그러면 AWS 에는 있고 상태에는 없는
+# 상태가 되어 다음 apply 가 실패한다.
+#
+# ■ 막혔을 때
+#   aws logs delete-log-group --log-group-name /aws/vpc-flow-logs/${var.project}
+#   terraform apply        # 나머지는 이어서 만들어진다
+#
+# ■ 예방 — destroy 할 때 Flow Log 를 먼저 지운다
+#   terraform destroy -target=aws_flow_log.vpc
+#   terraform destroy
+# 그러면 로그를 쓰는 주체가 먼저 사라져서 그룹이 되살아나지 않는다.
 resource "aws_cloudwatch_log_group" "flow_logs" {
   count = var.flow_logs_enabled ? 1 : 0
 

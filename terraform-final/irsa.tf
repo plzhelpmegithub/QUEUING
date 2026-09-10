@@ -130,3 +130,83 @@ resource "aws_iam_role_policy" "keda_sqs" {
     }]
   })
 }
+
+# ──────────────────────────────────────────────
+# ArgoCD Image Updater — ECR 태그 조회 권한
+#
+# ■ 왜 필요한가
+# 온프레미스에서는 Docker Hub 를 보고 있어서 인증이 없어도 태그 목록을 읽을 수
+# 있었다. ECR 은 프라이빗이라 인증이 필요하다.
+#
+# 그런데 ECR 인증 토큰은 12시간마다 만료된다. Secret 에 토큰을 한 번 넣어두는
+# 방식으로는 반나절 뒤 조용히 멈춘다 — "왜 새 이미지를 안 잡지" 하고 한참
+# 헤매게 되는 종류의 고장이다. IRSA 로 주면 SDK 가 알아서 갱신한다.
+#
+# ■ 읽기만 준다
+# Image Updater 는 "새 태그가 있는지" 보기만 하면 된다. push 권한은 젠킨스
+# (jenkins.tf) 쪽에만 있다.
+#
+# ■ 배포 후 연결
+#   kubectl -n argocd annotate serviceaccount argocd-image-updater \
+#     eks.amazonaws.com/role-arn=$(terraform output -raw argocd_image_updater_role_arn)
+#   kubectl -n argocd rollout restart deployment argocd-image-updater
+#
+#   그리고 Application 어노테이션의 이미지 주소를 ECR 로 바꾼다.
+#     argocd-image-updater.argoproj.io/image-list: ws=<ECR주소>/queuing/realtime-ws
+#
+# ■ ServiceAccount 이름
+# argocd-image-updater Helm 차트의 기본값이다. 다르게 깔았으면 아래 sub 조건을
+# 실제 이름으로 맞춰야 한다 — 이름이 틀리면 역할을 맡지 못하고, 그때도
+# 조용히 실패한다.
+# ──────────────────────────────────────────────
+
+resource "aws_iam_role" "argocd_image_updater" {
+  name = "${var.project}-argocd-image-updater"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.eks.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${local.oidc_host}:sub" = "system:serviceaccount:argocd:argocd-image-updater"
+          "${local.oidc_host}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  tags = { Name = "${var.project}-argocd-image-updater" }
+}
+
+resource "aws_iam_role_policy" "argocd_image_updater" {
+  name = "ecr-read"
+  role = aws_iam_role.argocd_image_updater.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # 계정 범위 동작이라 저장소로 좁힐 수 없다.
+        Sid      = "ECRLogin"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRRead"
+        Effect = "Allow"
+        Action = [
+          "ecr:DescribeImages",
+          "ecr:ListImages",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability",
+        ]
+        Resource = [for r in aws_ecr_repository.part : r.arn]
+      },
+    ]
+  })
+}

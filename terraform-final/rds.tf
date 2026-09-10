@@ -49,6 +49,16 @@ resource "aws_db_instance" "mariadb" {
   db_name  = var.db_name
   username = var.db_username
   password = var.db_password
+
+  # use_rds = true 인데 비밀번호가 비어 있으면 여기서 멈춘다.
+  # 없으면 AWS 가 InvalidParameterValue 로 거부하는데, 그 메시지만 봐서는
+  # 무엇을 안 채웠는지 알기 어렵다.
+  lifecycle {
+    precondition {
+      condition     = var.db_password != ""
+      error_message = "use_rds = true 이면 db_password 를 채워야 한다. export TF_VAR_db_password='...' 또는 terraform.tfvars 에 넣을 것."
+    }
+  }
   port     = 3306
 
   db_subnet_group_name   = aws_db_subnet_group.main[0].name

@@ -28,7 +28,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   provider = aws.us_east_1
 
   name        = "${var.project}-cloudfront-waf"
-  description = "QUEUING 프론트엔드 WAF"
+  description = "QUEUING frontend WAF"
   scope       = "CLOUDFRONT"
 
   # 규칙에 걸리지 않은 요청은 통과시킨다 (allow-list 가 아니라 block-list 방식).

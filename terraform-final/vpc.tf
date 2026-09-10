@@ -81,7 +81,34 @@ resource "aws_subnet" "private" {
 #
 # NAT Instance(t3.micro, 월 ~$8.5) 대신 Gateway(월 ~$32)를 쓴다. 네 사람 중
 # 두 사람이 Gateway 로 설계했고, EC2 한 대가 단일 장애점이 되는 것을 피한다.
+# ⚠️ NAT 의 공인 IP 를 고정해두는 이유 (2026-09-09 근거 정정)
+#
+# 원래 여기에 "D-Cloud 화이트리스트에 등록된 주소라 바뀌면 안 된다"고 적었는데
+# 그 전제가 틀렸다. 실측해보니 team2 계정의 호스트가 % 라서 어느 IP 에서든
+# 접속된다(outputs.tf 의 dcloud_db_access 참고). 등록 절차 자체가 없었다.
+#
+# 그래도 고정해두는 편이 낫다.
+#   - 나중에 D-Cloud 나 다른 외부 서비스가 출발지 IP 를 요구할 때 대비가 된다
+#   - 아웃바운드 주소가 매번 바뀌면 Flow Logs 나 상대 서버 로그를 대조하기 어렵다
+#   - 붙어 있지 않은 EIP 요금은 월 약 $3.6 로 크지 않다
+#
+# destroy 하면 테라폼이 관리하는 EIP 는 반납되고 다시 apply 하면 새 주소를 받는다.
+#
+# nat_eip_allocation_id 에 기존 EIP 의 할당 ID 를 넣으면 그걸 재사용하고,
+# 새로 만들지 않는다. destroy 해도 그 EIP 는 테라폼 관리 밖이라 남는다.
+# 붙어 있지 않은 EIP 는 시간당 $0.005(월 약 $3.6) 가 든다 — 재등록 수고에
+# 비하면 싸다.
+#
+# ■ 지금 만들어진 EIP 를 계속 쓰려면
+#   1) 할당 ID 확인
+#        terraform state show aws_eip.nat | grep "^    id"
+#   2) 테라폼 관리에서 떼어낸다 (AWS 에서는 지워지지 않는다)
+#        terraform state rm aws_eip.nat
+#   3) terraform.tfvars 에 넣는다
+#        nat_eip_allocation_id = "eipalloc-xxxxxxxx"
 resource "aws_eip" "nat" {
+  count = var.nat_eip_allocation_id == "" ? 1 : 0
+
   domain = "vpc"
 
   tags = { Name = "${var.project}-nat-eip" }
@@ -90,7 +117,9 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
+  # 변수가 비어 있으면 위에서 만든 EIP 를, 있으면 기존 것을 쓴다.
+  # one() 은 빈 목록에 null 을 준다 — 삼항이 양쪽을 다 평가해도 안전하다.
+  allocation_id = var.nat_eip_allocation_id != "" ? var.nat_eip_allocation_id : one(aws_eip.nat[*].id)
   subnet_id     = aws_subnet.public[0].id
 
   tags = { Name = "${var.project}-nat" }
