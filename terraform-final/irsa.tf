@@ -131,6 +131,35 @@ resource "aws_iam_role_policy" "keda_sqs" {
   })
 }
 
+# ══════════════════════════════════════════════
+# 🔴 IRSA 는 파드를 다시 만들어야 적용된다 (2026-09-10 실제로 겪음)
+#
+# ServiceAccount 에 eks.amazonaws.com/role-arn 어노테이션을 붙여도, 이미 떠
+# 있는 파드에는 소급 적용되지 않는다. EKS 의 Pod Identity Webhook 이 파드가
+# "생성되는 순간"에만 토큰 볼륨과 AWS_ROLE_ARN 환경변수를 주입하기 때문이다.
+#
+# ■ 증상 — 역할이 아니라 노드 역할로 떨어진다
+#   AccessDenied: User: arn:aws:sts::...:assumed-role/queuing-eks-node-role/i-0c79...
+#   is not authorized to perform: sqs:getqueueattributes
+#
+#   어노테이션은 분명히 붙어 있는데 노드 역할이 찍혀서 한참 헤맨다.
+#   SDK 가 IRSA 자격증명을 못 찾고 IMDS(인스턴스 프로파일)로 넘어간 것이다.
+#
+# ■ 확인 — 파드에 실제로 주입됐는지 본다
+#   kubectl -n <ns> get pod <파드> -o jsonpath="{.spec.containers[0].env[?(@.name=='AWS_ROLE_ARN')].value}"
+#   kubectl -n <ns> get pod <파드> -o jsonpath="{.spec.volumes[*].name}"
+#   → AWS_ROLE_ARN 이 비었거나 aws-iam-token 볼륨이 없으면 주입 실패다.
+#
+# ■ 해결
+#   kubectl -n <ns> rollout restart deploy <디플로이먼트>
+#
+# ■ 순서를 지키면 애초에 안 겪는다
+#   1) ServiceAccount 를 어노테이션과 함께 먼저 만든다 (차트 values 로)
+#   2) 그다음 워크로드를 배포한다
+#   차트가 SA 를 만드는 구조라 순서를 못 정하면, 배포 -> annotate -> restart
+#   순으로 하고 restart 를 빠뜨리지 않는다.
+# ══════════════════════════════════════════════
+
 # ──────────────────────────────────────────────
 # ArgoCD Image Updater — ECR 태그 조회 권한
 #
