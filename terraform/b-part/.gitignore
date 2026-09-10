@@ -1,0 +1,9 @@
+# Terraform local state - never commit, contains resource IDs and
+# can conflict across teammates. Only the .tf code is shared via git.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+crash.log
+crash.*.log
