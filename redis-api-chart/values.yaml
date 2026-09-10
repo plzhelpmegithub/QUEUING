@@ -202,7 +202,7 @@ recaptcha:
   enabled: true
   required: true
   scoreThreshold: "0.5"
-  allowedHostnames: "localhost"
+  allowedHostnames: "queuing.kr,www.queuing.kr"
   v2Fallback: true
   secret:
     name: "recaptcha-credentials"
