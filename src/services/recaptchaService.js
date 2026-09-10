@@ -15,11 +15,17 @@ function getSecretKey() {
   return String(process.env.RECAPTCHA_SECRET_KEY || '').trim();
 }
 
+function getV2SecretKey() {
+  return String(process.env.RECAPTCHA_V2_SECRET_KEY || '').trim();
+}
+
 function isEnabled() {
-  // A secret key enables verification by default. Setting REQUIRED=false is a
-  // deliberate rollback switch for local troubleshooting.
   if (String(process.env.RECAPTCHA_REQUIRED || '').trim().toLowerCase() === 'false') return false;
   return Boolean(getSecretKey());
+}
+
+function isV2Enabled() {
+  return Boolean(getV2SecretKey());
 }
 
 function allowedHostnames() {
@@ -29,10 +35,10 @@ function allowedHostnames() {
     .filter(Boolean);
 }
 
-function verifyWithGoogle(token, remoteIp) {
+function verifyWithGoogle(token, secretKey, remoteIp) {
   return new Promise((resolve, reject) => {
     const params = new URLSearchParams({
-      secret: getSecretKey(),
+      secret: secretKey,
       response: token,
     });
     if (remoteIp) params.set('remoteip', remoteIp);
@@ -82,7 +88,7 @@ async function verifyRecaptcha({ token, expectedAction, remoteIp } = {}) {
 
   let result;
   try {
-    result = await verifyWithGoogle(token, remoteIp);
+    result = await verifyWithGoogle(token, getSecretKey(), remoteIp);
   } catch (error) {
     console.error('[reCAPTCHA] Google 검증 요청 실패:', error.message);
     return { ok: false, reason: 'verification-unavailable', message: '보안 인증 서버에 연결하지 못했습니다. 잠시 후 다시 시도해주세요.' };
@@ -98,6 +104,9 @@ async function verifyRecaptcha({ token, expectedAction, remoteIp } = {}) {
 
   const scoreThreshold = Number(process.env.RECAPTCHA_SCORE_THRESHOLD || DEFAULT_SCORE_THRESHOLD);
   if (Number.isFinite(scoreThreshold) && Number(result.score) < scoreThreshold) {
+    if (isV2Enabled()) {
+      return { ok: false, reason: 'low-score', needsV2: true, message: '추가 보안 인증이 필요합니다.' };
+    }
     return { ok: false, reason: 'low-score', message: '자동화된 요청으로 판단되어 요청을 진행할 수 없습니다.' };
   }
 
@@ -114,8 +123,53 @@ async function verifyRecaptcha({ token, expectedAction, remoteIp } = {}) {
   };
 }
 
+async function verifyRecaptchaV2({ token, remoteIp } = {}) {
+  if (!isV2Enabled()) {
+    return { ok: false, reason: 'v2-not-configured', message: 'reCAPTCHA v2가 설정되지 않았습니다.' };
+  }
+
+  if (!token) {
+    return { ok: false, reason: 'missing-token', message: 'reCAPTCHA v2 인증이 필요합니다.' };
+  }
+
+  let result;
+  try {
+    result = await verifyWithGoogle(token, getV2SecretKey(), remoteIp);
+  } catch (error) {
+    console.error('[reCAPTCHA v2] Google 검증 요청 실패:', error.message);
+    return { ok: false, reason: 'verification-unavailable', message: '보안 인증 서버에 연결하지 못했습니다.' };
+  }
+
+  if (!result.success) {
+    return { ok: false, reason: 'verification-failed', message: '체크박스 인증에 실패했습니다. 다시 시도해주세요.' };
+  }
+
+  const hosts = allowedHostnames();
+  if (hosts.length > 0 && (!result.hostname || !hosts.includes(String(result.hostname).toLowerCase()))) {
+    return { ok: false, reason: 'hostname-mismatch', message: '등록되지 않은 사이트에서 발생한 요청입니다.' };
+  }
+
+  return { ok: true, hostname: result.hostname };
+}
+
 async function guardRecaptcha(request, reply, expectedAction) {
   const body = request.body || {};
+
+  if (body.recaptchaV2Token) {
+    const v2Result = await verifyRecaptchaV2({
+      token: body.recaptchaV2Token,
+      remoteIp: request.ip,
+    });
+    if (v2Result.ok) return true;
+    reply.status(403).send({
+      success: false,
+      code: 'recaptcha_failed',
+      reason: v2Result.reason,
+      message: v2Result.message,
+    });
+    return false;
+  }
+
   const result = await verifyRecaptcha({
     token: body.recaptchaToken,
     expectedAction,
@@ -123,6 +177,15 @@ async function guardRecaptcha(request, reply, expectedAction) {
   });
 
   if (result.ok) return true;
+
+  if (result.needsV2) {
+    reply.status(403).send({
+      success: false,
+      code: 'recaptcha_v2_required',
+      message: result.message,
+    });
+    return false;
+  }
 
   reply.status(403).send({
     success: false,
@@ -136,5 +199,7 @@ async function guardRecaptcha(request, reply, expectedAction) {
 module.exports = {
   guardRecaptcha,
   isEnabled,
+  isV2Enabled,
   verifyRecaptcha,
+  verifyRecaptchaV2,
 };

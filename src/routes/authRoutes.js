@@ -1,5 +1,11 @@
-const { register, login, listUsers, updateProfile } = require('../services/authService');
+const { register, login, listUsers, updateProfile, deleteAccount } = require('../services/authService');
 const { guardRecaptcha } = require('../services/recaptchaService');
+const {
+  issueTokenPair,
+  isEnabled: isAuthEnabled,
+  verifyRefreshToken,
+} = require('../services/authTokenService');
+const { authenticate, requireRole, requireSelf } = require('../middleware/auth');
 
 async function authRoutes(fastify) {
 
@@ -28,11 +34,56 @@ async function authRoutes(fastify) {
       return reply.status(400).send({ error: 'userId와 password는 필수입니다.' });
     }
     const result = await login(userId, password);
-    const statusCode = result.success ? 200 : 401;
-    return reply.status(statusCode).send(result);
+    if (!result.success) {
+      return reply.status(401).send(result);
+    }
+    if (!isAuthEnabled()) {
+      return reply.status(503).send({
+        success: false,
+        code: 'auth_not_configured',
+        message: '서버 인증 설정이 완료되지 않았습니다.',
+      });
+    }
+    const tokens = issueTokenPair(result.userId, result.role);
+    return reply.status(200).send({
+      ...result,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+    });
   });
 
-  fastify.patch('/auth/profile', async (request, reply) => {
+  fastify.post('/auth/refresh', async (request, reply) => {
+    if (!isAuthEnabled()) {
+      return reply.status(503).send({
+        success: false,
+        code: 'auth_not_configured',
+        message: '서버 인증 설정이 완료되지 않았습니다.',
+      });
+    }
+
+    const { refreshToken } = request.body || {};
+    const result = verifyRefreshToken(refreshToken);
+    if (!result.valid) {
+      return reply.status(401).send({
+        success: false,
+        code: 'refresh_token_invalid',
+        message: result.reason === 'expired'
+          ? '갱신 토큰이 만료되었습니다. 다시 로그인해주세요.'
+          : '갱신 토큰이 유효하지 않습니다. 다시 로그인해주세요.',
+      });
+    }
+
+    const tokens = issueTokenPair(result.userId, result.role);
+    return reply.send({
+      success: true,
+      userId: result.userId,
+      role: result.role,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+    });
+  });
+
+  fastify.patch('/auth/profile', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId, name, phone, password, marketingOptIn } = request.body || {};
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
@@ -59,7 +110,16 @@ async function authRoutes(fastify) {
     return reply.status(result.success ? 200 : 404).send(result);
   });
 
-  fastify.get('/auth/users', async (request, reply) => {
+  fastify.delete('/auth/account', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
+    const { userId, password } = request.body || {};
+    if (!userId || !password) {
+      return reply.status(400).send({ error: 'userId와 password는 필수입니다.' });
+    }
+    const result = await deleteAccount(userId, password);
+    return reply.status(result.success ? 200 : 400).send(result);
+  });
+
+  fastify.get('/auth/users', { preHandler: [authenticate, requireRole('admin')] }, async (request, reply) => {
     const result = await listUsers();
     return reply.send(result);
   });

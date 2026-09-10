@@ -4,6 +4,15 @@ const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
 const { getRawToken } = require('../services/tokenService');
 const { guardRecaptcha } = require('../services/recaptchaService');
+const {
+  authenticate,
+  requireRole,
+  allowUserOrCancelLink,
+  requireSelfOrLink,
+} = require('../middleware/auth');
+
+const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
+const userAuth = { preHandler: [allowUserOrCancelLink, requireSelfOrLink] };
 
 function getQueueContext(request, eventId = '') {
   const body = request.body || {};
@@ -17,7 +26,7 @@ function getQueueContext(request, eventId = '') {
 
 async function cancelQueueRoutes(fastify) {
 
-  fastify.post('/cancel-queue/join', async (request, reply) => {
+  fastify.post('/cancel-queue/join', userAuth, async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'cancel_queue_join')) return;
     const { userId } = request.body || {};
     if (!userId) {
@@ -28,7 +37,7 @@ async function cancelQueueRoutes(fastify) {
     return reply.status(result.status === 'closed' ? 409 : 200).send(result);
   });
 
-  fastify.get('/cancel-queue/status/:eventId/:userId', async (request, reply) => {
+  fastify.get('/cancel-queue/status/:eventId/:userId', userAuth, async (request, reply) => {
     const { eventId } = request.params;
     const userId = request.query.userId || request.params.userId;
     const context = getQueueContext(request, eventId);
@@ -60,7 +69,7 @@ async function cancelQueueRoutes(fastify) {
     });
   });
 
-  fastify.post('/cancel-queue/allocate', async (request, reply) => {
+  fastify.post('/cancel-queue/allocate', adminAuth, async (request, reply) => {
     const { eventId, seatId } = request.body || {};
     if (!eventId || !seatId) {
       return reply.status(400).send({ error: 'eventId와 seatId는 필수입니다.' });
@@ -71,7 +80,7 @@ async function cancelQueueRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.post('/cancel-queue/allocate-next', async (request, reply) => {
+  fastify.post('/cancel-queue/allocate-next', adminAuth, async (request, reply) => {
     const { eventId, seatId, maxSkip } = request.body || {};
     if (!eventId || !seatId) {
       return reply.status(400).send({ error: 'eventId와 seatId는 필수입니다.' });
@@ -83,7 +92,7 @@ async function cancelQueueRoutes(fastify) {
   });
 
   // Secret Link 보유자만 배정된 좌석을 선점할 수 있게 한다.
-  fastify.post('/cancel-queue/hold', async (request, reply) => {
+  fastify.post('/cancel-queue/hold', userAuth, async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'cancel_seat_hold')) return;
     const { userId, eventId, seatId } = request.body || {};
     if (!userId || !eventId || !seatId) {
@@ -111,13 +120,22 @@ async function cancelQueueRoutes(fastify) {
   });
 
   // 브라우저가 제한시간 만료를 감지했을 때 할당을 만료시키고 같은 좌석을 다음 사용자에게 넘긴다.
-  fastify.post('/cancel-queue/expire', async (request, reply) => {
+  fastify.post('/cancel-queue/expire', userAuth, async (request, reply) => {
     const { userId, eventId, seatId } = request.body || {};
     if (!userId || !eventId) {
       return reply.status(400).send({ error: 'userId와 eventId는 필수입니다.' });
     }
     const result = await cancelAllocationService.expireAllocation(userId, eventId, seatId, getQueueContext(request, eventId));
     return reply.status(result.success ? 200 : 409).send(result);
+  });
+
+  fastify.post('/cancel-queue/respond', userAuth, async (request, reply) => {
+    const { userId, eventId, seatId } = request.body || {};
+    if (!userId || !eventId || !seatId) {
+      return reply.status(400).send({ error: 'userId, eventId, seatId는 필수입니다.' });
+    }
+    const result = await cancelAllocationService.markResponded(userId, seatId, eventId);
+    return reply.send({ success: result.affected > 0, ...result });
   });
 
   // 취소표 화면의 Pool 수치를 임의 생성하지 않고 현재 Redis 좌석 상태로 계산한다.
@@ -142,12 +160,12 @@ async function cancelQueueRoutes(fastify) {
     });
   });
 
-  fastify.post('/cancel-queue/expire-overdue', async (request, reply) => {
+  fastify.post('/cancel-queue/expire-overdue', adminAuth, async (request, reply) => {
     const result = await cancelAllocationService.expireAllOverdue();
     return reply.send(result);
   });
 
-  fastify.get('/cancel-queue/history/:eventId', async (request, reply) => {
+  fastify.get('/cancel-queue/history/:eventId', adminAuth, async (request, reply) => {
     const { eventId } = request.params;
     const history = await cancelAllocationService.getAllocationHistory(eventId);
     return reply.send({ allocations: history, count: history.length });

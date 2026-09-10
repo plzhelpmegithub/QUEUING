@@ -62,6 +62,10 @@ spec:
               value: {{ .Values.env.redisHost | quote }}
             - name: REDIS_PORT
               value: {{ .Values.env.redisPort | quote }}
+            - name: AUTO_ADMISSION_ENABLED
+              value: {{ .Values.env.autoAdmissionEnabled | quote }}
+            - name: AUTO_ADMISSION_INTERVAL_MS
+              value: {{ .Values.env.autoAdmissionIntervalMs | quote }}
             - name: DB_HOST
               value: {{ .Values.env.dbHost | quote }}
             - name: DB_PORT
@@ -80,19 +84,58 @@ spec:
               value: {{ .Values.env.nodeEnv | quote }}
             - name: NODE_OPTIONS
               value: {{ .Values.env.nodeOptions | quote }} # Node.js V8 힙 메모리 고갈로 인한 파드 부하시 프로세스 죽음 현상 해결
+            # 세션 JWT와 Admission Token은 서로 다른 Kubernetes Secret에서 관리한다.
+            - name: JWT_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.secret.name must be set" .Values.auth.secret.name }}
+                  key: {{ required "auth.secret.accessKey must be set" .Values.auth.secret.accessKey }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.secret.name must be set" .Values.auth.secret.name }}
+                  key: {{ required "auth.secret.admissionKey must be set" .Values.auth.secret.admissionKey }}
+            {{- if .Values.auth.bootstrap.enabled }}
+            - name: ADMIN_BOOTSTRAP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.bootstrap.secret.name must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.name }}
+                  key: {{ required "auth.bootstrap.secret.adminUserKey must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.adminUserKey }}
+            - name: ADMIN_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.bootstrap.secret.name must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.name }}
+                  key: {{ required "auth.bootstrap.secret.adminPasswordKey must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.adminPasswordKey }}
+            - name: MONITOR_BOOTSTRAP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.bootstrap.secret.name must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.name }}
+                  key: {{ required "auth.bootstrap.secret.monitorUserKey must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.monitorUserKey }}
+            - name: MONITOR_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "auth.bootstrap.secret.name must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.name }}
+                  key: {{ required "auth.bootstrap.secret.monitorPasswordKey must be set when auth.bootstrap.enabled=true" .Values.auth.bootstrap.secret.monitorPasswordKey }}
+            {{- end }}
             {{- if .Values.recaptcha.enabled }}
-            # reCAPTCHA Secret Key는 Helm values나 매니페스트에 평문으로 기록하지 않고 외부 Secret에서 주입한다.
             - name: RECAPTCHA_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ required "recaptcha.secret.name must be set when recaptcha.enabled=true" .Values.recaptcha.secret.name }}
-                  key: {{ required "recaptcha.secret.key must be set when recaptcha.enabled=true" .Values.recaptcha.secret.key }}
+                  key: {{ required "recaptcha.secret.v3Key must be set when recaptcha.enabled=true" .Values.recaptcha.secret.v3Key }}
             - name: RECAPTCHA_REQUIRED
               value: {{ .Values.recaptcha.required | quote }}
             - name: RECAPTCHA_SCORE_THRESHOLD
               value: {{ .Values.recaptcha.scoreThreshold | quote }}
             - name: RECAPTCHA_ALLOWED_HOSTNAMES
               value: {{ .Values.recaptcha.allowedHostnames | quote }}
+            {{- if .Values.recaptcha.v2Fallback }}
+            - name: RECAPTCHA_V2_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.recaptcha.secret.name }}
+                  key: {{ required "recaptcha.secret.v2Key must be set when recaptcha.v2Fallback=true" .Values.recaptcha.secret.v2Key }}
+            {{- end }}
             {{- end }}
             {{- if .Values.smtp.enabled }}
             # SMTP 계정과 App Password는 외부 Kubernetes Secret에서 주입한다.
@@ -121,6 +164,14 @@ spec:
               value: {{ .Values.env.awsAccessKeyId | quote }}
             - name: AWS_SECRET_ACCESS_KEY
               value: {{ .Values.env.awsSecretAccessKey | quote }}
+            {{- if .Values.env.fromEmail }}
+            - name: FROM_EMAIL
+              value: {{ .Values.env.fromEmail | quote }}
+            {{- end }}
+            {{- if .Values.env.siteUrl }}
+            - name: SITE_URL
+              value: {{ .Values.env.siteUrl | quote }}
+            {{- end }}
           # Liveness Probe: 실패 시 컨테이너 재시작 (죽은 프로세스 복구)
           {{- with .Values.livenessProbe }}
           livenessProbe:

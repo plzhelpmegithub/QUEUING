@@ -6,6 +6,7 @@ const membershipService = require('../services/membershipService');
 const cancelAllocationService = require('../services/cancelAllocationService');
 const { sendEmail } = require('../services/notificationService');
 const { normalizeSessionContext, getScopedKey } = require('../services/sessionContext');
+const { authenticate, requireRole } = require('../middleware/auth');
 
 const EVENT_LIST_KEY = 'events:list';
 const SEAT_PREFIX = 'seat:';
@@ -35,9 +36,11 @@ function getContext(body) {
   });
 }
 
+const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
+
 async function simulationRoutes(fastify) {
 
-  fastify.get('/admin/simulation/events', async (request, reply) => {
+  fastify.get('/admin/simulation/events', adminAuth, async (request, reply) => {
     const events = await redis.hgetall(EVENT_LIST_KEY);
     if (!events || Object.keys(events).length === 0) {
       return reply.send({ events: [] });
@@ -60,7 +63,7 @@ async function simulationRoutes(fastify) {
     return reply.send({ events: list });
   });
 
-  fastify.post('/admin/simulation/init', async (request, reply) => {
+  fastify.post('/admin/simulation/init', adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime, realUserEmail, dummyCount = 10000 } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
     if (!realUserEmail) return reply.status(400).send({ error: '실제 멤버십 유저 이메일은 필수입니다.' });
@@ -136,7 +139,7 @@ async function simulationRoutes(fastify) {
     });
   });
 
-  fastify.post('/admin/simulation/sellout', async (request, reply) => {
+  fastify.post('/admin/simulation/sellout', adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 
@@ -267,7 +270,7 @@ async function simulationRoutes(fastify) {
     });
   });
 
-  fastify.post('/admin/simulation/close', async (request, reply) => {
+  fastify.post('/admin/simulation/close', adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 
@@ -338,7 +341,7 @@ async function simulationRoutes(fastify) {
     });
   });
 
-  fastify.post('/admin/simulation/cancel-seats', async (request, reply) => {
+  fastify.post('/admin/simulation/cancel-seats', adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime, count = 10 } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 
@@ -435,7 +438,7 @@ async function simulationRoutes(fastify) {
     });
   });
 
-  fastify.post('/admin/simulation/issue-links', async (request, reply) => {
+  fastify.post('/admin/simulation/issue-links', adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 
@@ -477,7 +480,7 @@ async function simulationRoutes(fastify) {
         const email = userRows[0]?.email;
         if (email && !result.userId.startsWith(SIM_USER_PREFIX)) {
           const card = JSON.parse(await redis.hget(EVENT_LIST_KEY, eventId) || '{}');
-          const linkToken = result.allocation?.id || '';
+          const linkToken = result.allocation?.linkToken || '';
           sendEmail(
             email,
             `[QUEUING] 취소표 알림 — ${card.eventName || eventId}`,
@@ -490,7 +493,7 @@ async function simulationRoutes(fastify) {
             <p><strong>유효 시간:</strong> 5분</p>
             <hr>
             <p>아래 링크를 통해 취소표 예매 페이지로 이동하세요:</p>
-            <p><a href="${process.env.SITE_URL || 'http://localhost'}/cancel-ticketing.html?eventId=${eventId}&userId=${result.userId}&allocationId=${linkToken}${process.env.API_BASE ? '&apiBase=' + encodeURIComponent(process.env.API_BASE) : ''}">취소표 예매하기</a></p>
+            <p><a href="${process.env.SITE_URL || 'http://localhost'}/cancel-ticketing.html?eventId=${encodeURIComponent(eventId)}&userId=${encodeURIComponent(result.userId)}&allocationId=${result.allocation?.id || ''}&linkToken=${encodeURIComponent(linkToken)}${process.env.API_BASE ? '&apiBase=' + encodeURIComponent(process.env.API_BASE) : ''}">취소표 예매하기</a></p>
             <p>— QUEUING 팀</p>`,
           );
         }
@@ -513,7 +516,7 @@ async function simulationRoutes(fastify) {
     });
   });
 
-  fastify.post('/admin/simulation/cleanup', async (request, reply) => {
+  fastify.post('/admin/simulation/cleanup', adminAuth, async (request, reply) => {
     const { eventId } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 
@@ -575,7 +578,163 @@ async function simulationRoutes(fastify) {
     });
   });
 
-  fastify.get('/admin/simulation/status', async (request, reply) => {
+  fastify.post('/admin/dummy/create-users', adminAuth, async (request, reply) => {
+    const { count = 100 } = request.body || {};
+    const total = Math.min(Math.max(parseInt(count, 10) || 100, 1), 50000);
+
+    const BATCH = 2000;
+    let created = 0;
+    for (let i = 0; i < total; i += BATCH) {
+      const values = [];
+      const params = [];
+      const batchEnd = Math.min(i + BATCH, total);
+      for (let j = i; j < batchEnd; j++) {
+        values.push('(?, ?, ?, ?, ?)');
+        params.push(simUserId(j + 1), '', 'user', simUserId(j + 1), `더미${j + 1}`);
+      }
+      try {
+        const result = await pool.query(
+          `INSERT IGNORE INTO users (user_id, password, role, email, name) VALUES ${values.join(',')}`,
+          params,
+        );
+        created += Number(result.affectedRows) || 0;
+      } catch (e) {
+        console.error('[Dummy] 더미 유저 생성 오류:', e.message);
+      }
+    }
+
+    console.log(`[Dummy] 더미 유저 ${created}명 생성 완료 (요청: ${total}명)`);
+    return reply.send({
+      success: true,
+      requested: total,
+      created,
+      message: `더미 유저 ${created.toLocaleString()}명이 생성되었습니다.`,
+    });
+  });
+
+  fastify.post('/admin/dummy/distribute-interests', adminAuth, async (request, reply) => {
+    const { maxEvents = 5 } = request.body || {};
+
+    const events = await redis.hgetall(EVENT_LIST_KEY);
+    if (!events || Object.keys(events).length === 0) {
+      return reply.status(400).send({ error: '생성된 공연이 없습니다.' });
+    }
+
+    const eventIds = Object.keys(events);
+    for (let i = eventIds.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [eventIds[i], eventIds[j]] = [eventIds[j], eventIds[i]];
+    }
+    const selectedEvents = eventIds.slice(0, Math.min(parseInt(maxEvents, 10) || 5, eventIds.length));
+
+    const dummyRows = await pool.query(
+      `SELECT user_id FROM users WHERE user_id LIKE '${SIM_USER_PREFIX}%' ORDER BY user_id`,
+    );
+    if (dummyRows.length === 0) {
+      return reply.status(400).send({ error: '더미 유저가 없습니다. 먼저 더미 유저를 생성해주세요.' });
+    }
+
+    const dummyUserIds = dummyRows.map(r => r.user_id);
+    const shuffled = [...dummyUserIds];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    const weights = selectedEvents.map((_, i) => {
+      const base = selectedEvents.length - i;
+      return base * base + Math.random() * base;
+    });
+    const weightSum = weights.reduce((s, w) => s + w, 0);
+    const boundaries = [];
+    let cumulative = 0;
+    for (const w of weights) {
+      cumulative += w / weightSum;
+      boundaries.push(cumulative);
+    }
+    boundaries[boundaries.length - 1] = 1;
+
+    const distribution = selectedEvents.map(() => []);
+    for (const userId of shuffled) {
+      const r = Math.random();
+      const bucket = boundaries.findIndex(b => r < b);
+      distribution[bucket >= 0 ? bucket : distribution.length - 1].push(userId);
+    }
+
+    await pool.query(`DELETE FROM wishlists WHERE user_id LIKE '${SIM_USER_PREFIX}%'`);
+
+    const results = [];
+    const BATCH = 2000;
+    for (let eIdx = 0; eIdx < selectedEvents.length; eIdx++) {
+      const eventId = selectedEvents[eIdx];
+      const users = distribution[eIdx];
+      let inserted = 0;
+
+      for (let i = 0; i < users.length; i += BATCH) {
+        const values = [];
+        const params = [];
+        const batchEnd = Math.min(i + BATCH, users.length);
+        for (let j = i; j < batchEnd; j++) {
+          values.push('(?, ?)');
+          params.push(users[j], eventId);
+        }
+        try {
+          const result = await pool.query(
+            `INSERT IGNORE INTO wishlists (user_id, event_id) VALUES ${values.join(',')}`,
+            params,
+          );
+          inserted += Number(result.affectedRows) || 0;
+        } catch (e) {
+          console.error(`[Dummy] 위시리스트 분배 오류 (${eventId}):`, e.message);
+        }
+      }
+
+      let eventName = eventId;
+      try {
+        const card = JSON.parse(events[eventId]);
+        eventName = card.eventName || eventId;
+      } catch (_) {}
+
+      results.push({ eventId, eventName, count: inserted });
+    }
+
+    results.sort((a, b) => b.count - a.count);
+    console.log(`[Dummy] 관심 공연 분배 완료: ${results.map(r => `${r.eventName}(${r.count})`).join(', ')}`);
+    return reply.send({
+      success: true,
+      totalUsers: dummyUserIds.length,
+      eventsCount: selectedEvents.length,
+      distribution: results,
+      message: `더미 유저 ${dummyUserIds.length.toLocaleString()}명의 관심 공연이 ${selectedEvents.length}개 공연에 분배되었습니다.`,
+    });
+  });
+
+  fastify.post('/admin/dummy/cleanup', adminAuth, async (request, reply) => {
+    let deletedWishlists = 0;
+    let deletedUsers = 0;
+    try {
+      const wResult = await pool.query(`DELETE FROM wishlists WHERE user_id LIKE '${SIM_USER_PREFIX}%'`);
+      deletedWishlists = Number(wResult.affectedRows) || 0;
+    } catch (e) {
+      console.error('[Dummy] 위시리스트 삭제 실패:', e.message);
+    }
+    try {
+      const uResult = await pool.query(`DELETE FROM users WHERE user_id LIKE '${SIM_USER_PREFIX}%'`);
+      deletedUsers = Number(uResult.affectedRows) || 0;
+    } catch (e) {
+      console.error('[Dummy] 유저 삭제 실패:', e.message);
+    }
+
+    console.log(`[Dummy] 정리 완료: 유저 ${deletedUsers}명, 위시리스트 ${deletedWishlists}건 삭제`);
+    return reply.send({
+      success: true,
+      deletedUsers,
+      deletedWishlists,
+      message: `더미 유저 ${deletedUsers.toLocaleString()}명과 위시리스트 ${deletedWishlists.toLocaleString()}건이 삭제되었습니다.`,
+    });
+  });
+
+  fastify.get('/admin/simulation/status', adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.query || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 

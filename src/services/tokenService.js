@@ -2,8 +2,22 @@ const jwt = require('jsonwebtoken');
 const redis = require('../config/redis');
 const { normalizeSessionContext } = require('./sessionContext');
 
-const SECRET_KEY = process.env.JWT_SECRET || 'queuing-admission-secret-key-2026';
 const TOKEN_PREFIX = 'admission:';
+const MIN_SECRET_LENGTH = 32;
+
+function getSecretKey() {
+  return String(process.env.JWT_SECRET || '').trim();
+}
+
+function isConfigured() {
+  return getSecretKey().length >= MIN_SECRET_LENGTH;
+}
+
+function assertConfigured() {
+  if (String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production' && !isConfigured()) {
+    throw new Error(`JWT_SECRET 환경변수가 필요합니다. ${MIN_SECRET_LENGTH}자 이상의 랜덤 값을 사용하세요.`);
+  }
+}
 
 function tokenKey(userId, context = {}) {
   const session = normalizeSessionContext(context);
@@ -12,6 +26,8 @@ function tokenKey(userId, context = {}) {
 }
 
 async function issueToken(userId, ttlSeconds, context = {}) {
+  const secretKey = getSecretKey();
+  if (secretKey.length < MIN_SECRET_LENGTH) throw new Error(`JWT_SECRET은 ${MIN_SECRET_LENGTH}자 이상의 랜덤 값이어야 합니다.`);
   const ttl = ttlSeconds || parseInt(await redis.get('event:hold-duration'), 10) || 600;
   const session = normalizeSessionContext(context);
 
@@ -23,7 +39,7 @@ async function issueToken(userId, ttlSeconds, context = {}) {
     exp: Math.floor(Date.now() / 1000) + ttl,
   };
 
-  const token = jwt.sign(payload, SECRET_KEY);
+  const token = jwt.sign(payload, secretKey);
 
   await redis.set(tokenKey(userId, session), token, 'EX', ttl);
 
@@ -34,13 +50,17 @@ async function issueToken(userId, ttlSeconds, context = {}) {
 }
 
 async function verifyToken(token, userId, context = {}) {
+  const secretKey = getSecretKey();
+  if (secretKey.length < MIN_SECRET_LENGTH) {
+    return { valid: false, reason: 'not_configured', message: 'Admission Token 인증 설정이 완료되지 않았습니다.' };
+  }
   if (!token) {
     return { valid: false, reason: 'no_token', message: 'Admission Token이 필요합니다.' };
   }
 
   let decoded;
   try {
-    decoded = jwt.verify(token, SECRET_KEY);
+    decoded = jwt.verify(token, secretKey);
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return { valid: false, reason: 'expired', message: 'Admission Token이 만료되었습니다.' };
@@ -75,13 +95,17 @@ async function revokeToken(userId, context = {}) {
 }
 
 async function getTokenInfo(userId, context = {}) {
+  const secretKey = getSecretKey();
+  if (secretKey.length < MIN_SECRET_LENGTH) {
+    return { exists: false, reason: 'not_configured', message: 'Admission Token 인증 설정이 완료되지 않았습니다.' };
+  }
   const storedToken = await redis.get(tokenKey(userId, context));
   if (!storedToken) {
     return { exists: false, message: '발급된 토큰이 없습니다.' };
   }
 
   try {
-    const decoded = jwt.verify(storedToken, SECRET_KEY);
+    const decoded = jwt.verify(storedToken, secretKey);
     const remaining = decoded.exp - Math.floor(Date.now() / 1000);
     return {
       exists: true,
@@ -95,14 +119,25 @@ async function getTokenInfo(userId, context = {}) {
 }
 
 async function getRawToken(userId, context = {}) {
+  const secretKey = getSecretKey();
+  if (!secretKey) return null;
   const storedToken = await redis.get(tokenKey(userId, context));
   if (!storedToken) return null;
   try {
-    const decoded = jwt.verify(storedToken, SECRET_KEY);
+    const decoded = jwt.verify(storedToken, secretKey);
     return { token: storedToken, expiresAt: new Date(decoded.exp * 1000).toISOString() };
   } catch (err) {
     return null;
   }
 }
 
-module.exports = { issueToken, verifyToken, revokeToken, getTokenInfo, getRawToken, tokenKey };
+module.exports = {
+  issueToken,
+  verifyToken,
+  revokeToken,
+  getTokenInfo,
+  getRawToken,
+  tokenKey,
+  isConfigured,
+  assertConfigured,
+};

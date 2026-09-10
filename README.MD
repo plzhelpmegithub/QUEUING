@@ -20,6 +20,8 @@ api/
     │   └── mariadb.js                  # MariaDB 커넥션 풀
     ├── public/
     │   └── index.html                  # 데모 UI (SPA)
+    ├── middleware/
+    │   └── auth.js                       # Bearer JWT·본인 계정·취소표 링크 권한 검증
     ├── routes/
     │   ├── authRoutes.js               # 인증 (회원가입/로그인)
     │   ├── eventRoutes.js              # 공연 CRUD
@@ -32,6 +34,8 @@ api/
     │   └── simulationRoutes.js        # 취소표 시뮬레이션 (어드민)
     └── services/
         ├── authService.js              # 인증 로직 (argon2id + bcrypt 하위호환)
+        ├── authTokenService.js         # 세션 Access/Refresh JWT 발급·검증
+        ├── cancelLinkTokenService.js   # 취소표 시크릿 링크 JWT 발급·검증
         ├── queueService.js             # 대기열 핵심 로직
         ├── seatService.js              # 좌석 상태 머신
         ├── eventService.js             # Redis Pub/Sub 이벤트 발행
@@ -46,6 +50,7 @@ api/
         ├── backupService.js            # 스냅샷 백업/복구
         ├── cancelAllocationService.js  # 취소표 할당 관리
         ├── redisRecoveryService.js     # Redis 자동 복구·주기적 정합성 점검
+        ├── admissionWorker.js           # 대기열 자동 승인 워커
         └── dbService.js                # MariaDB 테이블 초기화
 ```
 
@@ -88,6 +93,7 @@ api/
 - 헬스체크 (`GET /health`)
 - 서버 시작 시 초기화: Redis 만료 리스너, MariaDB 9개 테이블 생성, 관리자 계정 생성
 - 서버 시작 시 MariaDB 기준 Redis 자동 복구를 최대 3회 시도하고, 이후 주기적 정합성 점검 시작
+- `AUTO_ADMISSION_ENABLED=true`일 때 DB의 대기 중인 회차를 찾아 대기열 상위 `BATCH_SIZE`명을 주기적으로 자동 승인하고 Admission Token을 발급
 - `SIGINT` 시그널 수신 시 Redis 리스너·자동 복구 타이머 정리 후 graceful shutdown
 
 ---
@@ -117,9 +123,13 @@ mariadb 라이브러리 기반 커넥션 풀.
 | 엔드포인트 | 설명 |
 |---|---|
 | `POST /auth/register` | reCAPTCHA v3 검증 후 회원가입. 이메일/비밀번호 유효성 검사 후 argon2id 해싱하여 MariaDB 저장 |
-| `POST /auth/login` | reCAPTCHA v3 검증 후 로그인. argon2id 비교 후 사용자 정보 반환. 기존 bcrypt 해시는 자동으로 argon2id로 마이그레이션 |
-| `PATCH /auth/profile` | 회원정보 수정. 이름·전화번호·비밀번호·마케팅 수신 동의를 저장하며 이메일은 수정하지 않음. 비밀번호 변경 시 argon2id 해싱 |
+| `POST /auth/login` | reCAPTCHA v3 검증 후 로그인. 성공 시 Access/Refresh JWT를 발급하며, 기존 bcrypt 해시는 자동으로 argon2id로 마이그레이션 |
+| `POST /auth/refresh` | 유효한 Refresh JWT를 검증한 뒤 새 Access/Refresh JWT를 발급 |
+| `PATCH /auth/profile` | Bearer JWT와 본인 `userId`를 함께 검증한 뒤 회원정보 수정. 이름·전화번호·비밀번호·마케팅 수신 동의를 저장하며 이메일은 수정하지 않음 |
+| `DELETE /auth/account` | Bearer JWT와 본인 `userId`를 검증한 뒤 비밀번호 재확인 후 계정 삭제 |
 | `GET /auth/users` | 전체 사용자 목록 조회 (관리자용) |
+
+인증이 필요한 API는 `Authorization: Bearer <accessToken>` 헤더를 사용한다. 다른 사용자의 `userId`를 요청하거나 관리자 API를 일반 사용자 토큰으로 호출하면 각각 `403 user_mismatch` 또는 `403 forbidden`을 반환한다. 서버에 `JWT_AUTH_SECRET` 또는 `JWT_SECRET`이 없거나 32자 미만이면 보호 API는 `503 auth_not_configured`로 거부한다.
 
 ---
 
@@ -147,9 +157,9 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /queue/enter` | reCAPTCHA v3 검증 후 대기열 진입. `eventId`, `sessionDate`, `sessionTime`을 함께 보내면 해당 회차 전용 대기열로 처리 |
-| `GET /queue/position/:userId` | 현재 대기 순번 조회. 회차 query(`eventId`, `sessionDate`, `sessionTime`) 지원 |
-| `POST /queue/admit` | 해당 회차 대기열의 상위 100명 일괄 입장 허용 + 회차 전용 Admission Token 발급 |
+| `POST /queue/enter` | 로그인 사용자 Bearer JWT와 reCAPTCHA v3 검증 후 대기열 진입. `eventId`, `sessionDate`, `sessionTime`을 함께 보내면 해당 회차 전용 대기열로 처리 |
+| `GET /queue/position/:userId` | Bearer JWT의 사용자와 `userId`가 일치할 때 현재 대기 순번 조회. 회차 query(`eventId`, `sessionDate`, `sessionTime`) 지원 |
+| `POST /queue/admit` | 관리자 Bearer JWT로 해당 회차 대기열의 상위 100명 일괄 입장 허용 + 회차 전용 Admission Token 발급. 자동 승인 워커가 켜져 있으면 워커가 같은 로직을 주기적으로 실행 |
 | `GET /queue/standby` | standby 목록 조회 |
 | `POST /queue/standby` | standby 대기열에 직접 추가 |
 | `GET /queue/stats` | 대기열 통계 (eligible/standby/admitted 인원 수) |
@@ -160,9 +170,26 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `POST /admin/ticketing/schedule-standby-close` | standby 마감 시간 설정 |
 | `POST /admin/hold-duration` | 결제 제한 시간 설정 |
 | `GET /admin/hold-duration` | 결제 제한 시간 조회 |
-| `POST /queue/leave` | 대기열 이탈 |
+| `POST /queue/leave` | 로그인한 본인 사용자의 대기열 이탈 |
 | `POST /admin/queue/simulate` | 대량 사용자 시뮬레이션 (Redis pipeline, 5000명 배치) |
 | `POST /admin/queue/reset` | 대기열 전체 초기화 |
+
+### src/services/admissionWorker.js — 자동 승인 워커
+
+- `AUTO_ADMISSION_ENABLED=true`일 때만 시작한다. `false`이면 기존처럼 관리자 `POST /queue/admit` 수동 승인만 사용한다.
+- `AUTO_ADMISSION_INTERVAL_MS` 간격으로 `waiting_queue`의 `eligible`/`WAITING` 회차를 찾고, 각 회차의 Redis 대기열 상위 `BATCH_SIZE`명을 자동 승인한다.
+- `JWT_SECRET`이 32자 미만이면 사용자를 `admitted`로 이동하지 않고 자동 승인 사이클을 건너뛴다.
+- 승인 시 Redis의 `admitted` 집합에 등록하고 `JWT_SECRET`로 회차 전용 Admission Token을 발급하며, MariaDB 상태를 `ADMITTED`로 동기화한다.
+- 여러 API 파드가 동시에 실행되어도 회차별 Redis 분산 락으로 중복 승인을 방지한다.
+- `standby` 취소표 대기열은 자동 승인 대상이 아니다.
+
+개발환경 예시:
+
+```env
+AUTO_ADMISSION_ENABLED=true
+AUTO_ADMISSION_INTERVAL_MS=1000
+BATCH_SIZE=100
+```
 
 ---
 
@@ -222,12 +249,13 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /cancel-queue/join` | 일반 예매 대기/입장 상태를 정리하고 회차별 standby 취소표 대기열에 등록 |
-| `GET /cancel-queue/status/:eventId/:userId` | 사용자 취소표 대기 종합 상태 (대기 순번 + 멤버십 + Secret Link) |
+| `POST /cancel-queue/join` | 로그인 사용자 Bearer JWT로 일반 예매 대기/입장 상태를 정리하고 회차별 standby 취소표 대기열에 등록 |
+| `GET /cancel-queue/status/:eventId/:userId` | 로그인 사용자 JWT 또는 유효한 본인용 linkToken으로 사용자 취소표 대기 종합 상태 조회 (대기 순번 + 멤버십 + Secret Link) |
 | `POST /cancel-queue/allocate` | 취소표 발생 시 standby 1순위에게 Secret Link 발급 (멤버십 필수) |
 | `POST /cancel-queue/allocate-next` | 비회원 스킵하며 순차적으로 멤버십 회원 찾아 발급 |
-| `POST /cancel-queue/hold` | Secret Link 보유자가 배정된 좌석을 Admission Token으로 선점 |
-| `POST /cancel-queue/expire` | Secret Link 만료 처리 후 같은 좌석을 다음 대기자에게 재배정 |
+| `POST /cancel-queue/hold` | 로그인 사용자 JWT 또는 유효한 Secret Link 보유자가 본인에게 배정된 좌석을 Admission Token으로 선점 |
+| `POST /cancel-queue/expire` | 로그인 사용자 JWT 또는 유효한 Secret Link로 Secret Link 만료 처리 후 같은 좌석을 다음 대기자에게 재배정 |
+| `POST /cancel-queue/respond` | 취소표 링크 사용자가 배정된 좌석 처리 완료 상태를 기록 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
 | `GET /cancel-queue/history/:eventId` | 이벤트별 할당 내역 조회 |
@@ -263,13 +291,33 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 ### src/services/authService.js — 인증 서비스
 
-- `initUsersTable()`: users 테이블 생성 + 기본 관리자·모니터링 계정 생성 (argon2id 해싱)
+- `initUsersTable()`: 환경변수에 bootstrap 비밀번호가 설정된 경우에만 기본 관리자·모니터링 계정을 생성 (argon2id 해싱). 기존 계정은 덮어쓰지 않음
+- `ADMIN_BOOTSTRAP_USER/PASSWORD`, `MONITOR_BOOTSTRAP_USER/PASSWORD`: 초기 계정 생성 전용 환경변수. 비밀번호는 최소 12자이며, 설정하지 않으면 계정을 자동 생성하지 않음
 - `register()`: 이메일/비밀번호 유효성 검사, argon2id 해싱 후 저장
 - `login()`: argon2id 비교 인증. 기존 bcrypt 해시(`$2` prefix)는 로그인 성공 시 자동으로 argon2id로 재해싱하여 마이그레이션
 - `updateProfile()`: 회원정보 수정. 비밀번호 변경 시 argon2id 해싱
 - `listUsers()`: 전체 사용자 목록 (비밀번호 제외)
 
 **argon2id 설정:** `@node-rs/argon2` 사용, memoryCost=19456, timeCost=2, parallelism=1, outputLen=32
+
+### src/services/authTokenService.js — 세션 JWT
+
+- 로그인 성공 시 4시간 유효한 Access JWT와 7일 유효한 Refresh JWT를 발급한다.
+- `JWT_AUTH_SECRET`가 32자 미만이거나 없으면 발급하지 않으며, production에서는 서버가 기동하지 않는다. 코드에 기본 시크릿 fallback은 없다.
+- Refresh JWT는 `POST /auth/refresh`에서만 사용하고, Access JWT는 보호된 API의 Bearer 헤더에 사용한다.
+
+### src/middleware/auth.js — API 권한 검증
+
+- `authenticate`: Bearer Access JWT의 서명·만료·토큰 종류를 검증한다.
+- `requireRole('admin')`: 관리자 전용 API를 보호한다.
+- `requireSelf`: URL·query·body의 `userId`가 로그인 사용자와 같은지 검증하여 ID 변조를 차단한다.
+- `allowUserOrCancelLink` / `requireSelfOrLink`: 일반 사용자 JWT 또는 짧은 만료시간의 취소표 링크 JWT만 취소표 흐름에 허용한다.
+
+### src/services/cancelLinkTokenService.js — 취소표 시크릿 링크
+
+- 취소표 배정 시 `JWT_SECRET`로 서명된 링크 토큰을 발급하고, 배정 만료 시각을 토큰 만료 시각으로 사용한다.
+- 토큰에는 `allocationId`, `userId`, `eventId`, `seatId`를 넣어 다른 사용자·공연·좌석으로 재사용하지 못하게 한다.
+- 이메일의 `/cancel-ticketing.html`은 `linkToken`을 요청에 전달하며, 토큰 원문은 DB 조회 응답이나 일반 API 응답에 노출하지 않는다.
 
 ---
 
@@ -407,7 +455,7 @@ Redis 키 만료(keyspace notification)를 활용한 결제 시간 제한.
 - `getRawToken()`: 클라이언트가 새로고침 등으로 토큰을 잃어버린 경우 Redis에서 원문 JWT 재조회
 
 **Redis 키:** `admission:{userId}`  
-**JWT 시크릿:** `JWT_SECRET` 환경변수 또는 기본값
+**JWT 시크릿:** `JWT_SECRET` 환경변수 필수(32자 이상). 코드에 기본값 fallback이 없으며, 취소표 링크 토큰에도 사용한다.
 
 ---
 
@@ -580,8 +628,8 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 3. 대기열 진입 (사용자)
    POST /queue/enter → 선택 회차의 queue:waiting Sorted Set에 추가 (멤버십 우선순위 적용)
 
-4. 입장 허용 (관리자 또는 자동)
-   POST /queue/admit → 선택 회차의 상위 100명 → queue:admitted + 회차 전용 Admission Token 발급
+4. 입장 허용
+   `AUTO_ADMISSION_ENABLED=true`이면 자동 승인 워커가 선택 회차의 상위 100명을 주기적으로 승인한다. 비활성화 시 관리자 Bearer JWT로 POST /queue/admit을 호출한다.
 
 5. 좌석 선점
    POST /seats/hold → Token 검증 → 분산 락 → held 상태 → 결제 타이머 시작
@@ -620,7 +668,12 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `DB_USER` | `root` | MariaDB 사용자 |
 | `DB_PASSWORD` | `root` | MariaDB 비밀번호 |
 | `DB_NAME` | `queuing_db` | MariaDB 데이터베이스명 |
-| `JWT_SECRET` | `queuing-admission-secret-key-2026` | JWT 서명 키 |
+| `JWT_AUTH_SECRET` | *(없음; 필수)* | 로그인 세션 Access/Refresh JWT 서명 키. 32자 이상의 랜덤 값 |
+| `JWT_SECRET` | *(없음; 필수)* | 대기열 Admission Token 및 취소표 링크 JWT 서명 키. 32자 이상의 랜덤 값 |
+| `ADMIN_BOOTSTRAP_USER` | *(없음)* | 초기 관리자 계정 ID. `ADMIN_BOOTSTRAP_PASSWORD`와 함께 설정할 때만 생성 |
+| `ADMIN_BOOTSTRAP_PASSWORD` | *(없음)* | 초기 관리자 비밀번호. 12자 이상, 기존 계정은 덮어쓰지 않음 |
+| `MONITOR_BOOTSTRAP_USER` | *(없음)* | 초기 모니터링 계정 ID. `MONITOR_BOOTSTRAP_PASSWORD`와 함께 설정할 때만 생성 |
+| `MONITOR_BOOTSTRAP_PASSWORD` | *(없음)* | 초기 모니터링 비밀번호. 12자 이상, 기존 계정은 덮어쓰지 않음 |
 | `HOLD_DURATION` | `600` | 결제 제한 시간 (초) |
 | `SMTP_USER` | *(없음)* | SMTP 이메일 계정 (설정 시 SMTP 모드 활성화) |
 | `SMTP_PASS` | *(없음)* | SMTP 비밀번호 또는 앱 비밀번호 |
@@ -664,23 +717,38 @@ recaptcha:
   required: true
   scoreThreshold: "0.5"
   allowedHostnames: "www.example.com,example.com"
+  v2Fallback: true
   secret:
     name: "recaptcha-credentials"
-    key: "RECAPTCHA_SECRET_KEY"
+    v3Key: "RECAPTCHA_SECRET_KEY"
+    v2Key: "RECAPTCHA_V2_SECRET_KEY"
 ```
 
 활성화 전 인프라 담당자가 다음 Secret을 `queuing-a`에 생성해야 한다.
 
 ```text
 Secret 이름: recaptcha-credentials
-Secret 키:   RECAPTCHA_SECRET_KEY
+Secret 키:   RECAPTCHA_SECRET_KEY (v3)
+              RECAPTCHA_V2_SECRET_KEY (v2Fallback=true일 때)
 ```
 
 실제 Secret Key는 프론트엔드 S3 파일이나 Helm values에 넣지 않는다. 프론트엔드에는 Google Site Key만 빌드 환경변수로 포함하고, API는 Secret Key로 Google `siteverify` 검증을 수행한다. 차트 상세 구조와 생성 명령은 `redis-api-chart/README.md`를 참조한다.
 
+### Kubernetes Helm 차트의 API 인증 설정
+
+`JWT_AUTH_SECRET`와 `JWT_SECRET`은 반드시 API가 배포되는 네임스페이스의 `auth-credentials` Secret으로 주입한다. 두 값은 서로 다른 32자 이상의 랜덤 문자열을 사용한다. `values.yaml`이나 Git에는 실제 값을 기록하지 않는다.
+
+```bash
+kubectl -n queuing-a create secret generic auth-credentials \
+  --from-literal=JWT_AUTH_SECRET='<세션용 랜덤 키>' \
+  --from-literal=JWT_SECRET='<Admission·취소표 링크용 랜덤 키>'
+```
+
+초기 관리자·모니터링 계정을 새로 만들 때만 별도 bootstrap Secret을 사용한다. 기존 계정의 비밀번호는 덮어쓰지 않으므로, 레거시 계정이 있다면 로그인 후 비밀번호 변경 또는 별도 DB 작업으로 교체해야 한다. Secret 생성과 Helm 배포는 인프라 담당자가 수행한다.
+
 ### Kubernetes Helm 차트의 네임스페이스 설정
 
-API Helm 차트의 Namespace, Deployment, Service, HPA, ServiceAccount는 Helm 릴리스의 `.Release.Namespace`를 사용한다. API 리소스를 `queuing-a`에 배포할 때는 Helm 릴리스도 `queuing-a`로 지정해야 한다. 기본 MariaDB 접속 계정은 `root`이며, 비밀번호는 `mariadb-credentials` Secret에서 주입한다.
+현재 `redis-api-chart`의 Deployment, Service, HPA, ServiceAccount 템플릿은 `queuing-a`를 직접 사용한다. 따라서 인증·DB·reCAPTCHA·SMTP Secret도 `queuing-a`에 생성해야 한다. 릴리스 기록까지 같은 네임스페이스로 관리하려면 Helm 실행에도 `-n queuing-a`를 지정한다. 기본 MariaDB 접속 계정은 `root`이며, 비밀번호는 `mariadb-credentials` Secret에서 주입한다.
 
 ```bash
 helm upgrade --install api /root/chart/redis-api-chart \

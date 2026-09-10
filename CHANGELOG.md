@@ -1,3 +1,56 @@
+## [2026-09-10 12:58] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/admissionWorker.js]**: MariaDB의 회차별 `eligible`·`WAITING` 대기열을 주기적으로 조회하고 Redis 대기 순서 상위 `BATCH_SIZE`명을 자동 승인하는 워커 추가. 승인 시 Admission Token 발급 및 MariaDB 상태 동기화. `JWT_SECRET` 미설정 시 상태를 변경하지 않고 사이클을 건너뛰도록 보호
+- **[src/app.js]**: 서버 시작·종료 과정에 자동 승인 워커 시작/정리 연결
+- **[.env]**: 온프레미스 테스트용 `AUTO_ADMISSION_ENABLED=true`, `AUTO_ADMISSION_INTERVAL_MS=1000` 설정 추가
+- **[.env.example]**: 자동 승인 워커 설정 예시 추가. 기본값은 `false`
+- **[redis-api-chart/values.yaml]**: Kubernetes에서 자동 승인 워커 활성화 여부와 실행 주기 설정 추가
+- **[redis-api-chart/templates/deployment.yaml]**: `AUTO_ADMISSION_ENABLED`, `AUTO_ADMISSION_INTERVAL_MS` 환경변수 주입 추가
+- **[redis-api-chart/Chart.yaml]**: 차트 버전을 `1.0.7`, API 이미지 기준 버전을 `1.0.9`로 갱신
+- **[redis-api-chart/README.md]**: 자동 승인 워커 설정 및 배포 시 주의사항 문서화
+
+---
+
+## [2026-09-10 08:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[.env.example]**: `RECAPTCHA_V2_SECRET_KEY` 환경변수 항목 추가. v3 점수 미달 시 v2 체크박스 폴백 검증에 사용
+
+---
+
+## [2026-09-09 22:45] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 더미 유저 · HOT 공연 관리 API 3개 추가
+  - `POST /admin/dummy/create-users` — 지정 수만큼 더미 유저(`sim-user-XXXXXX@test.com`) 일괄 생성 (INSERT IGNORE, 2000건 배치)
+  - `POST /admin/dummy/distribute-interests` — 더미 유저를 현재 등록된 공연 중 랜덤 N개(기본 5개)에 위시리스트로 분배. 기존 더미 위시리스트를 초기화 후 재분배하여 메인 페이지 "요즘 HOT 공연" 순위에 반영
+  - `POST /admin/dummy/cleanup` — 더미 유저 및 위시리스트 일괄 삭제
+
+---
+
+## [2026-09-09 21:45] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/authService.js]**: `deleteAccount(userId, password)` 함수 추가 — 비밀번호 재확인 후 wishlists, waiting_queue, reservations, memberships, users 순서로 관련 데이터 정리 및 계정 삭제. admin 계정은 탈퇴 차단
+- **[src/routes/authRoutes.js]**: `DELETE /auth/account` 라우트 추가 — userId + password 필수
+- **[redis-api-chart/values.yaml]**: AWS SES용 `fromEmail`(`noreply@queuing.kr`), `siteUrl`(`https://www.queuing.kr`) 환경변수 추가
+- **[redis-api-chart/templates/deployment.yaml]**: `FROM_EMAIL`, `SITE_URL` 환경변수를 파드에 조건부 주입하도록 수정
+
+---
+
+## [2026-09-09 19:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/timerService.js]**: `redis.config('SET', ...)` 호출을 try/catch로 감싸 ElastiCache 환경에서도 정상 기동되도록 수정
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** EKS 파드 CrashLoopBackOff — `ReplyError: ERR unknown command 'config'` (Exit Code 1)
+- **원인(Cause):** AWS ElastiCache는 보안상 `CONFIG` 명령을 차단함. `timerService.js:44`의 `redis.config('SET', 'notify-keyspace-events', 'Ex')`가 `app.js:81 start()` 첫 줄에서 실행되어 프로세스 즉시 종료
+- **해결(Solution):** try/catch로 감싸서 관리형 Redis에서는 경고 로그만 남기고 진행. `notify-keyspace-events=Ex`는 ElastiCache 파라미터 그룹(`queuing-redis7-params`)에 이미 설정되어 있으므로 앱이 직접 설정할 필요 없음. 온프레미스 Redis에서는 기존과 동일하게 동작
+
+---
+
 ## [2026-09-08 21:55] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -493,3 +546,19 @@
 - **증상(Issue):** 일반 예매 중 매진 안내를 받은 사용자가 기존 `admitted` 상태 때문에 취소표 standby 대기열에 등록되지 않음.
 - **원인(Cause):** 기존 `/queue/enter`는 이미 일반 대기열에 등록된 사용자를 재사용하며, 취소표 전용 이동 처리가 없었음.
 - **해결(Solution):** `enterStandby()`가 기존 일반 대기열 상태를 정리하고 standby 순번을 발급하도록 분리한 뒤 `POST /cancel-queue/join`으로 프론트에서 호출.
+## [2026-09-10 11:08] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/authTokenService.js / src/services/tokenService.js]**: 세션 JWT와 Admission JWT의 하드코딩 fallback을 제거하고, 각각 환경변수 키를 32자 이상으로 강제. production에서 키가 없거나 약하면 기동을 중단하도록 변경
+- **[src/middleware/auth.js / src/routes/*.js]**: Bearer Access JWT 인증, 관리자 역할 검사, 요청 `userId`와 인증 사용자 일치 검증을 보호 API에 적용. 취소표 흐름에는 서버 발급 링크 토큰 또는 로그인 토큰만 허용
+- **[src/services/authService.js]**: 기존 관리자·모니터링 기본 비밀번호를 제거하고 bootstrap Secret 환경변수가 설정된 경우에만 초기 계정을 생성. 기존 계정은 덮어쓰지 않음
+- **[src/services/cancelLinkTokenService.js / src/services/cancelAllocationService.js / src/routes/simulationRoutes.js]**: 취소표 할당 시 사용자·공연·좌석·할당 ID와 만료시각을 묶은 서명 링크 토큰을 발급하고 이메일 링크에 전달
+- **[.env.example / redis-api-chart/values.yaml / redis-api-chart/templates/deployment.yaml]**: JWT Secret과 선택적 bootstrap Secret을 Kubernetes Secret에서 주입하도록 설정 및 문서화
+- **[README.MD]**: 인증 헤더, 사용자 소유권 검증, 취소표 링크 토큰, Helm Secret 배포 전제조건을 갱신
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 코드에 고정 JWT 키와 관리자 초기 비밀번호가 남아 있으면 외부 사용자가 토큰을 위조하거나 알려진 계정으로 로그인할 위험이 있음. 또한 `userId`만 바꾼 요청으로 타 사용자 데이터에 접근할 수 있었음.
+- **원인(Cause):** 토큰 서명 키의 코드 fallback과 계정 생성용 평문 비밀번호가 있었고, 일부 사용자 API가 요청 ID와 로그인 주체의 소유권을 재검증하지 않았음. 독립 취소표 페이지는 일반 Bearer 헤더를 사용할 수 없음.
+- **해결(Solution):** 환경변수 기반 강제 키 검증, Access/Refresh JWT 인증, 관리자·본인 계정 권한 미들웨어, 만료형 취소표 링크 JWT를 도입했다. 독립 페이지는 linkToken을 전달하고 서버에서 사용자·공연·좌석·할당 범위를 재검증한다.
+
+---

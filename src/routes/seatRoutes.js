@@ -4,6 +4,15 @@ const { sendEmail } = require('../services/notificationService');
 const redis = require('../config/redis');
 const pool = require('../config/mariadb');
 const { guardRecaptcha } = require('../services/recaptchaService');
+const {
+  authenticate,
+  requireRole,
+  allowUserOrCancelLink,
+  requireSelfOrLink,
+} = require('../middleware/auth');
+
+const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
+const userAuth = { preHandler: [allowUserOrCancelLink, requireSelfOrLink] };
 
 const GRADE_MAP = {
   Floor: 'VIP', A1: 'S', A2: 'S', A3: 'S', A4: 'S',
@@ -51,7 +60,7 @@ async function getEmailContext(seatId, userId, extraEventId, extraSessionDate, e
 
 async function seatRoutes(fastify) {
 
-  fastify.post('/seats/init', async (request, reply) => {
+  fastify.post('/seats/init', adminAuth, async (request, reply) => {
     const { seatIds } = request.body || {};
     if (!Array.isArray(seatIds) || seatIds.length === 0) {
       return reply.status(400).send({ error: 'seatIds 배열이 필요합니다.' });
@@ -60,7 +69,7 @@ async function seatRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.post('/seats/hold', async (request, reply) => {
+  fastify.post('/seats/hold', userAuth, async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'seat_hold')) return;
     const { userId, seatId, token, eventId, sessionDate, sessionTime } = request.body || {};
     if (!userId || !seatId) {
@@ -74,7 +83,7 @@ async function seatRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.post('/seats/confirm', async (request, reply) => {
+  fastify.post('/seats/confirm', userAuth, async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'seat_confirm')) return;
     const { userId, seatId, eventId, sessionDate, sessionTime } = request.body || {};
     if (!userId || !seatId) {
@@ -112,7 +121,7 @@ async function seatRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.post('/seats/cancel', async (request, reply) => {
+  fastify.post('/seats/cancel', userAuth, async (request, reply) => {
     const { userId, seatId } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
@@ -149,7 +158,7 @@ async function seatRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.post('/seats/release', async (request, reply) => {
+  fastify.post('/seats/release', userAuth, async (request, reply) => {
     const { userId, seatId } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
@@ -177,7 +186,7 @@ async function seatRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.post('/seats/reconcile', async (request, reply) => {
+  fastify.post('/seats/reconcile', adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId가 필요합니다.' });
     const result = await seatService.reconcileSeatCounters(eventId, { sessionDate, sessionTime });
@@ -190,18 +199,18 @@ async function seatRoutes(fastify) {
     return reply.send({ seats, count: seats.length });
   });
 
-  fastify.get('/reservations', async (request, reply) => {
+  fastify.get('/reservations', adminAuth, async (request, reply) => {
     const reservations = await getAllReservations();
     return reply.send({ reservations, count: reservations.length });
   });
 
-  fastify.get('/reservations/:seatId', async (request, reply) => {
+  fastify.get('/reservations/:seatId', adminAuth, async (request, reply) => {
     const { seatId } = request.params;
     const reservations = await getReservationsBySeat(seatId);
     return reply.send({ seatId, reservations });
   });
 
-  fastify.get('/reservations/user/:userId', async (request, reply) => {
+  fastify.get('/reservations/user/:userId', userAuth, async (request, reply) => {
     const { userId } = request.params;
     const reservations = await getReservationsByUser(userId);
     return reply.send({ userId, reservations, count: reservations.length });

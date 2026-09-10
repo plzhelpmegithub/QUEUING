@@ -1,8 +1,14 @@
 const wishlistService = require('../services/wishlistService');
+const { authenticate, requireSelf } = require('../middleware/auth');
 
 async function wishlistRoutes(fastify) {
 
-  fastify.post('/wishlist/add', async (request, reply) => {
+  fastify.get('/wishlist/counts/all', async (request, reply) => {
+    const counts = await wishlistService.getAllWishlistCounts();
+    return reply.send({ counts });
+  });
+
+  fastify.post('/wishlist/add', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId, eventId } = request.body || {};
     if (!userId || !eventId) {
       return reply.status(400).send({ error: 'userId와 eventId는 필수입니다.' });
@@ -12,7 +18,7 @@ async function wishlistRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.post('/wishlist/remove', async (request, reply) => {
+  fastify.post('/wishlist/remove', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId, eventId } = request.body || {};
     if (!userId || !eventId) {
       return reply.status(400).send({ error: 'userId와 eventId는 필수입니다.' });
@@ -22,13 +28,13 @@ async function wishlistRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.get('/wishlist/:userId', async (request, reply) => {
+  fastify.get('/wishlist/:userId', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId } = request.params;
     const items = await wishlistService.getWishlistByUser(userId);
     return reply.send({ userId, wishlists: items, count: items.length });
   });
 
-  fastify.get('/wishlist/check/:userId/:eventId', async (request, reply) => {
+  fastify.get('/wishlist/check/:userId/:eventId', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId, eventId } = request.params;
     const wishlisted = await wishlistService.isWishlisted(userId, eventId);
     return reply.send({ wishlisted });

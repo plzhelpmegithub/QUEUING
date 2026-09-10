@@ -50,7 +50,18 @@ async function getWishlistCount(eventId) {
     `SELECT COUNT(*) as cnt FROM wishlists WHERE event_id = ?`,
     [eventId],
   );
-  return rows[0]?.cnt || 0;
+  return Number(rows[0]?.cnt) || 0;
 }
 
-module.exports = { addWishlist, removeWishlist, getWishlistByUser, isWishlisted, getWishlistCount };
+async function getAllWishlistCounts() {
+  const rows = await pool.query(
+    `SELECT event_id, COUNT(*) as cnt FROM wishlists GROUP BY event_id`,
+  );
+  const counts = {};
+  for (const row of rows) {
+    counts[row.event_id] = Number(row.cnt) || 0;
+  }
+  return counts;
+}
+
+module.exports = { addWishlist, removeWishlist, getWishlistByUser, isWishlisted, getWishlistCount, getAllWishlistCounts };

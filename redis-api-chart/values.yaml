@@ -23,7 +23,7 @@ replicaCount: 2
 image:
   repository: "mover14/redis-api-backend"
   pullPolicy: IfNotPresent
-  tag: "1.0.8"
+  tag: "1.0.9"
 
 # -----------------------------------------------------------------------------
 # [이미지 풀 시크릿] 프라이빗 레지스트리 인증이 필요할 때 사용.
@@ -95,6 +95,12 @@ env:
   redisHost: "queuing-redis.wxbnsp.ng.0001.apn2.cache.amazonaws.com"
   redisPort: "6379"
 
+  # --- 자동 승인 워커 ---
+  # true이면 대기열 상위 BATCH_SIZE명을 주기적으로 자동 승인한다.
+  # 운영에서는 false를 유지하고, 실제 대기열 운영 정책에 맞춰 별도 검토한다.
+  autoAdmissionEnabled: true
+  autoAdmissionIntervalMs: "1000"
+
   # --- MariaDB 연결 (mariadb.js) ---
   # shared-infra/mariadb.yaml로 배포된 MariaDB (네임스페이스: queuing-db).
   # 회원 정보, 예매 내역 등 영속적 데이터 저장.
@@ -103,13 +109,22 @@ env:
   dbUser: "team2"
   dbName: "queuing_db"
 
-  # --- AWS LocalStack (notificationService.js) ---
-  # SES/SNS 이메일·푸시 알림용. 온프레미스에서는 LocalStack으로 대체.
-  # AWS_ENDPOINT를 안 넣으면 알림 기능이 100% 실패하므로 반드시 설정.
-  # 자격증명은 LocalStack 관례상 더미값("test") 사용.
+  # --- AWS SES / LocalStack (notificationService.js) ---
+  # SES 이메일 발송용. 온프레미스에서는 LocalStack(awsEndpoint)으로 대체.
+  # AWS 환경에서는 awsEndpoint를 비워두면 실제 SES를 사용한다.
+  # 자격증명이 비어 있으면 IRSA(ServiceAccount 역할)로 인증한다.
   awsEndpoint: ""
   awsAccessKeyId: ""
   awsSecretAccessKey: ""
+
+  # --- SES 발신자 주소 ---
+  # SES에서 검증된 이메일 또는 도메인이어야 발송 가능.
+  # 비워두면 SMTP_USER → 'noreply@queuing.com' 순서로 폴백한다.
+  fromEmail: "noreply@queuing.kr"
+
+  # --- 사이트 URL (취소표 알림 이메일 내 링크) ---
+  # 비워두면 http://localhost 로 폴백하여 이메일 링크가 깨진다.
+  siteUrl: "https://www.queuing.kr"
 
   # --- Node.js 실행 환경 ---
   # "production"이면 디버그 로그 축소, 에러 스택트레이스 숨김 등 최적화 적용.
@@ -149,20 +164,50 @@ dbPasswordSecret:
   key: "MARIADB_ROOT_PASSWORD"
 
 # -----------------------------------------------------------------------------
-# [Google reCAPTCHA v3] API 요청 봇 검증 설정.
+# [API 인증 Secret] 세션 JWT와 대기열 Admission Token의 서명 키.
+# 두 키는 용도가 다르므로 같은 값을 재사용하지 않는다.
+# 배포 전에 queuing-a 네임스페이스에 Secret을 생성해야 한다:
+#   kubectl -n queuing-a create secret generic auth-credentials \
+#     --from-literal=JWT_AUTH_SECRET='<세션용 랜덤 키>' \
+#     --from-literal=JWT_SECRET='<Admission Token용 랜덤 키>'
+# -----------------------------------------------------------------------------
+auth:
+  secret:
+    name: "auth-credentials"
+    accessKey: "JWT_AUTH_SECRET"
+    admissionKey: "JWT_SECRET"
+  # true일 때만 아래 Secret에서 초기 관리자/모니터링 계정을 생성한다.
+  # 비밀번호는 코드나 values.yaml에 기록하지 않는다.
+  bootstrap:
+    enabled: false
+    secret:
+      name: "auth-bootstrap-credentials"
+      adminUserKey: "ADMIN_BOOTSTRAP_USER"
+      adminPasswordKey: "ADMIN_BOOTSTRAP_PASSWORD"
+      monitorUserKey: "MONITOR_BOOTSTRAP_USER"
+      monitorPasswordKey: "MONITOR_BOOTSTRAP_PASSWORD"
+
+# -----------------------------------------------------------------------------
+# [Google reCAPTCHA] API 요청 봇 검증 설정 (v3 + v2 체크박스 폴백).
 # enabled가 false이면 기존 배포처럼 reCAPTCHA 환경변수를 파드에 주입하지 않는다.
 # true로 바꾸면 아래 Secret이 queuing-a 네임스페이스에 미리 존재해야 한다.
-# Secret에는 실제 Google reCAPTCHA Secret Key를 평문이 아닌 형태로 보관한다.
+# Secret에는 v3 Secret Key와 v2 Secret Key를 함께 보관한다.
 # 운영 환경에서는 allowedHostnames를 실제 프론트엔드 도메인으로 변경한다.
+#
+# v2Fallback: true이면 v3 점수 미달 시 v2 체크박스로 폴백한다.
+#   이때 Secret에 RECAPTCHA_V2_SECRET_KEY 키가 존재해야 한다.
+#   false이면 v2 관련 환경변수를 주입하지 않으며 v3 검증만 사용한다.
 # -----------------------------------------------------------------------------
 recaptcha:
-  enabled: false
+  enabled: true
   required: true
   scoreThreshold: "0.5"
   allowedHostnames: "localhost"
+  v2Fallback: true
   secret:
     name: "recaptcha-credentials"
-    key: "RECAPTCHA_SECRET_KEY"
+    v3Key: "RECAPTCHA_SECRET_KEY"
+    v2Key: "RECAPTCHA_V2_SECRET_KEY"
 
 # -----------------------------------------------------------------------------
 # [리소스 제한] 파드의 CPU/메모리 할당량.

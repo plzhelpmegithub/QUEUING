@@ -1,8 +1,9 @@
 const membershipService = require('../services/membershipService');
+const { authenticate, requireSelf } = require('../middleware/auth');
 
 async function membershipRoutes(fastify) {
 
-  fastify.post('/membership/subscribe', async (request, reply) => {
+  fastify.post('/membership/subscribe', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId, plan } = request.body || {};
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
@@ -15,13 +16,13 @@ async function membershipRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.get('/membership/:userId', async (request, reply) => {
+  fastify.get('/membership/:userId', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId } = request.params;
     const result = await membershipService.getMembership(userId);
     return reply.send(result);
   });
 
-  fastify.post('/membership/cancel', async (request, reply) => {
+  fastify.post('/membership/cancel', { preHandler: [authenticate, requireSelf] }, async (request, reply) => {
     const { userId } = request.body || {};
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });

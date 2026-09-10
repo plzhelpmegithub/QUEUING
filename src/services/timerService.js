@@ -41,7 +41,11 @@ async function getRemaining(seatId) {
 }
 
 async function initExpiryListener() {
-  await redis.config('SET', 'notify-keyspace-events', 'Ex');
+  try {
+    await redis.config('SET', 'notify-keyspace-events', 'Ex');
+  } catch (e) {
+    console.warn('[Timer] notify-keyspace-events 설정 생략:', e.message);
+  }
 
   subscriber = new Redis({
     host: process.env.REDIS_HOST || 'localhost',

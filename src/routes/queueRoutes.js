@@ -1,6 +1,10 @@
 const redis = require('../config/redis');
 const queueService = require('../services/queueService');
 const { guardRecaptcha } = require('../services/recaptchaService');
+const { authenticate, requireRole, requireSelf } = require('../middleware/auth');
+
+const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
+const userAuth = { preHandler: [authenticate, requireSelf] };
 
 function getQueueContext(request) {
   const body = request.body || {};
@@ -14,7 +18,7 @@ function getQueueContext(request) {
 
 async function queueRoutes(fastify) {
 
-  fastify.post('/queue/set-seats', async (request, reply) => {
+  fastify.post('/queue/set-seats', adminAuth, async (request, reply) => {
     const { totalSeats } = request.body || {};
     if (!totalSeats || totalSeats < 1) {
       return reply.status(400).send({ error: '총 좌석 수(totalSeats)는 1 이상이어야 합니다.' });
@@ -23,7 +27,7 @@ async function queueRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.post('/queue/enter', async (request, reply) => {
+  fastify.post('/queue/enter', userAuth, async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'queue_enter')) return;
     const { userId } = request.body || {};
     if (!userId) {
@@ -33,7 +37,7 @@ async function queueRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.get('/queue/position/:userId', async (request, reply) => {
+  fastify.get('/queue/position/:userId', userAuth, async (request, reply) => {
     const { userId } = request.params;
     const result = await queueService.getPosition(userId, getQueueContext(request));
     if (result.status === 'not_found') {
@@ -42,17 +46,17 @@ async function queueRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.post('/queue/admit', async (request, reply) => {
+  fastify.post('/queue/admit', adminAuth, async (request, reply) => {
     const result = await queueService.admitBatch(getQueueContext(request));
     return reply.send(result);
   });
 
-  fastify.get('/queue/standby/next', async (request, reply) => {
+  fastify.get('/queue/standby/next', adminAuth, async (request, reply) => {
     const result = await queueService.getNextStandby(getQueueContext(request));
     return reply.send(result);
   });
 
-  fastify.post('/queue/standby/promote', async (request, reply) => {
+  fastify.post('/queue/standby/promote', adminAuth, async (request, reply) => {
     const { userId } = request.body || {};
     if (!userId) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
@@ -66,22 +70,22 @@ async function queueRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.post('/admin/ticketing/open', async (request, reply) => {
+  fastify.post('/admin/ticketing/open', adminAuth, async (request, reply) => {
     const result = await queueService.openTicketing();
     return reply.send(result);
   });
 
-  fastify.post('/admin/ticketing/close', async (request, reply) => {
+  fastify.post('/admin/ticketing/close', adminAuth, async (request, reply) => {
     const result = await queueService.closeTicketing();
     return reply.send(result);
   });
 
-  fastify.get('/admin/ticketing/status', async (request, reply) => {
+  fastify.get('/admin/ticketing/status', adminAuth, async (request, reply) => {
     const result = await queueService.getTicketingStatus();
     return reply.send(result);
   });
 
-  fastify.post('/admin/hold-duration', async (request, reply) => {
+  fastify.post('/admin/hold-duration', adminAuth, async (request, reply) => {
     const { seconds } = request.body || {};
     if (!seconds || seconds < 10) {
       return reply.status(400).send({ error: '결제 제한 시간은 10초 이상이어야 합니다.' });
@@ -90,12 +94,12 @@ async function queueRoutes(fastify) {
     return reply.send(result);
   });
 
-  fastify.get('/admin/hold-duration', async (request, reply) => {
+  fastify.get('/admin/hold-duration', adminAuth, async (request, reply) => {
     const result = await queueService.getHoldDuration();
     return reply.send(result);
   });
 
-  fastify.post('/admin/ticketing/schedule', async (request, reply) => {
+  fastify.post('/admin/ticketing/schedule', adminAuth, async (request, reply) => {
     const { openAt, durationMinutes } = request.body || {};
     if (!openAt) {
       return reply.status(400).send({ error: 'openAt(오픈 시간)은 필수입니다. 예: "2026-12-25T20:00:00"' });
@@ -105,17 +109,17 @@ async function queueRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.post('/admin/ticketing/cancel-schedule', async (request, reply) => {
+  fastify.post('/admin/ticketing/cancel-schedule', adminAuth, async (request, reply) => {
     const result = await queueService.cancelSchedule();
     return reply.send(result);
   });
 
-  fastify.get('/admin/ticketing/schedule', async (request, reply) => {
+  fastify.get('/admin/ticketing/schedule', adminAuth, async (request, reply) => {
     const result = await queueService.getSchedule();
     return reply.send(result);
   });
 
-  fastify.post('/admin/ticketing/schedule-standby-close', async (request, reply) => {
+  fastify.post('/admin/ticketing/schedule-standby-close', adminAuth, async (request, reply) => {
     const { closeAt } = request.body || {};
     if (!closeAt) {
       return reply.status(400).send({ error: 'closeAt(마감 시간)은 필수입니다. 예: "2026-08-18T00:00:00"' });
@@ -125,14 +129,14 @@ async function queueRoutes(fastify) {
     return reply.status(statusCode).send(result);
   });
 
-  fastify.get('/queue/token/:userId', async (request, reply) => {
+  fastify.get('/queue/token/:userId', userAuth, async (request, reply) => {
     const { getTokenInfo } = require('../services/tokenService');
     const { userId } = request.params;
     const result = await getTokenInfo(userId, getQueueContext(request));
     return reply.send(result);
   });
 
-  fastify.get('/queue/status/:userId', async (request, reply) => {
+  fastify.get('/queue/status/:userId', userAuth, async (request, reply) => {
     const { getTokenInfo } = require('../services/tokenService');
     const { userId } = request.params;
 
@@ -178,7 +182,7 @@ async function queueRoutes(fastify) {
     });
   });
 
-  fastify.post('/queue/leave', async (request, reply) => {
+  fastify.post('/queue/leave', userAuth, async (request, reply) => {
     const { revokeToken } = require('../services/tokenService');
     const { userId } = request.body || {};
     if (!userId) {
@@ -207,7 +211,7 @@ async function queueRoutes(fastify) {
     return reply.send({ success: false, message: '대기열에 등록되어 있지 않습니다.' });
   });
 
-  fastify.post('/admin/queue/simulate', async (request, reply) => {
+  fastify.post('/admin/queue/simulate', adminAuth, async (request, reply) => {
     const { count, membershipRatio } = request.body || {};
     const total = Math.min(parseInt(count, 10) || 1000, 500000);
     const mRatio = Math.max(0, Math.min(1, parseFloat(membershipRatio) || 0));
@@ -288,7 +292,7 @@ async function queueRoutes(fastify) {
     });
   });
 
-  fastify.post('/admin/queue/reset', async (request, reply) => {
+  fastify.post('/admin/queue/reset', adminAuth, async (request, reply) => {
     const pipeline = redis.pipeline();
     pipeline.del('queue:waiting');
     pipeline.del('queue:standby');

@@ -29,27 +29,46 @@ async function verifyPassword(password, storedHash) {
 
 async function initUsersTable() {
   try {
-    const existing = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, ['admin@queuing.kr']);
-    if (existing.length === 0) {
-      const hashedPw = await argon2Hash('admin1234', ARGON2_OPTIONS);
-      await pool.query(
-        `INSERT INTO ${TABLE_NAME} (user_id, password, role, email) VALUES (?, ?, ?, ?)`,
-        ['admin@queuing.kr', hashedPw, 'admin', 'admin@queuing.kr'],
-      );
-      console.log('[Auth] 기본 관리자 계정 생성 (admin@queuing.kr / admin1234)');
-    }
-    const monitorExisting = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, ['monitor@queuing.kr']);
-    if (monitorExisting.length === 0) {
-      const hashedPw = await argon2Hash('monitor1234', ARGON2_OPTIONS);
-      await pool.query(
-        `INSERT INTO ${TABLE_NAME} (user_id, password, role, email) VALUES (?, ?, ?, ?)`,
-        ['monitor@queuing.kr', hashedPw, 'monitor', 'monitor@queuing.kr'],
-      );
-      console.log('[Auth] 기본 모니터링 계정 생성 (monitor@queuing.kr / monitor1234)');
-    }
+    await ensureBootstrapAccount({
+      role: 'admin',
+      defaultUserId: 'admin@queuing.kr',
+      passwordEnv: 'ADMIN_BOOTSTRAP_PASSWORD',
+      userEnv: 'ADMIN_BOOTSTRAP_USER',
+      label: '관리자',
+    });
+    await ensureBootstrapAccount({
+      role: 'monitor',
+      defaultUserId: 'monitor@queuing.kr',
+      passwordEnv: 'MONITOR_BOOTSTRAP_PASSWORD',
+      userEnv: 'MONITOR_BOOTSTRAP_USER',
+      label: '모니터링',
+    });
   } catch (err) {
     console.error('[Auth] 관리자 계정 생성 실패:', err.message);
   }
+}
+
+async function ensureBootstrapAccount({ role, defaultUserId, passwordEnv, userEnv, label }) {
+  const userId = String(process.env[userEnv] || defaultUserId).trim();
+  const password = String(process.env[passwordEnv] || '').trim();
+  if (!password) {
+    console.warn(`[Auth] ${label} 초기 계정은 ${passwordEnv}가 설정된 경우에만 생성됩니다.`);
+    return;
+  }
+  if (password.length < 12) {
+    console.warn(`[Auth] ${label} 초기 계정은 ${passwordEnv}에 12자 이상의 비밀번호가 필요합니다.`);
+    return;
+  }
+
+  const existing = await pool.query(`SELECT user_id FROM ${TABLE_NAME} WHERE user_id = ?`, [userId]);
+  if (existing.length > 0) return;
+
+  const hashedPw = await argon2Hash(password, ARGON2_OPTIONS);
+  await pool.query(
+    `INSERT INTO ${TABLE_NAME} (user_id, password, role, email) VALUES (?, ?, ?, ?)`,
+    [userId, hashedPw, role, userId],
+  );
+  console.log(`[Auth] ${label} 초기 계정 생성: ${userId}`);
 }
 
 async function register(userId, password, email, role = 'user', profile = {}) {
@@ -195,4 +214,37 @@ async function listUsers() {
   }
 }
 
-module.exports = { initUsersTable, register, login, listUsers, updateProfile };
+async function deleteAccount(userId, password) {
+  try {
+    const rows = await pool.query(
+      `SELECT user_id, password, role FROM ${TABLE_NAME} WHERE user_id = ?`,
+      [userId],
+    );
+    const user = rows[0];
+    if (!user) {
+      return { success: false, message: '존재하지 않는 계정입니다.' };
+    }
+    if (user.role === 'admin') {
+      return { success: false, message: '관리자 계정은 탈퇴할 수 없습니다.' };
+    }
+
+    const isMatch = await verifyPassword(password, user.password);
+    if (!isMatch) {
+      return { success: false, message: '비밀번호가 올바르지 않습니다.' };
+    }
+
+    await pool.query(`DELETE FROM wishlists WHERE user_id = ?`, [userId]);
+    await pool.query(`UPDATE waiting_queue SET status = 'LEFT' WHERE user_id = ? AND status IN ('WAITING','ADMITTED','PROMOTED')`, [userId]);
+    await pool.query(`UPDATE reservations SET status = 'CANCELLED', cancelled_at = NOW() WHERE user_id = ? AND status = 'CONFIRMED'`, [userId]);
+    await pool.query(`DELETE FROM memberships WHERE user_id = ?`, [userId]);
+    await pool.query(`DELETE FROM ${TABLE_NAME} WHERE user_id = ?`, [userId]);
+
+    console.log(`[Auth] 회원탈퇴 완료: ${userId}`);
+    return { success: true, message: '회원탈퇴가 완료되었습니다.' };
+  } catch (err) {
+    console.error('[Auth] 회원탈퇴 실패:', err.message);
+    return { success: false, message: '회원탈퇴 처리 중 오류가 발생했습니다.' };
+  }
+}
+
+module.exports = { initUsersTable, register, login, listUsers, updateProfile, deleteAccount };

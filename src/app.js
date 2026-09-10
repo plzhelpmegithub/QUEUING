@@ -69,6 +69,7 @@ fastify.get('/metrics', async (request, reply) => {
 const { initExpiryListener, stopExpiryListener } = require('./services/timerService');
 const { initTable } = require('./services/dbService');
 const { startRetryWorker, stopRetryWorker } = require('./services/syncRetryService');
+const { startAdmissionWorker, stopAdmissionWorker } = require('./services/admissionWorker');
 const {
   recoverWithRetry,
   startAutoRecovery,
@@ -76,8 +77,12 @@ const {
 } = require('./services/redisRecoveryService');
 
 const { initUsersTable } = require('./services/authService');
+const { assertConfigured: assertAuthTokenConfigured } = require('./services/authTokenService');
+const { assertConfigured: assertAdmissionTokenConfigured } = require('./services/tokenService');
 const start = async () => {
   try {
+    assertAuthTokenConfigured();
+    assertAdmissionTokenConfigured();
     await initExpiryListener();
     await initTable();
     await initUsersTable();
@@ -85,6 +90,7 @@ const start = async () => {
     console.log('[Server] Redis 시작 복구 결과:', JSON.stringify(recovery));
     startAutoRecovery();
     startRetryWorker();
+    startAdmissionWorker();
     const port = process.env.PORT || 3000;
     await fastify.listen({ port, host: '0.0.0.0' });
     console.log(`[Server] Running on port ${port}`);
@@ -97,6 +103,7 @@ const start = async () => {
 process.on('SIGINT', async () => {
   stopAutoRecovery();
   stopRetryWorker();
+  stopAdmissionWorker();
   await stopExpiryListener();
   await fastify.close();
   process.exit(0);

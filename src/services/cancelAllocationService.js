@@ -1,4 +1,5 @@
 const pool = require('../config/mariadb');
+const { issueCancelLinkToken } = require('./cancelLinkTokenService');
 
 async function createAllocation(userId, seatId, eventId, ttlSeconds = 600, context = {}) {
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
@@ -10,7 +11,7 @@ async function createAllocation(userId, seatId, eventId, ttlSeconds = 600, conte
     [userId, seatId, eventId || '', sessionDate, sessionTime, expiresAt],
   );
   console.log(`[CancelAlloc] 링크 발급: ${userId} → ${seatId} (만료: ${expiresAt.toISOString()})`);
-  return {
+  const allocation = {
     id: Number(result.insertId),
     userId,
     seatId,
@@ -20,6 +21,8 @@ async function createAllocation(userId, seatId, eventId, ttlSeconds = 600, conte
     status: 'LINK_SENT',
     expiresAt: expiresAt.toISOString(),
   };
+  allocation.linkToken = issueCancelLinkToken(allocation, expiresAt);
+  return allocation;
 }
 
 async function markResponded(userId, seatId, eventId = '') {

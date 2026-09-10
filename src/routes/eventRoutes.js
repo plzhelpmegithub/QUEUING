@@ -6,6 +6,9 @@ const { recoverAll } = require('../services/redisRecoveryService');
 const { sendEmail, notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
 const { publishSeatEvent, EVENT_TYPE } = require('../services/eventService');
 const { buildSeatId } = require('../services/sessionContext');
+const { authenticate, requireRole } = require('../middleware/auth');
+
+const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
 
 const EVENT_KEY = 'event:info';
 const EVENT_LIST_KEY = 'events:list';
@@ -103,7 +106,7 @@ async function deleteEventData(eventId) {
 
 async function eventRoutes(fastify) {
 
-  fastify.post('/event/create', async (request, reply) => {
+  fastify.post('/event/create', adminAuth, async (request, reply) => {
     const { eventName, eventDate, venue, sections, totalSeats, price, seatingType, description, cast, agency, runtime, ageRating, notices, sessions } = request.body || {};
     const VALID_SEATING = new Set(['arena', 'standing', 'theater']);
     const resolvedSeatingType = VALID_SEATING.has(seatingType) ? seatingType : 'arena';
@@ -267,7 +270,7 @@ async function eventRoutes(fastify) {
     });
   });
 
-  fastify.patch('/event/update', async (request, reply) => {
+  fastify.patch('/event/update', adminAuth, async (request, reply) => {
     const { eventName, eventDate, venue, reason, notify, users, priceUpdates } = request.body || {};
 
     const info = await redis.hgetall(EVENT_KEY);
@@ -372,7 +375,7 @@ async function eventRoutes(fastify) {
     });
   });
 
-  fastify.post('/event/cancel', async (request, reply) => {
+  fastify.post('/event/cancel', adminAuth, async (request, reply) => {
     const { reason, users } = request.body || {};
 
     const info = await redis.hgetall(EVENT_KEY);
@@ -468,7 +471,7 @@ async function eventRoutes(fastify) {
     return reply.send({ events, count: events.length });
   });
 
-  fastify.patch('/events/:eventId/open-time', async (request, reply) => {
+  fastify.patch('/events/:eventId/open-time', adminAuth, async (request, reply) => {
     const { eventId } = request.params;
     const { ticketOpenAt } = request.body || {};
     const parsedOpenAt = ticketOpenAt ? new Date(ticketOpenAt) : null;
@@ -527,7 +530,7 @@ async function eventRoutes(fastify) {
     });
   });
 
-  fastify.patch('/events/:eventId/close-time', async (request, reply) => {
+  fastify.patch('/events/:eventId/close-time', adminAuth, async (request, reply) => {
     const { eventId } = request.params;
     const { ticketCloseAt } = request.body || {};
 
@@ -596,7 +599,7 @@ async function eventRoutes(fastify) {
 
   // 최대 5개를 한 번에 받되, 내부 처리는 순차적으로 진행한다.
   // 단일 삭제 API보다 빠르게 여러 건을 정리하면서도 DB/Redis 동시 요청 폭증은 피한다.
-  fastify.post('/events/batch-delete', async (request, reply) => {
+  fastify.post('/events/batch-delete', adminAuth, async (request, reply) => {
     const rawEventIds = request.body?.eventIds;
     if (!Array.isArray(rawEventIds) || rawEventIds.length === 0) {
       return reply.status(400).send({ success: false, message: '삭제할 eventIds 배열이 필요합니다.' });
@@ -628,13 +631,13 @@ async function eventRoutes(fastify) {
     });
   });
 
-  fastify.delete('/events/:eventId', async (request, reply) => {
+  fastify.delete('/events/:eventId', adminAuth, async (request, reply) => {
     const result = await deleteEventData(request.params.eventId);
     if (!result.success) return reply.status(result.statusCode || 404).send(result);
     return reply.send(result);
   });
 
-  fastify.post('/events/seed', async (request, reply) => {
+  fastify.post('/events/seed', adminAuth, async (request, reply) => {
     const dummyEvents = [
       { eventId: 'demo-1', eventName: '2026 연말 콘서트', eventDate: '2026-12-25', venue: '올림픽공원 체조경기장', totalSeats: 1000, price: 99000, emoji: '🎵', color: '#667eea,#764ba2', status: 'open' },
       { eventId: 'demo-2', eventName: '현대미술 특별전', eventDate: '상시', venue: '국립현대미술관', totalSeats: 500, price: 15000, emoji: '🎨', color: '#f093fb,#f5576c', status: 'open' },
@@ -672,7 +675,7 @@ async function eventRoutes(fastify) {
     return reply.send({ seeded: dummyEvents.length, dbSaved, dbError, message: '더미 이벤트 5개 생성 완료' });
   });
 
-  fastify.post('/admin/redis/reset', async (request, reply) => {
+  fastify.post('/admin/redis/reset', adminAuth, async (request, reply) => {
     const { mode = 'soft' } = request.body || {};
     const cleared = [];
 
@@ -765,7 +768,7 @@ async function eventRoutes(fastify) {
     });
   });
 
-  fastify.post('/admin/redis/recover', async (request, reply) => {
+  fastify.post('/admin/redis/recover', adminAuth, async (request, reply) => {
     const { eventId } = request.body || {};
     try {
       const results = await recoverAll({ eventId: eventId || null, reason: 'manual', force: true });
@@ -784,7 +787,7 @@ async function eventRoutes(fastify) {
     }
   });
 
-  fastify.post('/admin/test-email', async (request, reply) => {
+  fastify.post('/admin/test-email', adminAuth, async (request, reply) => {
     const { to, subject, body } = request.body || {};
     if (!to) return reply.status(400).send({ success: false, message: '수신자 이메일(to)을 입력해주세요.' });
 
