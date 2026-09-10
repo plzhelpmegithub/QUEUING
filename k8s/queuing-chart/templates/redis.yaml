@@ -1,4 +1,3 @@
-cat > redis.yaml << 'EOF'
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -65,4 +64,3 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: redis-counter-pvc
-EOF
