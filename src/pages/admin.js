@@ -5,6 +5,14 @@ import { navigate } from '../router.js';
 import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { formatDeadline } from '../utils/format.js';
+import { authHeaders } from '../utils/authToken.js';
+
+function authFetch(path, options = {}) {
+  return fetch(path, {
+    ...options,
+    headers: { ...(options.headers || {}), ...authHeaders() },
+  });
+}
 
 // 일반 공연의 기본 등급/가격 입력값. 올림픽홀은 아래 CSV 구역별 생성값을 사용한다.
 const GRADE_DEFAULTS = [
@@ -32,7 +40,7 @@ function createEventGradeRowHtml(g) {
 }
 
 function createEvent(payload) {
-  return fetch('/event/create', {
+  return authFetch('/event/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -244,7 +252,7 @@ function buildRandomEventPayload() {
 let eventsCache = [];
 
 function setEventOpenTime(eventId, ticketOpenAt) {
-  return fetch(`/events/${eventId}/open-time`, {
+  return authFetch(`/events/${eventId}/open-time`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticketOpenAt }),
@@ -252,7 +260,7 @@ function setEventOpenTime(eventId, ticketOpenAt) {
 }
 
 function setEventCloseTime(eventId, ticketCloseAt) {
-  return fetch(`/events/${eventId}/close-time`, {
+  return authFetch(`/events/${eventId}/close-time`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticketCloseAt }),
@@ -289,7 +297,7 @@ function paintOpenStatuses(container) {
 function refreshEventsList(container) {
   const tbody = container.querySelector('[data-events-tbody]');
   if (!tbody) return;
-  fetch('/events')
+  authFetch('/events')
     .then((res) => res.json())
     .then((data) => {
       eventsCache = data.events || [];
@@ -356,7 +364,7 @@ function refreshEventsList(container) {
           const name = btn.closest('tr')?.children[1]?.textContent || '';
           if (!confirm(`"${name}" 공연을 삭제할까요? (좌석 데이터도 함께 삭제됩니다)`)) return;
           btn.disabled = true;
-          fetch(`/events/${btn.dataset.deleteEvent}`, { method: 'DELETE' })
+          authFetch(`/events/${btn.dataset.deleteEvent}`, { method: 'DELETE' })
             .then(async (res) => {
               const result = await res.json();
               if (!res.ok || !result.success) throw new Error(result.message || '삭제 실패');
@@ -393,7 +401,7 @@ function updateBulkDeleteButton(container) {
 async function deleteEventsSequentially(events) {
   const results = [];
   for (const event of events) {
-    const response = await fetch(`/events/${encodeURIComponent(event.eventId)}`, { method: 'DELETE' });
+    const response = await authFetch(`/events/${encodeURIComponent(event.eventId)}`, { method: 'DELETE' });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.success) {
       throw new Error(result.message || `${event.eventName} 삭제에 실패했습니다.`);
@@ -404,7 +412,7 @@ async function deleteEventsSequentially(events) {
 }
 
 async function deleteEventsInBatch(events) {
-  const response = await fetch('/events/batch-delete', {
+  const response = await authFetch('/events/batch-delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ eventIds: events.map((event) => event.eventId) }),
@@ -695,11 +703,138 @@ function openCreateEventModal(onCreated) {
 }
 
 function simFetch(path, body) {
-  return fetch(path, {
+  return authFetch(path, {
     method: body ? 'POST' : 'GET',
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   }).then((r) => r.json());
+}
+
+function initDummyPanel(container) {
+  const panel = container.querySelector('[data-dummy-panel]');
+  if (!panel) return;
+
+  const toggleBtn = panel.querySelector('[data-dummy-toggle]');
+  const body = panel.querySelector('[data-dummy-body]');
+  const countInput = panel.querySelector('[data-dummy-count]');
+  const maxEventsInput = panel.querySelector('[data-dummy-max-events]');
+  const statusArea = panel.querySelector('[data-dummy-status]');
+
+  const btnCreate = panel.querySelector('[data-dummy-create]');
+  const btnDistribute = panel.querySelector('[data-dummy-distribute]');
+  const btnCleanup = panel.querySelector('[data-dummy-cleanup]');
+
+  toggleBtn.addEventListener('click', () => {
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? 'block' : 'none';
+    toggleBtn.textContent = hidden ? '접기' : '펼치기';
+  });
+
+  function setLoading(btn, text) {
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = text;
+    return () => { btn.disabled = false; btn.textContent = original; };
+  }
+
+  btnCreate.addEventListener('click', () => {
+    const count = parseInt(countInput.value, 10) || 500;
+    const restore = setLoading(btnCreate, '생성 중...');
+    authFetch('/admin/dummy/create-users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) {
+          showToast({ title: '더미 유저 생성 실패', body: data.error });
+          return;
+        }
+        showToast({ title: '더미 유저 생성 완료', body: data.message, type: 'success' });
+        statusArea.innerHTML = `
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
+            <div><b>요청</b><br/>${data.requested?.toLocaleString() || 0}명</div>
+            <div><b>생성됨</b><br/><span style="color:#27ae60;">${data.created?.toLocaleString() || 0}명</span></div>
+          </div>
+          <p class="text-secondary" style="font-size:12px;margin-top:8px;">이제 "관심 공연 분배" 버튼을 눌러 HOT 순위에 반영하세요.</p>`;
+      })
+      .catch(() => showToast({ title: '더미 유저 생성 중 오류가 발생했습니다' }))
+      .finally(restore);
+  });
+
+  btnDistribute.addEventListener('click', () => {
+    const maxEvents = parseInt(maxEventsInput.value, 10) || 5;
+    const restore = setLoading(btnDistribute, '분배 중...');
+    authFetch('/admin/dummy/distribute-interests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxEvents }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) {
+          showToast({ title: '관심 공연 분배 실패', body: data.error });
+          return;
+        }
+        showToast({ title: '관심 공연 분배 완료', body: data.message, type: 'success' });
+        const dist = data.distribution || [];
+        let html = `
+          <div style="margin-bottom:12px;">
+            <b>총 더미 유저:</b> ${(data.totalUsers || 0).toLocaleString()}명 → <b>${data.eventsCount || 0}개 공연</b>에 분배
+          </div>
+          <table class="qtable" style="font-size:13px;">
+            <thead><tr><th>순위</th><th>공연명</th><th>관심 수</th><th>비율</th></tr></thead>
+            <tbody>`;
+        const totalCount = dist.reduce((s, d) => s + d.count, 0) || 1;
+        dist.forEach((d, i) => {
+          const pct = ((d.count / totalCount) * 100).toFixed(1);
+          html += `<tr>
+            <td class="num-mono">${i + 1}</td>
+            <td>${d.eventName}</td>
+            <td class="num-mono" style="color:#8e44ad;">${d.count.toLocaleString()}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <div style="width:80px;height:8px;background:var(--color-border);border-radius:4px;overflow:hidden;">
+                  <div style="width:${pct}%;height:100%;background:#8e44ad;border-radius:4px;"></div>
+                </div>
+                <span class="num-mono" style="font-size:11px;">${pct}%</span>
+              </div>
+            </td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        html += '<p class="text-secondary" style="font-size:12px;margin-top:8px;">메인 페이지 "요즘 HOT 공연" 순위에 즉시 반영됩니다.</p>';
+        statusArea.innerHTML = html;
+      })
+      .catch(() => showToast({ title: '관심 공연 분배 중 오류가 발생했습니다' }))
+      .finally(restore);
+  });
+
+  btnCleanup.addEventListener('click', () => {
+    if (!confirm('더미 유저와 관심 공연 데이터를 모두 삭제할까요?\nHOT 순위가 초기화됩니다.')) return;
+    const restore = setLoading(btnCleanup, '삭제 중...');
+    authFetch('/admin/dummy/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) {
+          showToast({ title: '삭제 실패', body: data.error });
+          return;
+        }
+        showToast({ title: '더미 데이터 삭제 완료', body: data.message, type: 'success' });
+        statusArea.innerHTML = `
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
+            <div><b>삭제된 유저</b><br/><span style="color:#e74c3c;">${(data.deletedUsers || 0).toLocaleString()}명</span></div>
+            <div><b>삭제된 위시리스트</b><br/><span style="color:#e74c3c;">${(data.deletedWishlists || 0).toLocaleString()}건</span></div>
+          </div>`;
+      })
+      .catch(() => showToast({ title: '삭제 중 오류가 발생했습니다' }))
+      .finally(restore);
+  });
 }
 
 function initSimulationPanel(container) {
@@ -1036,6 +1171,39 @@ export const adminPage = {
       </div>
 
       <div class="container" style="margin-top:32px;">
+        <div class="admin-panel admin-panel--wide" data-dummy-panel>
+          <div class="mchart__head">
+            <span class="mchart__title">더미 유저 · HOT 공연 관리</span>
+            <button type="button" class="btn btn-outline btn-sm" data-dummy-toggle style="margin-left:auto;">펼치기</button>
+          </div>
+          <div data-dummy-body style="display:none;">
+            <p class="text-secondary" style="font-size:12px;margin-bottom:12px;">
+              더미 유저를 생성하고, 현재 등록된 공연 중 랜덤으로 최대 5개에 관심(위시리스트)을 분배합니다.<br/>
+              분배된 관심 수는 메인 페이지 "요즘 HOT 공연" 순위에 실시간 반영됩니다.
+            </p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+              <div class="field">
+                <label>생성할 더미 유저 수</label>
+                <input type="number" data-dummy-count value="500" min="1" max="50000" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
+              </div>
+              <div class="field">
+                <label>분배 공연 수 (최대)</label>
+                <input type="number" data-dummy-max-events value="5" min="1" max="20" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+              <button type="button" class="btn btn-primary btn-sm" data-dummy-create>더미 유저 생성</button>
+              <button type="button" class="btn btn-outline btn-sm" data-dummy-distribute style="border-color:#8e44ad;color:#8e44ad;">관심 공연 분배 (HOT 반영)</button>
+              <button type="button" class="btn btn-outline btn-sm" data-dummy-cleanup style="border-color:#e74c3c;color:#e74c3c;">더미 데이터 삭제</button>
+            </div>
+            <div data-dummy-status style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:16px;min-height:60px;">
+              <p class="text-secondary">더미 유저를 생성하고 관심 공연을 분배하면 결과가 여기에 표시됩니다.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="container" style="margin-top:32px;">
         <div class="admin-panel admin-panel--wide" data-sim-panel>
           <div class="mchart__head">
             <span class="mchart__title">취소표 시뮬레이션</span>
@@ -1097,6 +1265,7 @@ export const adminPage = {
 
     refreshEventsList(container);
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
+    initDummyPanel(container);
     initSimulationPanel(container);
 
     container.querySelector('[data-bulk-delete]').addEventListener('click', () => {
@@ -1182,7 +1351,7 @@ export const adminPage = {
         modeBtn.addEventListener('click', () => {
           const mode = modeBtn.dataset.redisMode;
           closeModal();
-          fetch('/admin/redis/reset', {
+          authFetch('/admin/redis/reset', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mode }),
@@ -1213,7 +1382,7 @@ export const adminPage = {
       });
       document.querySelector('[data-do-recover]')?.addEventListener('click', () => {
         closeModal();
-        fetch('/admin/redis/recover', {
+        authFetch('/admin/redis/recover', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),

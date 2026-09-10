@@ -8,7 +8,7 @@ import { openModal, closeModal } from '../components/modal.js';
 import { getState, clearCurrentOrder, addBooking, clearSeatSelectTimer, updateProfileOnServer } from '../state/store.js';
 import { showToast } from '../components/toast.js';
 import { navigate } from '../router.js';
-import { withRecaptcha } from '../utils/recaptcha.js';
+import { fetchWithRecaptcha } from '../utils/recaptcha.js';
 import { expireCancelAllocation, releaseSeatApi, releaseSeatBeacon } from '../utils/backendApi.js';
 
 const CANCEL_DEADLINE_MS = 5 * 60 * 1000;
@@ -350,19 +350,14 @@ export const paymentPage = {
         const realSeats = seats.filter((s) => typeof s.id === 'string' && s.id.includes(':') && !!userId);
         const confirmCall = realSeats.length
           ? Promise.all(
-              realSeats.map((s) => withRecaptcha({
+              realSeats.map((s) => fetchWithRecaptcha('/seats/confirm', {
                     userId,
                     seatId: s.id,
                     eventId: c.eventId,
                     sessionDate: order.session?.date || '',
                     sessionTime: order.session?.time || '',
                   }, 'seat_confirm')
-                  .then((body) => fetch('/seats/confirm', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                  }))
-                  .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+                  .then(({ status, data }) => ({ ok: status >= 200 && status < 300, data }))
               )
             ).then((results) => results.find((r) => !r.ok || !r.data.success) || results[0])
           : Promise.resolve({ ok: true, data: { success: true } });

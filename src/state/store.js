@@ -1,5 +1,4 @@
-// Central in-memory store with a tiny pub/sub layer.
-// This simulates a backend for the QUEUING demo — no network calls.
+import { setTokens, clearTokens, authHeaders } from '../utils/authToken.js';
 
 const listeners = new Set();
 
@@ -41,6 +40,7 @@ function saveAuth() {
 
 function clearAuth() {
   try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
+  clearTokens();
 }
 
 // 계정 전환 시 이전 사용자의 브라우저 메모리가 새 사용자 화면에 섞이지 않도록
@@ -98,10 +98,13 @@ export function login({
   birthDate = '',
   marketingOptIn = false,
   joinedAt,
+  accessToken = '',
+  refreshToken = '',
 }) {
   const resolvedRole = rawRole || (isAdmin ? 'ADMIN' : isMonitor ? 'MONITOR' : 'USER');
   const nextUserId = userId || (email || 'guest').split('@')[0];
   if (!state.user || state.user.userId !== nextUserId) clearAccountScopedState();
+  if (accessToken) setTokens(accessToken, refreshToken);
   state.user = {
     name: name || '게스트',
     userId: nextUserId,
@@ -113,8 +116,6 @@ export function login({
     birthDate: birthDate || '',
     marketingOptIn: asBoolean(marketingOptIn),
     joinedAt: joinedAt || Date.now(),
-    accessToken: `mock-access-${Math.random().toString(36).slice(2)}`,
-    refreshToken: `mock-refresh-${Math.random().toString(36).slice(2)}`,
   };
   state.sessionExpiresAt = Date.now() + SESSION_TTL_MS;
   state.sessionJustExpired = false;
@@ -139,7 +140,7 @@ export function updateProfileOnServer(patch) {
 
   return fetch('/auth/profile', {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ userId, ...patch }),
   })
     .then(async (response) => {
@@ -164,6 +165,30 @@ export function updateProfileOnServer(patch) {
     .catch((err) => {
       console.error('[Auth] 회원정보 수정 API 실패:', err);
       return { success: false, message: '네트워크 오류로 회원정보를 저장하지 못했습니다.' };
+    });
+}
+
+export function deleteAccountOnServer(password) {
+  const userId = state.user?.userId;
+  if (!userId) return Promise.resolve({ success: false, message: '로그인이 필요합니다.' });
+
+  return fetch('/auth/account', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ userId, password }),
+  })
+    .then(async (response) => {
+      let data = {};
+      try { data = await response.json(); } catch (_) {}
+      if (!response.ok || !data.success) {
+        return { success: false, message: data.message || data.error || '회원탈퇴에 실패했습니다.' };
+      }
+      logout();
+      return data;
+    })
+    .catch((err) => {
+      console.error('[Auth] 회원탈퇴 API 실패:', err);
+      return { success: false, message: '네트워크 오류로 회원탈퇴에 실패했습니다.' };
     });
 }
 
@@ -218,7 +243,7 @@ export function subscribeMembership(plan) {
   if (!userId) return Promise.resolve({ success: false, message: '로그인이 필요합니다.' });
   return fetch('/membership/subscribe', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ userId, plan }),
   })
     .then((r) => r.json())
@@ -245,7 +270,7 @@ export function cancelMembership() {
   if (!userId) return Promise.resolve({ success: false, message: '로그인이 필요합니다.' });
   return fetch('/membership/cancel', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ userId }),
   })
     .then((r) => r.json())
@@ -266,7 +291,7 @@ export function cancelMembership() {
 export function loadMembershipFromServer() {
   const userId = state.user?.userId;
   if (!userId) return;
-  fetch(`/membership/${userId}`)
+  fetch(`/membership/${encodeURIComponent(userId)}`, { headers: { ...authHeaders() } })
     .then(r => r.json())
     .then(data => {
       if (data.isMembership) {
@@ -288,7 +313,7 @@ export function toggleInterest(concertId) {
     if (userId) {
       fetch('/wishlist/remove', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ userId, eventId: concertId }),
       }).catch(() => {});
     }
@@ -297,7 +322,7 @@ export function toggleInterest(concertId) {
     if (userId) {
       fetch('/wishlist/add', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ userId, eventId: concertId }),
       }).catch(() => {});
     }
@@ -312,7 +337,7 @@ export function isInterested(concertId) {
 export function loadWishlistFromServer() {
   const userId = state.user?.userId;
   if (!userId) return;
-  fetch(`/wishlist/${userId}`)
+  fetch(`/wishlist/${encodeURIComponent(userId)}`, { headers: { ...authHeaders() } })
     .then(r => r.json())
     .then(data => {
       state.interests.clear();

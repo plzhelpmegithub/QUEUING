@@ -1,7 +1,7 @@
 // 회원가입 페이지 — 이름·이메일·비밀번호 입력 폼. 가입 성공 시 signupComplete 페이지로 이동.
 
 import { navigate } from '../router.js';
-import { withRecaptcha } from '../utils/recaptcha.js';
+import { fetchWithRecaptcha } from '../utils/recaptcha.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^01[016789]-\d{3,4}-\d{4}$/;
@@ -191,7 +191,7 @@ export const signupPage = {
       setError('form', '');
       submitBtn.disabled = true;
 
-      withRecaptcha({
+      fetchWithRecaptcha('/auth/register', {
           userId: els.email.value.trim(),
           password: els.password.value,
           email: els.email.value.trim(),
@@ -199,20 +199,12 @@ export const signupPage = {
           phone: els.phone.value.trim(),
           birthDate: els.birth.value,
         }, 'register')
-        .then((body) => fetch('/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }))
-        .then((res) => res.json())
-        .then((result) => {
-          if (!result.success) {
-            setError('form', result.message || '회원가입 처리 중 오류가 발생했습니다.');
+        .then(({ data }) => {
+          if (!data.success) {
+            setError('form', data.message || '회원가입 처리 중 오류가 발생했습니다.');
             submitBtn.disabled = false;
             return;
           }
-          // Signing up does not auto-login — the completion screen sends the user to
-          // /login deliberately, and login() there will honor any pending returnTo.
           navigate('signup-complete');
         })
         .catch(() => {

@@ -1,3 +1,40 @@
+## [2026-09-10 08:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/utils/recaptcha.js]**: 재사용 가능한 reCAPTCHA v2 챌린지 모달(`showV2Challenge()`)과 v3→v2 자동 폴백 래퍼(`fetchWithRecaptcha()`) 추가. v3 점수가 임계값 미만일 때 체크박스 모달을 자동으로 표시하고 v2 토큰으로 재시도하는 공통 흐름을 제공
+- **[src/pages/signup.js]**: 회원가입 요청을 `fetchWithRecaptcha()`로 교체하여 v2 폴백 자동 지원
+- **[src/pages/queue.js]**: 대기열 진입(`requestQueueEnter`)을 `fetchWithRecaptcha()`로 교체하여 v2 폴백 자동 지원
+- **[src/pages/zoneSelect.js]**: 구역 선택 페이지의 `ensureAdmissionToken()`과 `attemptHold()`를 `fetchWithRecaptcha()`로 교체하여 v2 폴백 자동 지원
+- **[src/pages/payment.js]**: 결제 확정(`/seats/confirm`) 요청을 `fetchWithRecaptcha()`로 교체하여 v2 폴백 자동 지원
+- **[src/utils/backendApi.js]**: `postJson()`, `holdSeatApi()`, `confirmSeatApi()`를 `fetchWithRecaptcha()` 기반으로 전환하여 취소표 대기열, 좌석 선점/확정 API 전체에 v2 폴백 적용
+
+---
+
+## [2026-09-09 22:45] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 관리자 콘솔에 "더미 유저 · HOT 공연 관리" 패널 추가
+  - 더미 유저 수 입력 + 생성 버튼 → `POST /admin/dummy/create-users` 호출
+  - 분배 공연 수 입력 + "관심 공연 분배" 버튼 → `POST /admin/dummy/distribute-interests` 호출, 결과를 순위/비율 테이블로 표시
+  - "더미 데이터 삭제" 버튼 → `POST /admin/dummy/cleanup` 호출 (confirm 다이얼로그 포함)
+  - 취소표 시뮬레이션 패널 상단에 접기/펼치기 토글로 배치
+
+---
+
+## [2026-09-09 21:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/state/store.js]**: `deleteAccountOnServer(password)` 함수 추가 — `DELETE /auth/account` 호출 후 성공 시 자동 로그아웃
+- **[src/pages/mypage.js]**: 회원정보 수정 섹션 하단에 회원탈퇴 버튼 및 비밀번호 확인 모달 추가. 탈퇴 완료 시 홈으로 이동
+- **[src/utils/recaptcha.js]**: reCAPTCHA 스크립트 preload 및 `grecaptcha.ready()` 타이밍 수정
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 로그인 버튼 첫 클릭 시 로그인 실패, 두 번째 클릭에 성공
+- **원인(Cause):** reCAPTCHA 스크립트가 첫 로그인 시도 시점에 비동기로 로딩되면서, `script.onload` 시점에 `grecaptcha.ready()`가 아직 준비되지 않아 토큰 발급이 실패. 두 번째 시도에서는 스크립트가 이미 로드되어 정상 동작
+- **해결(Solution):** `loadScript()`에서 `onload` 후 `grecaptcha.ready()` 콜백 안에서 resolve하도록 변경하고, 모듈 로드 시 `if (SITE_KEY) loadScript()`로 preload하여 로그인 시점에는 이미 준비된 상태가 되도록 수정
+
+---
+
 ## [2026-09-08 10:27] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -442,3 +479,19 @@
 - **증상(Issue):** 이미 일반 예매 대기열에 있거나 입장 허용된 사용자는 취소표 대기 등록이 누락될 수 있었음.
 - **원인(Cause):** 매진 안내에서 로컬 상태만 갱신하고 실제 standby 이동 API를 호출하지 않았음.
 - **해결(Solution):** 매진 안내와 취소표 대기열 화면 모두 전용 standby 등록 API를 호출해 서버 순번을 기준으로 표시.
+## [2026-09-10 11:08] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/utils/authToken.js / src/state/store.js]**: 로그인 Access/Refresh JWT 저장·삭제·Bearer 헤더 생성을 공통화하고, 회원정보·회원탈퇴·멤버십·위시리스트·사용자별 예매 조회 요청에 Access JWT를 포함
+- **[src/pages/admin.js]**: 관리자 API 호출을 `authFetch()`로 통합하여 관리자 Bearer JWT를 전송
+- **[src/pages/queue.js / src/pages/zoneSelect.js]**: 사용자 대기열 조회·진입 요청에 인증 헤더를 포함하고 브라우저에서 관리자 전용 `/queue/admit` 호출을 제거
+- **[src/utils/backendApi.js]**: 페이지 종료 좌석 해제 요청을 인증 헤더를 포함할 수 있는 `fetch(..., { keepalive: true })`로 변경
+- **[cancel-ticketing.html]**: 독립 취소표 페이지가 이메일의 만료형 `linkToken`을 status/hold/confirm/expire/respond 요청에 전달하도록 연결
+- **[README.md]**: 프론트 JWT 전송 규칙, 관리자 API 보호, 독립 취소표 링크와 keepalive 해제 동작을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 화면과 사용자별 API 요청에 인증 헤더가 누락될 수 있었고, `navigator.sendBeacon()`은 Bearer 헤더를 붙일 수 없어 좌석 해제 요청이 서버에서 거부될 수 있었음. 독립 취소표 링크에는 로그인 세션이 없음.
+- **원인(Cause):** 화면별 raw fetch가 공통 인증 유틸리티를 사용하지 않았고, sendBeacon은 커스텀 Authorization 헤더를 지원하지 않음.
+- **해결(Solution):** 공통 `authHeaders()`와 관리자용 `authFetch()`를 적용하고, 페이지 종료 해제는 `keepalive` fetch로 전환했다. 독립 링크는 linkToken을 서버 검증용으로만 전달한다.
+
+---

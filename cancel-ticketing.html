@@ -272,6 +272,7 @@ const params = new URLSearchParams(location.search);
 const EVENT_ID = params.get('eventId');
 const USER_ID = params.get('userId');
 const ALLOCATION_ID = params.get('allocationId');
+const LINK_TOKEN = params.get('linkToken') || '';
 const API_BASE = (params.get('apiBase') || '').replace(/\/$/, '');
 
 const GRADE_MAP = {
@@ -308,15 +309,24 @@ let state = {
 };
 
 async function api(path, opts) {
+  const requestOpts = { ...(opts || {}) };
   const action = path.startsWith('/cancel-queue/hold') ? 'cancel_seat_hold'
     : path.startsWith('/seats/confirm') ? 'seat_confirm' : '';
-  if (action && opts && opts.body) {
-    const payload = JSON.parse(opts.body);
-    opts = { ...opts, body: JSON.stringify(await withRecaptcha(payload, action)) };
+  if (LINK_TOKEN && path.startsWith('/cancel-queue/status')) {
+    const separator = path.includes('?') ? '&' : '?';
+    path += `${separator}linkToken=${encodeURIComponent(LINK_TOKEN)}`;
+  }
+  if (LINK_TOKEN && requestOpts.body) {
+    const payload = JSON.parse(requestOpts.body);
+    requestOpts.body = JSON.stringify({ ...payload, linkToken: LINK_TOKEN });
+  }
+  if (action && requestOpts.body) {
+    const payload = JSON.parse(requestOpts.body);
+    requestOpts.body = JSON.stringify(await withRecaptcha(payload, action));
   }
   const res = await fetch(API_BASE + path, {
-    headers: {'Content-Type': 'application/json'},
-    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(requestOpts.headers || {}) },
+    ...requestOpts,
   });
   return res.json();
 }
@@ -375,9 +385,8 @@ function startTimer() {
     if (state.secondsLeft <= 0) {
       clearInterval(state.timerId);
       state.expired = true;
-      fetch(API_BASE + '/cancel-queue/expire', {
+      api('/cancel-queue/expire', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           userId: USER_ID,
           eventId: EVENT_ID,

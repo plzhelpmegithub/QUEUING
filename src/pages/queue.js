@@ -5,13 +5,9 @@ import { formatNumber } from '../utils/format.js';
 import { mountRocketProgress } from '../components/rocketProgress.js';
 import { navigate } from '../router.js';
 import { getSelectedSession, getState, hasMembership, setAdmissionToken, setSelectedSession } from '../state/store.js';
-import { withRecaptcha } from '../utils/recaptcha.js';
+import { fetchWithRecaptcha } from '../utils/recaptcha.js';
+import { authHeaders } from '../utils/authToken.js';
 
-// How often we self-trigger /queue/admit — in a real deployment an operator/cron
-// would call this periodically; this frontend has no such automation yet, so it
-// drives the batch itself at this cadence. Also used to estimate wait time below.
-const ADMIT_POLL_MS = 1500;
-const ADMIT_BATCH_SIZE = 100; // matches the backend's default BATCH_SIZE
 const POSITION_POLL_MS = 1000;
 
 export const queuePage = {
@@ -95,7 +91,6 @@ export const queuePage = {
         const statusEl = container.querySelector('[data-status]');
         const enterBox = container.querySelector('[data-enter-box]');
 
-        let admitPollTimer = null;
         let positionPollTimer = null;
         let redirectTimer = null;
         let settled = false; // guards against navigating twice if both polls resolve near-simultaneously
@@ -103,10 +98,8 @@ export const queuePage = {
         let standbyPollTick = 0;
 
         function clearTimers() {
-          if (admitPollTimer) clearInterval(admitPollTimer);
           if (positionPollTimer) clearInterval(positionPollTimer);
           if (redirectTimer) clearTimeout(redirectTimer);
-          admitPollTimer = null;
           positionPollTimer = null;
           redirectTimer = null;
         }
@@ -125,16 +118,9 @@ export const queuePage = {
           redirectTimer = setTimeout(() => navigate(`zones/${c.eventId}`), 1400);
         }
 
-        // Real ETA estimate: since /queue/admit lets ADMIT_BATCH_SIZE people in per
-        // call, and we're the ones calling it every ADMIT_POLL_MS, a user at
-        // `position` needs roughly ceil(position / ADMIT_BATCH_SIZE) more rounds.
         function estimateEtaLabel(position) {
-          const roundsLeft = Math.max(0, Math.ceil(position / ADMIT_BATCH_SIZE) - 1);
-          const ms = roundsLeft * ADMIT_POLL_MS;
-          if (ms <= 0) return '곧 입장';
-          const totalSec = Math.ceil(ms / 1000);
-          if (totalSec < 60) return `약 ${totalSec}초`;
-          return `약 ${Math.ceil(totalSec / 60)}분`;
+          if (!Number.isFinite(position) || position <= 0) return '곧 입장';
+          return '서버 승인 대기 중';
         }
 
         function renderWaitingState(pos) {
@@ -156,7 +142,7 @@ export const queuePage = {
 
         function pollPosition() {
           const query = new URLSearchParams(queueContext);
-          fetch(`/queue/position/${encodeURIComponent(userId)}?${query.toString()}`)
+          fetch(`/queue/position/${encodeURIComponent(userId)}?${query.toString()}`, { headers: { ...authHeaders() } })
             .then((r) => r.json())
             .then((pos) => {
               if (settled) return;
@@ -173,7 +159,7 @@ export const queuePage = {
                 // We were registered a moment ago but the backend no longer has us
                 // in any queue (server restart, Redis reset, or a stale token that
                 // got us evicted) — without this, the page would sit here forever
-                // saying "waiting" while /queue/admit keeps finding nothing to do
+                // saying "waiting" while the server has no queue entry to process
                 // for us. Recover by just re-entering, exactly like a first-time visit.
                 recoverByReentering();
                 return;
@@ -192,31 +178,10 @@ export const queuePage = {
             .catch(() => {});
         }
 
-        function tryAdmit() {
-          return fetch('/queue/admit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(queueContext),
-          })
-            .then((r) => r.json())
-            .then((admitResult) => {
-              const tokenInfo = admitResult.tokens?.[userId];
-              if (tokenInfo?.token) {
-                setAdmissionToken(c.eventId, tokenInfo, session);
-                enterConfirmed();
-              }
-            })
-            .catch(() => {});
-        }
-
         function startPolling() {
-          if (admitPollTimer || positionPollTimer) return;
+          if (positionPollTimer) return;
           pollPosition();
           positionPollTimer = setInterval(pollPosition, POSITION_POLL_MS);
-          // 대기열이 ADMIT_BATCH_SIZE명 넘게 밀려 있으면 한 번에 다 안 뽑히므로,
-          // 우리 사용자가 뽑힐 때까지 계속 재시도 — 관리자가 주기적으로
-          // /queue/admit을 호출하는 걸 대신함.
-          admitPollTimer = setInterval(tryAdmit, ADMIT_POLL_MS);
         }
 
         function showClosedUI() {
@@ -304,17 +269,11 @@ export const queuePage = {
           }
           // status === 'waiting' (eligible or standby) — real position, polled live.
           startPolling();
-          tryAdmit(); // also try immediately instead of waiting a full ADMIT_POLL_MS
         }
 
         function requestQueueEnter() {
-          return withRecaptcha({ userId, ...queueContext }, 'queue_enter')
-            .then((body) => fetch('/queue/enter', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            }))
-            .then((r) => r.json());
+          return fetchWithRecaptcha('/queue/enter', { userId, ...queueContext }, 'queue_enter')
+            .then(({ data }) => data);
         }
 
         function enterQueue() {

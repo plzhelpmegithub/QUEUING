@@ -79,7 +79,6 @@ function hotCardHtml(event, index, interestCount) {
       <button type="button" class="badge hot-card__heart" data-heart="${escapeHtml(event.eventId)}" aria-label="관심 공연 ${name}">${isInterested(event.eventId) ? '♥' : '♡'}</button>
       <div class="hot-card__overlay"></div>
       <div class="hot-card__info">
-        <div class="hot-card__artist">관심 ${formatNumber(interestCount)}명</div>
         <div class="hot-card__title">${name}</div>
         <div class="hot-card__detail">
           공연일 &nbsp;${date}<br/>
@@ -114,7 +113,6 @@ function posterCardHtml(event, index, interestCount, upcoming = false) {
       <div class="home-poster-card__body">
         <h3>${name}</h3>
         <p>${escapeHtml(openInfo)}</p>
-        <span>관심 ${formatNumber(interestCount)}명</span>
       </div>
     </article>`;
 }
@@ -302,7 +300,7 @@ export const homePage = {
           if (interestRefreshTimer) clearTimeout(interestRefreshTimer);
           interestRefreshTimer = setTimeout(() => {
             interestRefreshTimer = null;
-            refreshInterestCounts(latestRealEvents);
+            refreshInterestCounts();
           }, 350);
         });
       });
@@ -348,23 +346,19 @@ export const homePage = {
       }
     }
 
-    function refreshInterestCounts(events) {
-      if (!events.length) return Promise.resolve();
+    function refreshInterestCounts() {
       const requestId = ++interestCountRequest;
-      return Promise.all(events.map(async (event) => {
-        try {
-          const response = await fetch(`/wishlist/count/${encodeURIComponent(event.eventId)}`);
-          if (!response.ok) throw new Error('interest count request failed');
-          const data = await response.json();
-          return [event.eventId, Number(data.count) || 0];
-        } catch {
-          return [event.eventId, interestCounts.get(event.eventId) || 0];
-        }
-      })).then((counts) => {
-        if (requestId !== interestCountRequest) return;
-        counts.forEach(([eventId, count]) => interestCounts.set(eventId, count));
-        renderEventSections();
-      });
+      return fetch('/wishlist/counts/all')
+        .then((res) => res.ok ? res.json() : Promise.reject())
+        .then((data) => {
+          if (requestId !== interestCountRequest) return;
+          const serverCounts = data.counts || {};
+          latestRealEvents.forEach((event) => {
+            interestCounts.set(event.eventId, serverCounts[event.eventId] || 0);
+          });
+          renderEventSections();
+        })
+        .catch(() => {});
     }
 
     // ---- API에서 이벤트 불러오기 (히어로 + 캘린더 + 홈의 세 공연 섹션이 전부 이걸 씀) ----
@@ -382,8 +376,7 @@ export const homePage = {
             setupHero(events);
             if (calendarApi) calendarApi.setEvents(buildCalendarEvents(latestRealEvents));
             events.forEach((event) => interestCounts.set(event.eventId, 0));
-            renderEventSections();
-            refreshInterestCounts(events);
+            refreshInterestCounts();
             return;
           }
 

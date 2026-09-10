@@ -6,6 +6,7 @@ import { formatDate, formatPrice, formatNumber, formatDateRange } from '../utils
 import { navigate } from '../router.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { showToast } from '../components/toast.js';
+import { authHeaders } from '../utils/authToken.js';
 import { calcCancelFeeRate } from '../data/refundPolicy.js';
 import {
   getState,
@@ -21,6 +22,7 @@ import {
   getNotifications,
   markAllNotificationsRead,
   updateProfileOnServer,
+  deleteAccountOnServer,
   addBookingSilently,
   hasBookingForSeat,
 } from '../state/store.js';
@@ -162,7 +164,7 @@ function openRefundConfirm(b, meta) {
         realSeats.map((s) =>
           fetch('/seats/cancel', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ userId, seatId: s.id }),
           }).then((r) => r.json().then((data) => ({ ok: r.ok, data })))
         )
@@ -245,7 +247,7 @@ export const myPage = {
     function syncBookingsFromServer() {
       const userId = user?.userId || user?.email;
       if (!userId) return;
-      fetch(`/reservations/user/${encodeURIComponent(userId)}`)
+      fetch(`/reservations/user/${encodeURIComponent(userId)}`, { headers: { ...authHeaders() } })
         .then((r) => r.json())
         .then(({ reservations }) => {
           // 계정 전환 중 이전 계정의 조회 응답이 늦게 도착해도 새 계정에
@@ -617,6 +619,12 @@ export const myPage = {
           ${user.joinedAt ? `<div class="text-secondary" style="font-size:12px;">가입일 · ${formatDate(user.joinedAt)}</div>` : ''}
           <button type="button" class="btn btn-primary btn-block mt-24" data-save-profile>저장하기</button>
         </div>
+        <div style="max-width:480px;margin-top:48px;padding-top:24px;border-top:1px solid var(--color-border);">
+          <div class="text-secondary" style="font-size:13px;margin-bottom:12px;">
+            탈퇴 시 예매내역, 대기열, 멤버십, 관심 공연 등 모든 데이터가 삭제되며 복구할 수 없습니다.
+          </div>
+          <button type="button" class="btn btn-block" style="background:var(--color-danger,#ef4444);color:#fff;" data-delete-account>회원탈퇴</button>
+        </div>
       `;
       const phoneInput = content.querySelector('[data-edit="phone"]');
       phoneInput?.addEventListener('input', () => {
@@ -667,6 +675,39 @@ export const myPage = {
         const avatarEl = container.querySelector('[data-mypage-avatar]');
         if (avatarEl) avatarEl.textContent = (getState().user?.name || '게').slice(0, 1);
         renderProfileEdit();
+      });
+
+      content.querySelector('[data-delete-account]').addEventListener('click', () => {
+        const modal = openModal({
+          title: '회원탈퇴',
+          bodyHtml: `
+            <p style="margin-bottom:16px;">탈퇴를 진행하려면 비밀번호를 입력해주세요.</p>
+            <div class="field"><label>비밀번호 확인</label><input type="password" data-withdraw-pw placeholder="현재 비밀번호" /></div>
+            <p class="text-secondary" style="font-size:12px;margin-top:8px;">탈퇴 즉시 모든 데이터가 삭제되며 복구할 수 없습니다.</p>
+          `,
+          footerHtml: `
+            <button type="button" class="btn" data-modal-close>취소</button>
+            <button type="button" class="btn" style="background:var(--color-danger,#ef4444);color:#fff;" data-confirm-withdraw>탈퇴하기</button>
+          `,
+        });
+
+        modal.el.querySelector('[data-confirm-withdraw]').addEventListener('click', async () => {
+          const pw = modal.el.querySelector('[data-withdraw-pw]').value;
+          if (!pw) { showToast({ title: '비밀번호를 입력해주세요.' }); return; }
+          const btn = modal.el.querySelector('[data-confirm-withdraw]');
+          btn.disabled = true;
+          btn.textContent = '처리 중...';
+          const result = await deleteAccountOnServer(pw);
+          if (!result.success) {
+            btn.disabled = false;
+            btn.textContent = '탈퇴하기';
+            showToast({ title: result.message || '회원탈퇴에 실패했습니다.' });
+            return;
+          }
+          closeModal();
+          showToast({ title: '회원탈퇴가 완료되었습니다.', type: 'success' });
+          navigate('');
+        });
       });
     }
 

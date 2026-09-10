@@ -75,7 +75,8 @@ nginx/
     │   └── style.css               # 글로벌 CSS
     └── utils/
         ├── backendApi.js           # API 호출 유틸리티
-        ├── recaptcha.js            # Google reCAPTCHA v3 토큰 발급
+        ├── authToken.js            # Access/Refresh JWT 저장 및 Bearer 헤더 생성
+        ├── recaptcha.js            # Google reCAPTCHA v3/v2 토큰 발급 및 자동 폴백
         ├── calendarEvents.js       # 달력 이벤트 유틸리티
         ├── format.js               # 날짜/숫자 포맷
         └── realtimeChat.js         # 실시간 채팅 유틸리티
@@ -150,7 +151,9 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 - 운영 `nginx.conf`의 API 프록시 location 정규식에 `/cancel-queue`를 포함할 것. 누락되면 취소표 API 요청이 SPA `index.html`로 fall back되어 JSON 조회가 실패한다.
 - 빌드: `npm run build` → `dist/` 디렉토리를 Nginx에 배포
 - 좌석 좌표 변경 시 `olympicHallSeats.js`만 수정하면 됨 (seatMap.js의 변환 로직은 변경 불필요)
-- 개발용 reCAPTCHA는 `.env.local`에 `VITE_RECAPTCHA_SITE_KEY`만 설정한다. secret key는 프론트엔드에 넣지 않고 API 서버 환경변수로만 관리한다.
+- 개발용 reCAPTCHA v3는 `.env.local`에 `VITE_RECAPTCHA_SITE_KEY`를, v2 폴백은 `VITE_RECAPTCHA_V2_SITE_KEY`를 설정한다. secret key는 프론트엔드에 넣지 않고 API 서버 환경변수로만 관리한다.
+- 로그인 성공 시 API가 반환한 Access/Refresh JWT를 브라우저에 저장한다. API 호출에는 Access JWT를 `Authorization: Bearer ...` 헤더로 전송하며, Refresh JWT는 `/auth/refresh`에서 Access JWT가 만료된 경우 갱신하는 용도다.
+- `cancel-ticketing.html`은 일반 로그인 토큰이 없는 독립 페이지이므로 이메일 링크의 짧은 만료 `linkToken`을 취소표 API 요청에만 전송한다. 링크 토큰은 사용자·공연·좌석·할당 ID와 묶여 있다.
 
 ## ⚙️ Core Logic & Code Description
 
@@ -162,9 +165,19 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 ### src/state/store.js
 - **목적:** 로그인 세션과 사용자별 브라우저 상태를 관리.
 - **주요 기능:** 로그인 계정이 바뀌거나 로그아웃·세션 만료가 발생하면 이전 사용자의 예매내역, 관심 공연, 대기열·알림 상태를 비운다. 새 예매와 서버에서 복원한 예매에는 소유 계정 식별자를 붙여 다른 계정의 예매가 표시되지 않도록 한다.
+- **인증 연동:** 멤버십·위시리스트·회원정보·회원탈퇴 요청에 Access JWT를 포함하고, 사용자 ID는 URL 인코딩한다.
+
+### src/utils/authToken.js
+- **목적:** API 로그인 세션의 Access/Refresh JWT를 브라우저 저장소에서 관리하고 Bearer 헤더를 일관되게 생성한다.
+- **주요 기능:** `setTokens()`, `getAccessToken()`, `getRefreshToken()`, `clearTokens()`, `authHeaders()`를 제공한다. 비밀번호나 reCAPTCHA Secret Key는 저장하지 않는다.
+- **API 명세 / 라우팅 규칙:** `authHeaders()` 결과는 보호 API의 `Authorization` 헤더에 병합한다. Access 토큰이 없으면 빈 헤더를 반환하여 API의 401 응답을 그대로 처리한다.
+
+### src/services/realtimeIntegration.js
+- **보안 주의:** 이 모듈의 WebSocket HMAC 토큰은 별도 realtime 서버와의 기존 프로토콜에 묶여 있다. 현재 브라우저에 개발용 `REALTIME_SECRET`과 `ws://`·query token 방식이 남아 있으므로, 운영 전에는 realtime 서버가 발급하는 단기 토큰과 `wss://` 프로토콜로 C팀과 함께 교체해야 한다. 프론트 번들에 realtime 공유 비밀을 넣는 방식은 안전한 Secret 보관으로 볼 수 없다.
 
 ### src/pages/admin.js
 - **목적:** 관리자 공연 생성·오픈/마감 시간 설정·삭제 화면 및 취소표 시뮬레이션 제어판을 제공.
+- **인증 연동:** 모든 관리자 API 호출을 `authFetch()`로 감싸 관리자 Access JWT를 전송한다. API에서 관리자 역할을 다시 검증하므로 프론트 화면 진입만으로는 관리자 기능을 실행할 수 없다.
 - **주요 기능:** 선택 체크박스 없이 `5개씩 삭제` 버튼을 누르면 현재 공연 목록의 앞에서부터 최대 5개를 확인 후 삭제한다. 공연이 5개보다 적으면 남은 공연을 모두 삭제한다. 배치 API가 구버전인 운영 서버에서는 기존 단일 삭제 API를 순차 호출하는 대체 경로를 사용한다. 아직 오픈 시간이 없는 공연은 오픈 시간 모달을 열 때 공연 목록 순서별로 서로 다른 기본 시각을 표시하여, 여러 포스터 공연이 같은 `현재 시각 + 5분`으로 저장되지 않도록 한다. "즉시 마감" 버튼으로 `ticketCloseAt`을 현재 시각으로 설정하여 즉시 예매를 마감할 수 있다.
 - **취소표 시뮬레이션 패널:** 접기/펼치기 토글로 표시. DB 등록 공연 드롭다운 + 회차 선택, 실제 멤버십 유저 이메일 입력, 더미 유저 수 설정. 공연 선택 후 초기화·매진 연출·조기 마감·취소표 생성·시크릿 링크 발급 버튼을 현재 단계와 관계없이 관리자가 수동 실행할 수 있으며, 처리 중에는 중복 요청만 잠근다. 작업의 선행조건은 API 응답으로 확인하고 상태 패널에 좌석 통계·대기열 수치·실제 유저 상태·취소표 할당 내역을 표시한다.
 
@@ -175,18 +188,21 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 
 ### src/pages/seatSelect.js
 - **목적:** 좌석 선택 페이지. 실시간 좌석 상태 표시, 좌석 선점(hold), 결제 진행 흐름을 처리.
-- **주요 기능:** A파트 실좌석 로딩 시 WebSocket으로 실시간 상태를 반영하고, 미연결 시 mock 시뮬레이터로 폴백한다. 좌석 선점 시 서버 hold API 호출 후 8분 42초 카운트다운. 브라우저 닫기/새로고침 시 `navigator.sendBeacon()`으로 선점 해제를 전송하여 서버 타이머 만료 전에 즉시 잠금 해제.
+- **주요 기능:** A파트 실좌석 로딩 시 WebSocket으로 실시간 상태를 반영하고, 미연결 시 mock 시뮬레이터로 폴백한다. 좌석 선점 시 서버 hold API 호출 후 8분 42초 카운트다운. 브라우저 닫기/새로고침 시 인증 헤더를 포함한 `fetch(..., { keepalive: true })`로 선점 해제를 전송하며, 전송 실패 시 서버 타이머가 최종 해제한다.
 - **API 명세 / 라우팅 규칙:** `POST /seats/hold` (선점), `POST /seats/release` (해제), `GET /seats` (전체 좌석 조회). 페이지 이탈 시 SPA 라우팅은 `releaseSeatApi()`, 브라우저 종료는 `releaseSeatBeacon()` 사용.
 
 ### src/utils/backendApi.js
 - **목적:** A파트 REST API 호출 유틸리티. Vite 프록시를 통해 CORS 없이 호출.
 - **주요 기능:** 일반 좌석 API와 함께 취소표 대기열 진입·상태 조회, 서버 Pool 조회, Secret Link 좌석 선점, 할당 만료 API를 제공한다.
-- **API 명세 / 라우팅 규칙:** `joinCancelQueueApi()`는 `POST /cancel-queue/join`, `fetchCancelQueueStatus()`는 `GET /cancel-queue/status/:eventId/:userId`, `fetchCancelPool()`은 `GET /cancel-queue/pool/:eventId`, `holdCancelSeat()`는 `POST /cancel-queue/hold`, `expireCancelAllocation()`은 `POST /cancel-queue/expire`를 호출한다. 로그인·회원가입·대기열 진입·좌석 선점·결제 확정 POST에는 `withRecaptcha()`가 action별 토큰을 추가한다. 모든 요청에 3초 타임아웃을 적용하며 `releaseSeatBeacon()`은 `navigator.sendBeacon()`으로 페이지 종료 시에도 전송한다.
+- **API 명세 / 라우팅 규칙:** `joinCancelQueueApi()`는 `POST /cancel-queue/join`, `fetchCancelQueueStatus()`는 `GET /cancel-queue/status/:eventId/:userId`, `fetchCancelPool()`은 `GET /cancel-queue/pool/:eventId`, `holdCancelSeat()`는 `POST /cancel-queue/hold`, `expireCancelAllocation()`은 `POST /cancel-queue/expire`를 호출한다. 보호 대상 요청에는 Access JWT를 포함하고, reCAPTCHA 보호 대상 POST 요청은 `fetchWithRecaptcha()`를 통해 v3 토큰 발급 → v3 점수 미달 시 v2 체크박스 모달 폴백을 자동 처리한다. 모든 요청에 3초 타임아웃을 적용하며 `releaseSeatBeacon()`은 인증 헤더를 유지하기 위해 `fetch(..., { keepalive: true })`를 사용한다.
 
 ### src/utils/recaptcha.js
-- **목적:** 개발/운영 환경의 Vite 공개 site key로 Google reCAPTCHA v3 스크립트를 지연 로드하고, 보호 API 요청 직전에 일회성 토큰을 발급한다.
-- **주요 기능:** `VITE_RECAPTCHA_SITE_KEY`가 없으면 빈 토큰으로 기존 개발 흐름을 유지하고, 키가 있으면 Google 스크립트를 동적으로 로드해 action별 토큰을 요청한다. 독립 취소표 페이지도 같은 모듈을 사용한다.
-- **API 명세 / 라우팅 규칙:** `withRecaptcha(payload, action)`이 `recaptchaToken`과 `recaptchaAction`을 POST JSON에 추가한다. 실제 허용 여부는 API 서버가 Google에 재검증한 결과로 결정한다.
+- **목적:** Google reCAPTCHA v3 스크립트 지연 로드, action별 토큰 발급, v3 점수 미달 시 v2 체크박스 자동 폴백을 제공한다.
+- **주요 기능:** `VITE_RECAPTCHA_SITE_KEY`가 없으면 빈 토큰으로 기존 개발 흐름을 유지. `fetchWithRecaptcha(url, body, action)`은 v3 토큰을 추가하여 POST 요청을 보내고, 서버가 `recaptcha_v2_required` 응답을 반환하면 `showV2Challenge()` 모달로 v2 체크박스를 표시한 뒤 v2 토큰으로 자동 재시도한다. `VITE_RECAPTCHA_V2_SITE_KEY`가 없으면 v2 폴백 없이 v3 결과만 반환한다.
+- **API 명세 / 라우팅 규칙:** `fetchWithRecaptcha(url, body, action)`이 `recaptchaToken`/`recaptchaAction`(v3) 또는 `recaptchaV2Token`(v2 폴백)을 POST JSON에 추가한다. 실제 허용 여부는 API 서버가 Google에 재검증한 결과로 결정한다.
+
+### src/pages/queue.js
+- **인증 연동:** `/queue/enter`와 순번 조회에 로그인 Access JWT를 포함한다. 입장 승인용 `/queue/admit`은 브라우저 사용자 화면에서 호출하지 않고 관리자 API로만 실행한다.
 
 ### src/pages/cancelQueue.js
 - **목적:** 로그인 사용자의 취소표 대기열과 Secret Link 발급 상태를 표시.
@@ -196,12 +212,12 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 ### src/pages/privateLink.js
 - **목적:** 서버에서 발급한 취소표 Secret Link의 입장과 만료를 처리.
 - **주요 기능:** 사용자·공연별 활성 할당을 서버에서 확인하고, 할당된 좌석과 서버 만료시각만 사용한다. 만료 시 `/cancel-queue/expire`를 호출해 다음 대기자에게 재배정을 요청한다.
-- **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/expire` 사용. 유효한 할당이 없으면 취소표 대기열로 되돌린다.
+- **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/expire` 사용. 일반 로그인 토큰이 있으면 Bearer JWT를, 독립 링크 흐름이면 서버 발급 `linkToken`을 사용한다. 유효한 할당이 없으면 취소표 대기열로 되돌린다.
 
 ### cancel-ticketing.html — 멤버십 전용 취소표 예매 독립 페이지
 - **목적:** 시뮬레이션 시크릿 링크 이메일에서 직접 연결되는 독립 HTML 페이지. SPA 라우터를 거치지 않고 단독 동작.
-- **주요 기능:** URL 파라미터(`eventId`, `userId`, `allocationId`)로 할당 상태를 확인하고, 3단계 워크플로(좌석 확인 → 결제수단 선택 → 결제 완료)를 제공. 5분 카운트다운 타이머, 구역별 좌석 현황 지도, 배정 좌석 하이라이트, 넘기기(양보) 기능 포함.
-- **API 명세 / 라우팅 규칙:** `GET /events`, `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/hold`, `GET /seats`, `POST /seats/confirm`, `POST /cancel-queue/expire`, `POST /cancel-queue/respond` 사용. 만료 시 자동으로 expire 호출.
+- **주요 기능:** URL 파라미터(`eventId`, `userId`, `allocationId`, `linkToken`)로 할당 상태를 확인하고, 3단계 워크플로(좌석 확인 → 결제수단 선택 → 결제 완료)를 제공. 5분 카운트다운 타이머, 구역별 좌석 현황 지도, 배정 좌석 하이라이트, 넘기기(양보) 기능 포함.
+- **API 명세 / 라우팅 규칙:** `linkToken`을 `GET /cancel-queue/status/:eventId/:userId`의 query와 취소표 hold/confirm/expire/respond body에 전달한다. 서버는 토큰의 사용자·공연·좌석·할당 범위를 검증한다. 일반 사용자 Bearer JWT 없이도 시크릿 링크가 유효한 동안만 해당 취소표 흐름이 가능하며, 만료 시 자동으로 expire 호출한다.
 
 ### src/pages/cancelSeatSelect.js
 - **목적:** Secret Link 보유자에게 서버가 배정한 취소표 좌석을 보여주고 선점.

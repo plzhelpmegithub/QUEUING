@@ -2,7 +2,8 @@
 // Vite 프록시(/seats → 192.168.0.190:3000)를 통해 호출하므로 CORS 불필요.
 // 프록시 설정은 vite.config.js 참고.
 
-import { withRecaptcha } from './recaptcha.js';
+import { fetchWithRecaptcha } from './recaptcha.js';
+import { authHeaders } from './authToken.js';
 
 const FETCH_TIMEOUT_MS = 3000;
 
@@ -10,7 +11,7 @@ async function getJson(path) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(path, { signal: controller.signal });
+    const res = await fetch(path, { headers: { ...authHeaders() }, signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
@@ -19,14 +20,17 @@ async function getJson(path) {
 }
 
 async function postJson(path, body, recaptchaAction = '') {
-  const requestBody = recaptchaAction ? await withRecaptcha(body, recaptchaAction) : body;
+  if (recaptchaAction) {
+    const { status, data } = await fetchWithRecaptcha(path, body, recaptchaAction);
+    return { ok: status >= 200 && status < 300, data };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     const data = await res.json().catch(() => ({}));
@@ -78,30 +82,21 @@ export async function fetchRealSeats(context = {}) {
 // POST /seats/hold — 좌석 선점 (분산 락 + Admission Token 검증)
 // 성공 시 서버에서 해당 좌석이 held 상태로 전환되고, 다른 유저는 선점 불가.
 export async function holdSeatApi(userId, seatId, token, context = {}) {
-  const requestBody = await withRecaptcha({ userId, seatId, token, ...context }, 'seat_hold');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch('/seats/hold', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
-    });
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
-  }
+  const { data } = await fetchWithRecaptcha('/seats/hold', { userId, seatId, token, ...context }, 'seat_hold');
+  return data;
 }
 
-// POST /seats/release via sendBeacon — 페이지 종료(닫기/새로고침) 시 사용
+// POST /seats/release via fetch keepalive — 페이지 종료(닫기/새로고침) 시 사용.
+// sendBeacon은 Bearer 헤더를 붙일 수 없으므로 인증이 필요한 API에는 사용하지 않는다.
 export function releaseSeatBeacon(userId, seatId) {
-  if (!navigator.sendBeacon) return false;
-  const blob = new Blob(
-    [JSON.stringify({ userId, seatId })],
-    { type: 'application/json' },
-  );
-  return navigator.sendBeacon('/seats/release', blob);
+  if (!userId || !seatId) return false;
+  fetch('/seats/release', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ userId, seatId }),
+    keepalive: true,
+  }).catch(() => {});
+  return true;
 }
 
 // POST /seats/release — 좌석 선점 해제 (held → available)
@@ -111,7 +106,7 @@ export async function releaseSeatApi(userId, seatId, context = {}) {
   try {
     const res = await fetch('/seats/release', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ userId, seatId, ...context }),
       signal: controller.signal,
     });
@@ -123,18 +118,6 @@ export async function releaseSeatApi(userId, seatId, context = {}) {
 
 // POST /seats/confirm — 결제 확정 (held → sold)
 export async function confirmSeatApi(userId, seatId, context = {}) {
-  const requestBody = await withRecaptcha({ userId, seatId, ...context }, 'seat_confirm');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch('/seats/confirm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
-    });
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
-  }
+  const { data } = await fetchWithRecaptcha('/seats/confirm', { userId, seatId, ...context }, 'seat_confirm');
+  return data;
 }

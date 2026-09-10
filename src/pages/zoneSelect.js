@@ -19,7 +19,8 @@ import { showToast } from '../components/toast.js';
 import { openModal, closeModal } from '../components/modal.js';
 import { connectSeats } from '../services/realtimeIntegration.js';
 import { generateEventSessions, formatStoredSessions, getVenueZoneLayout } from '../data/concerts.js';
-import { withRecaptcha } from '../utils/recaptcha.js';
+import { fetchWithRecaptcha } from '../utils/recaptcha.js';
+import { authHeaders } from '../utils/authToken.js';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
@@ -47,7 +48,7 @@ function releaseHeldSeat({ seatId, userId }) {
   if (!seatId || !userId) return;
   fetch('/seats/release', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ userId, seatId }),
   }).catch(() => {});
 }
@@ -361,27 +362,28 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       // the token itself. It can come from two places:
       //  - /queue/enter, if the user still holds a live admission (hasn't bought
       //    or confirmed anything yet) — no requeue needed, token comes back directly.
-      //  - /queue/admit, once a (re-)queued user's turn comes up. A user who already
+      //  - /queue/enter, once a (re-)queued user's turn comes up. A user who already
       //    used their token once (bought a seat, or is now rebooking after a refund)
       //    gets put back at the end of the real queue rather than instantly let back
-      //    in — so /queue/admit may take a few tries if others are ahead of them.
+      //    in — so the idempotent enter request may take a few tries if others are ahead.
       const ADMIT_RETRY_MS = 1200;
       const ADMIT_MAX_TRIES = 8;
 
       function pollForToken(userId, triesLeft) {
-        return fetch('/queue/admit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ eventId: c.eventId, sessionDate: session?.date || '', sessionTime: session?.time || '' }),
-        })
-          .then((r) => r.json())
-          .then((admitResult) => {
-            const tokenInfo = admitResult.tokens?.[userId];
-            if (tokenInfo?.token) {
-              setAdmissionToken(c.eventId, tokenInfo, session);
-              return tokenInfo.token;
+        return fetchWithRecaptcha('/queue/enter', {
+          userId,
+          eventId: c.eventId,
+          sessionDate: session?.date || '',
+          sessionTime: session?.time || '',
+        }, 'queue_enter')
+          .then(({ status, data: enterResult }) => {
+            if (enterResult.token) {
+              setAdmissionToken(c.eventId, enterResult, session);
+              return enterResult.token;
             }
-            if (triesLeft <= 0) throw new Error('token_unavailable');
+            if (status >= 400 || enterResult.status === 'closed' || triesLeft <= 0) {
+              throw new Error(enterResult.message || 'token_unavailable');
+            }
             return new Promise((resolve) => setTimeout(resolve, ADMIT_RETRY_MS)).then(() =>
               pollForToken(userId, triesLeft - 1)
             );
@@ -391,14 +393,8 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       function ensureAdmissionToken(userId) {
         const existing = getAdmissionToken(c.eventId, session);
         if (existing?.token) return Promise.resolve(existing.token);
-        return withRecaptcha({ userId, eventId: c.eventId, sessionDate: session?.date || '', sessionTime: session?.time || '' }, 'queue_enter')
-          .then((body) => fetch('/queue/enter', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          }))
-          .then((r) => r.json())
-          .then((enterResult) => {
+        return fetchWithRecaptcha('/queue/enter', { userId, eventId: c.eventId, sessionDate: session?.date || '', sessionTime: session?.time || '' }, 'queue_enter')
+          .then(({ data: enterResult }) => {
             if (enterResult.token) {
               setAdmissionToken(c.eventId, enterResult, session);
               return enterResult.token;
@@ -416,7 +412,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const STALE_TOKEN_REASONS = new Set(['no_token', 'expired', 'revoked', 'invalid', 'user_mismatch', 'mismatch', 'session_mismatch']);
 
       function attemptHold(userId, seatId, token) {
-        return withRecaptcha({
+        return fetchWithRecaptcha('/seats/hold', {
             userId,
             seatId,
             token,
@@ -424,12 +420,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             sessionDate: session?.date || '',
             sessionTime: session?.time || '',
           }, 'seat_hold')
-          .then((body) => fetch('/seats/hold', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          }))
-          .then((r) => r.json().then((data) => ({ ok: r.ok, data })));
+          .then(({ status, data }) => ({ ok: status >= 200 && status < 300, data }));
       }
 
       function deselectSeat(seat) {
