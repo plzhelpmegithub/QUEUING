@@ -1,0 +1,172 @@
+# ──────────────────────────────────────────────
+# 예지님(D파트 · 관측성) EKS 권한 — 네임스페이스 관리자
+#
+# 최종 위치: D:\realtime-ws-work\shared-infra\yeji-rbac-eks.yaml
+#
+# ■ 왜 별도 파일인가 (yeji-rbac.yaml 과 다른 점)
+# yeji-rbac.yaml 의 subject 는 ServiceAccount monitoring:yeji 다. 온프레미스에서
+# SA 토큰으로 만든 kubeconfig 를 쓰던 구조다.
+#
+# EKS 에서 예지님은 IAM 사용자로 인증한다. K8s 가 보는 사용자 이름은
+#   arn:aws:iam::230790682749:user/yeji
+# 이고, ServiceAccount 와는 완전히 다른 주체다. 그래서 기존 파일의 Role·
+# RoleBinding 은 EKS 의 예지님에게 하나도 적용되지 않는다.
+# 온프레미스 VM 이 아직 살아 있으므로 기존 파일은 그대로 둔다.
+#
+# ■ 무엇이 막혀 있었나
+# terraform-final/eks_access.tf 가 예지님께 준 것은 두 개다.
+#   AmazonEKSEditPolicy  (monitoring, redis, queuing-d)
+#   AmazonEKSViewPolicy  (클러스터 전체)
+#
+# Edit 정책은 쿠버네티스 기본 `edit` 롤에 대응한다. 거기에 없는 것들이 있다.
+#   - Role / RoleBinding 생성   → 네임스페이스 안 권한을 본인이 조정 못 함
+#   - CRD 기반 자원(ServiceMonitor, PrometheusRule 등) 쓰기
+#     `edit` 롤은 허용 API 그룹을 열거하는 방식이라 monitoring.coreos.com 이
+#     목록에 없다. ServiceMonitor 를 직접 만들 수 없다 — 관측성 담당에게는
+#     이게 가장 크게 걸린다.
+#
+# AmazonEKSAdminPolicy 로 등급을 올리는 방법도 있지만, 그 정책에 CRD 기반
+# 자원이 포함되는지 AWS 문서에서 확실히 확인되지 않았다. 추측으로 권한을
+# 설계하지 않기 위해 필요한 것을 직접 적는 RBAC 로 간다. 이 방식은 효과를
+# 검증할 수도 있다 (아래 "확인" 참고 — Access Policy 는 RBAC 밖의 인증자라서
+# can-i --as 로 측정되지 않지만, 이 파일로 준 권한은 측정된다).
+#
+# ■ 어디까지 열고 어디서 멈추는가
+#   열림 : monitoring / redis / queuing-d 세 네임스페이스 안에서는 전부
+#   멈춤 : 다른 네임스페이스(queuing-a 의 DB 비밀번호 등)는 여전히 못 봄
+#          Role 은 네임스페이스 밖으로 나가지 못한다
+#   멈춤 : 클러스터 범위 자원 쓰기(CRD, ClusterRole, 웹훅) 없음 — 읽기만
+#
+# ■ 적용 (지예님이 실행)
+#   kubectl apply -f shared-infra/yeji-rbac-eks.yaml
+#
+# ■ 확인
+#   Y=arn:aws:iam::230790682749:user/yeji
+#   kubectl auth can-i create servicemonitor -n monitoring --as=$Y   # yes
+#   kubectl auth can-i create rolebinding    -n monitoring --as=$Y   # yes
+#   kubectl auth can-i get    secrets        -n queuing-a  --as=$Y   # no
+#   kubectl auth can-i create clusterrole                 --as=$Y   # no
+# ──────────────────────────────────────────────
+
+# ══ 1. 클러스터 전체 읽기 — helm 이 비교(diff)할 때 필요한 만큼만 ══
+# helm upgrade 는 차트의 모든 매니페스트를 서버의 현재 상태와 비교한다.
+# 클러스터 범위 자원을 읽지 못하면 비교 단계에서 Forbidden 으로 멈춘다.
+# 쓰기는 주지 않는다 — ClusterRole 쓰기를 주면 본인에게 cluster-admin 을
+# 붙일 수 있게 되어 네임스페이스 경계가 의미를 잃는다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: yeji-eks-cluster-read
+rules:
+  # CRD 정의 읽기 — kube-prometheus-stack 이 CRD 를 포함한다
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+
+  # StorageClass — PVC 를 만들 때 어떤 것이 기본값인지 봐야 한다
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+
+  # PV / 노드 / 네임스페이스 — 클러스터 범위 자원이라 Role 로는 줄 수 없다
+  - apiGroups: [""]
+    resources: ["persistentvolumes", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+
+  # 모니터링 CR 을 클러스터 전체에서 조회 (다른 파트 수집 상태 확인용)
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: yeji-eks-cluster-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: yeji-eks-cluster-read
+subjects:
+  # ⚠️ ServiceAccount 가 아니라 User 다. 이름은 IAM ARN 전체와 정확히 같아야 한다.
+  #    aws eks describe-access-entry ... --query accessEntry.username 로 확인했다.
+  - kind: User
+    name: arn:aws:iam::230790682749:user/yeji
+    apiGroup: rbac.authorization.k8s.io
+---
+# ══ 2. 본인 네임스페이스 세 개 안에서는 전권 ══
+# Role 은 네임스페이스 안에서만 유효하므로, apiGroups/resources 를 "*" 로 두어도
+# 다른 파트에는 영향이 없다. CRD 기반 자원(ServiceMonitor, PrometheusRule)과
+# Role/RoleBinding 이 여기 포함된다 — 막혀 있던 두 가지가 이것으로 풀린다.
+#
+# helm 은 릴리즈 상태를 같은 네임스페이스의 Secret 에 저장한다. 그것도 포함된다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yeji-ns-admin
+  namespace: monitoring
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yeji-ns-admin
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yeji-ns-admin
+subjects:
+  - kind: User
+    name: arn:aws:iam::230790682749:user/yeji
+    apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yeji-ns-admin
+  namespace: redis
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yeji-ns-admin
+  namespace: redis
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yeji-ns-admin
+subjects:
+  - kind: User
+    name: arn:aws:iam::230790682749:user/yeji
+    apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yeji-ns-admin
+  namespace: queuing-d
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yeji-ns-admin
+  namespace: queuing-d
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yeji-ns-admin
+subjects:
+  - kind: User
+    name: arn:aws:iam::230790682749:user/yeji
+    apiGroup: rbac.authorization.k8s.io

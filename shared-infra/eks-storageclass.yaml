@@ -1,0 +1,60 @@
+# ──────────────────────────────────────────────
+# EKS 기본 StorageClass (gp3)
+#
+# ■ 왜 필요한가
+# EKS 클러스터에는 기본 StorageClass 가 없을 수 있다. 그러면 PVC 가 어떤
+# 볼륨을 만들어야 할지 몰라 영원히 Pending 이 되고, 그 PVC 를 쓰는 파드도
+# 함께 Pending 이 된다. 에러가 아니라 그냥 멈춰 있어서 원인을 찾기 어렵다.
+#
+# 2026-09-10 kube-prometheus-stack 을 깔았을 때 Grafana 와 Prometheus 가
+# 정확히 이 상태로 멈췄다.
+#
+# ■ 먼저 확인할 것
+#   kubectl get storageclass
+#   → 목록이 비었거나 (default) 표시가 없으면 이 파일을 적용한다.
+#   → 이미 gp2 등이 (default) 로 있으면 적용하지 않아도 된다.
+#
+# ■ 적용
+#   kubectl apply -f shared-infra/eks-storageclass.yaml
+#   적용 후 Pending 이던 PVC 가 자동으로 Bound 된다 (재시작 불필요).
+#
+# ■ gp2 가 아니라 gp3 인 이유
+#   gp3 는 같은 용량에서 gp2 보다 20% 싸고, 성능(3000 IOPS, 125MB/s)이
+#   용량과 무관하게 보장된다. gp2 는 용량에 비례해서 IOPS 가 정해진다.
+#   10Gi gp2 는 30 IOPS 밖에 안 나온다 — Prometheus 에는 부족하다.
+#
+# ■ EBS CSI 드라이버가 있어야 동작한다
+#   terraform 의 aws_eks_addon.ebs_csi 가 IRSA 와 함께 설치한다 (irsa.tf).
+#   없으면 이 StorageClass 를 만들어도 볼륨이 생기지 않는다.
+#     kubectl -n kube-system get pods -l app=ebs-csi-controller
+# ──────────────────────────────────────────────
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    # 이 표시가 있어야 storageClassName 을 적지 않은 PVC 가 이걸 쓴다.
+    # kube-prometheus-stack 의 PVC 가 그런 경우다.
+    storageclass.kubernetes.io/is-default-class: "true"
+
+provisioner: ebs.csi.aws.com
+
+# ⚠️ WaitForFirstConsumer 로 둔다.
+# Immediate 로 두면 파드가 어느 AZ 에 뜰지 정해지기 전에 볼륨이 만들어진다.
+# EBS 볼륨은 AZ 를 벗어날 수 없어서, 파드가 다른 AZ 에 스케줄되면 볼륨을
+# 붙이지 못하고 파드가 영원히 Pending 이 된다.
+# 우리 노드는 2개 AZ 에 흩어져 있어서 실제로 걸릴 수 있다.
+volumeBindingMode: WaitForFirstConsumer
+
+# PVC 를 지우면 볼륨도 지운다. 실습 환경 기준이다.
+# 운영이라면 Retain 으로 두어 실수로 지웠을 때 복구할 수 있게 한다.
+reclaimPolicy: Delete
+
+# 나중에 용량을 늘릴 수 있게 한다. 줄이는 것은 EBS 가 지원하지 않는다.
+allowVolumeExpansion: true
+
+parameters:
+  type: gp3
+  encrypted: "true"
+  # 기본 키(aws/ebs)로 암호화한다. 고객 관리 키를 쓰려면 kmsKeyId 를 지정한다.
