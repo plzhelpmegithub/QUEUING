@@ -6,7 +6,7 @@ image:
   pullPolicy: IfNotPresent
 
 service:
-  type: LoadBalancer   # AWS: NodePort 대신 LoadBalancer로 변경 (ALB 자동 연동)
+  type: ClusterIP   # AWS: 보안상 ClusterIP로 유지 (외부 노출 차단)
   port: 8080
 
 env:
