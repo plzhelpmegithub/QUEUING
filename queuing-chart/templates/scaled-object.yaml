@@ -1,3 +1,4 @@
+# templates/scaled-object.yaml
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -10,9 +11,7 @@ spec:
   triggers:
     - type: aws-sqs-queue
       metadata:
-        queueURL: "http://localstack.queuing-localstack.svc.cluster.local:4566/000000000000/resale-queue"
+        queueURL: {{ .Values.aws.queueURL | quote }}
         queueLength: "5"
-        awsRegion: "ap-northeast-2"
-        awsEndpoint: "http://localstack.queuing-localstack.svc.cluster.local:4566"
-      authenticationRef:
-        name: keda-aws-credentials
+        awsRegion: {{ .Values.aws.region | quote }}
+        identityOwner: {{ .Values.keda.identityOwner | quote }}

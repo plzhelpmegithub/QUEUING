@@ -14,19 +14,15 @@ spec:
       labels:
         app: email-worker
     spec:
+      serviceAccountName: email-worker
       containers:
       - name: worker
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: Always
         env:
-        - name: AWS_ACCESS_KEY_ID
-          value: "test"
-        - name: AWS_SECRET_ACCESS_KEY
-          value: "test"
+        # ❌ AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL 삭제 완료
         - name: AWS_DEFAULT_REGION
           value: "ap-northeast-2"
-        - name: AWS_ENDPOINT_URL
-          value: "http://localstack.queuing-localstack.svc.cluster.local:4566"
         - name: MYSQL_HOST
           value: "211.46.52.164"
         - name: MYSQL_PORT
