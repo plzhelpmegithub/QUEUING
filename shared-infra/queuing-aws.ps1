@@ -26,7 +26,10 @@
 #     Windows DPAPI 로 암호화되어 이 PC 의 이 사용자만 풀 수 있다. 깃에 올라가지 않는다.
 #     처음 한 번만 물어보고, 다음 날부터는 묻지 않는다.
 #   - destroy 에도 남아야 하는 것은 terraform 밖에 있다:
-#       NAT EIP 54.116.100.145, SES queuing.kr 도메인 인증, Route53 호스팅 영역
+#       NAT EIP 54.116.100.145, SES queuing.kr 도메인 인증, Route53 호스팅 영역,
+#       예지님 Grafana EC2 (terraform-yeji-grafana, 따로 관리)
+#   - 예지님 Grafana EC2 → Prometheus 연결(피어링·내부 NLB)은 terraform-final 의
+#     yeji_prometheus_link.tf 가 매일 만든다. 데이터소스 주소는 http://10.0.20.10:9090 로 고정.
 #
 # ■ 2026-09-10~11 에 실제로 겪은 문제와 이 파일의 대응
 #   외부 명령 실패가 "OK" 로 찍힘   -> 모든 kubectl/helm/aws 호출의 종료 코드를 확인한다
@@ -37,6 +40,16 @@
 #   Flow Log 로그 그룹 재생성        -> down 에서 Flow Log 먼저 지우고, up 전에 남은 그룹을 정리한다
 #   reCAPTCHA 키 붙여넣기 오류       -> 40자인지 검사하고 틀리면 다시 묻는다
 #   Role 이 네임스페이스 자체를 지움 -> RBAC 에서 namespaces 를 빼고 그룹을 열거한다
+#
+# ■ 2026-09-11 오후에 추가한 확인 (up 끝과 status 에서 돈다. 읽기만 한다)
+#   SES 도메인 인증이 손으로 지워져 메일 전부 실패 -> 도메인 인증 상태를 경고로 띄운다
+#   /publish·/metrics 가 인터넷에 열려 있었음      -> 403 으로 막혀 있는지 본다 (막는 건 alb.tf)
+#   Jenkins 8080 이 0.0.0.0/0                        -> 인터넷 전체에 열려 있으면 경고
+#   노드당 파드 한도 17 (t3.medium, VPC CNI)          -> 노드별 남은 자리를 보여준다
+#   terraform output -json 해석 실패로 3단계에서 멈춤 -> 외부 명령 출력을 UTF-8 로 읽는다
+#     (한국어 윈도우 콘솔 기본 cp949 에서만 난다. UTF-8 콘솔에서는 재현되지 않아 dry-run 이 놓쳤다)
+#   예지님 Grafana(EC2) B안                          -> 클러스터 안 Grafana 를 내리고 Prometheus 를
+#                                                       NodePort 로 열어 NLB 대상 상태를 본다
 # ──────────────────────────────────────────────
 
 [CmdletBinding()]
@@ -55,9 +68,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 # 외부 프로그램 표준입력으로 넘기는 텍스트(kubectl apply -f -)를 UTF-8 로 보낸다.
 # PowerShell 5.1 기본값은 ASCII 라서 한글이 ? 로 바뀐다.
-$OutputEncoding = New-Object System.Text.UTF8Encoding $false
+$OutputEncoding = $Utf8NoBom
 
 $TfDir   = Join-Path $RepoDir "terraform-final"
 $ChartC  = Join-Path $RepoDir "realtime-ws\helm-chart\realtime-ws-chart"
@@ -75,6 +89,12 @@ $Versions = @{
 $Namespaces = @("queuing-a", "queuing-b", "queuing-c", "queuing-d", "realtime", "redis", "monitoring", "keda", "argocd")
 $FlowLogGroup = "/aws/vpc-flow-logs/queuing"
 $Endpoints = @("https://api.queuing.kr/health", "https://api.queuing.kr/healthz", "https://queuing.kr/events")
+# 인터넷에서 403 이어야 하는 경로 (terraform-final/alb.tf block_internal)
+$BlockedEndpoints = @("https://api.queuing.kr/metrics", "https://api.queuing.kr/publish/seat/healthcheck")
+$SesDomain = "queuing.kr"
+# terraform-final/yeji_prometheus_link.tf 의 var.prometheus_nodeport 와 같아야 한다
+$PrometheusNodePort = 30090
+$PrometheusLinkTg   = "queuing-prom-tg"
 
 # 팀원 EKS 권한. 각자 본인 네임스페이스 안에서는 전권, 네임스페이스 자체와 클러스터 범위 쓰기는 불가.
 $Team = @(
@@ -113,12 +133,14 @@ function Invoke-Native {
         if ($DryRunArgs) { $a = @($a | Where-Object { $_ -ne "--wait" }) + $DryRunArgs }
     }
     $old = $ErrorActionPreference
+    $oldEnc = [Console]::OutputEncoding
     $ErrorActionPreference = "Continue"
+    Set-ConsoleOutputEncoding $Utf8NoBom   # 표준출력을 UTF-8 로 받는다 (Read-Native 설명 참고)
     try {
         if ($PSBoundParameters.ContainsKey("InputText")) { $out = $InputText | & $Exe @a }
         else { $out = & $Exe @a }
         $code = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $old }
+    } finally { $ErrorActionPreference = $old; Set-ConsoleOutputEncoding $oldEnc }
 
     if ($code -ne 0) {
         Warn "$What 실패 (exit $code) - 바로 위 에러 메시지를 확인한다"
@@ -131,11 +153,22 @@ function Invoke-Native {
 # ⚠️ 외부 명령의 에러 출력을 버릴 때는 반드시 이 함수를 쓴다. PowerShell 5.1 에서
 #    $ErrorActionPreference = "Stop" 인 채로 외부 명령에 2>$null 을 붙이면, 에러를 버리는
 #    게 아니라 스크립트가 멈춘다 (2026-09-11 직접 확인: RemoteException).
+#
+# ⚠️ 외부 프로그램의 표준출력은 콘솔 코드페이지로 해석된다. 한국어 윈도우 기본은 cp949 인데
+#    terraform·kubectl·aws 는 UTF-8 로 내보낸다. 그러면 한글이 깨지면서 뒤따르는 따옴표까지
+#    먹혀 JSON 이 망가진다 (2026-09-11 terraform output -json 이 8817 번째 글자에서 실패).
+#    출력을 받는 동안만 UTF-8 로 바꾸고 끝나면 원래 코드페이지로 돌려놓는다.
+function Set-ConsoleOutputEncoding($Encoding) {
+    try { [Console]::OutputEncoding = $Encoding } catch { }   # 콘솔이 없는 환경에서는 바꿀 필요도 없다
+}
+
 function Read-Native([string]$Exe, [string[]]$ArgList) {
     $old = $ErrorActionPreference
+    $oldEnc = [Console]::OutputEncoding
     $ErrorActionPreference = "Continue"
+    Set-ConsoleOutputEncoding $Utf8NoBom
     try { $o = & $Exe @ArgList 2>$null; $script:ReadExit = $LASTEXITCODE; return $o }
-    finally { $ErrorActionPreference = $old }
+    finally { $ErrorActionPreference = $old; Set-ConsoleOutputEncoding $oldEnc }
 }
 
 function Kube([string]$What, [string[]]$ArgList, [string]$InputText) {
@@ -329,26 +362,23 @@ parameters:
   encrypted: "true"
 "@
 
-# kube-prometheus-stack 값. 비밀번호는 넣지 않는다 (grafana-admin Secret 참조).
-# 전부 ClusterIP — Prometheus 는 인증이 없어서 외부에 열면 내부 정보가 다 보인다.
+# kube-prometheus-stack 값.
+#
+# Grafana 는 클러스터 안에 두지 않는다 (2026-09-11 예지님 B안).
+#   화면은 예지님 EC2 Grafana 하나로 합치고, 데이터소스로 Prometheus 와 CloudWatch 를 붙인다.
+#   클러스터가 죽어도 CloudWatch 패널은 EC2 에 살아 있다.
+#
+# Prometheus 는 NodePort 로 연다. Prometheus 는 인증이 없지만 인터넷에는 열리지 않는다:
+#   - 인터넷 ALB 에는 이 포트로 가는 대상 그룹이 없다.
+#   - 노드는 이 포트를 내부 NLB 보안그룹에서만 받고, NLB 는 예지님 EC2 IP 하나만 받는다.
+#   (terraform-final/yeji_prometheus_link.tf)
 $MonitoringValues = @"
 grafana:
-  enabled: true
-  admin:
-    existingSecret: grafana-admin
-    userKey: admin-user
-    passwordKey: admin-password
-  persistence:
-    enabled: true
-    size: 5Gi
-  deploymentStrategy:
-    type: Recreate
-  service:
-    type: ClusterIP
-    port: 80
+  enabled: false
 prometheus:
   service:
-    type: ClusterIP
+    type: NodePort
+    nodePort: $PrometheusNodePort
   prometheusSpec:
     storageSpec:
       volumeClaimTemplate:
@@ -415,15 +445,71 @@ function Show-Health([int]$WaitSeconds = 0) {
     }
 
     foreach ($u in $Endpoints) {
-        try {
-            $r = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
-            Ok "$u -> $($r.StatusCode)"
-        } catch {
-            $code = $null
-            if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
-            Warn "$u -> $(if ($code) { $code } else { '연결 실패' })"
-        }
+        $code = Get-HttpStatus $u
+        if ($code -ge 200 -and $code -lt 400) { Ok "$u -> $code" }
+        else { Warn "$u -> $(if ($code) { $code } else { '연결 실패' })" }
     }
+
+    # 인터넷에 열리면 안 되는 경로 (2026-09-11 /publish 로 가짜 좌석 이벤트를 누구나 보낼 수 있었다)
+    foreach ($u in $BlockedEndpoints) {
+        $code = Get-HttpStatus $u
+        if ($code -eq 403) { Ok "$u -> 403 (막힘)" }
+        else { Warn "$u -> $(if ($code) { $code } else { '연결 실패' }) (403 이어야 한다 - alb.tf block_internal 확인)" }
+    }
+
+    # 노드당 파드 한도. t3.medium 은 VPC CNI 로 17개까지다. 자리가 없으면 HPA 가 늘린 파드가 Pending 이 된다.
+    $alloc = @(Read-Native "kubectl" @("get", "nodes", "--no-headers", "-o", "custom-columns=N:.metadata.name,P:.status.allocatable.pods"))
+    $used  = @(Read-Native "kubectl" @("get", "pods", "-A", "--no-headers", "--field-selector=status.phase!=Succeeded,status.phase!=Failed", "-o", "custom-columns=N:.spec.nodeName"))
+    foreach ($line in $alloc) {
+        $parts = "$line".Trim() -split "\s+"
+        if ($parts.Count -lt 2) { continue }
+        $cnt  = @($used | Where-Object { "$_".Trim() -eq $parts[0] }).Count
+        $free = [int]$parts[1] - $cnt
+        $msg  = "파드 자리 $($parts[0] -replace '\..*$', '')  $cnt/$($parts[1]) (남은 $free)"
+        if ($free -le 0) { Warn "$msg - 새 파드가 Pending 이 된다. 노드를 늘린다" } else { Info $msg }
+    }
+
+    # 예지님 Grafana EC2 → Prometheus 연결
+    $svc = Read-Native "kubectl" @("-n", "monitoring", "get", "svc", "monitoring-kube-prometheus-prometheus", "-o", "jsonpath={.spec.type}/{.spec.ports[?(@.port==9090)].nodePort}")
+    if ("$svc" -eq "NodePort/$PrometheusNodePort") { Ok "Prometheus NodePort $PrometheusNodePort" }
+    else { Warn "Prometheus 서비스가 NodePort/$PrometheusNodePort 가 아니다 ($svc) - 예지님 Grafana 가 못 붙는다" }
+    $tg = Read-Native "aws" @("elbv2", "describe-target-groups", "--region", $Region, "--names", $PrometheusLinkTg, "--query", "TargetGroups[0].TargetGroupArn", "--output", "text")
+    if ($script:ReadExit -ne 0 -or -not $tg) { Info "Prometheus 연결 NLB 없음 (terraform 의 yeji_prometheus_link 가 false 이거나 apply 전)" }
+    else {
+        $raw = Read-Native "aws" @("elbv2", "describe-target-health", "--region", $Region, "--target-group-arn", "$tg".Trim(), "--query", "TargetHealthDescriptions[].TargetHealth.State", "--output", "text")
+        $states = @("$raw" -split "\s+" | Where-Object { $_ })
+        $healthy = @($states | Where-Object { $_ -eq "healthy" }).Count
+        if ($healthy -gt 0) { Ok "Prometheus 연결 NLB 대상 healthy $healthy/$($states.Count) (http://10.0.20.10:9090)" }
+        elseif ($states -contains "initial") { Info "Prometheus 연결 NLB 대상 확인 중 (방금 올라와서 1~2분 걸린다)" }
+        else { Warn "Prometheus 연결 NLB 에 healthy 대상이 없다 ($($states -join ','))" }
+    }
+}
+
+# 상태 코드만 돌려준다. 4xx/5xx 도 예외가 아니라 숫자로 받는다. 연결 자체가 안 되면 $null.
+function Get-HttpStatus([string]$Uri) {
+    try { return [int](Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).StatusCode }
+    catch {
+        if ($_.Exception.Response) { return [int]$_.Exception.Response.StatusCode }
+        return $null
+    }
+}
+
+# 클러스터와 상관없이 계정에 걸린 것 (destroy 된 저녁에도 의미가 있다). 읽기만 한다.
+function Test-AccountGuards {
+    Step "확인" "계정 (SES · Jenkins)"
+    # 2026-09-11: queuing.kr 도메인 인증과 DKIM 레코드가 손으로 지워져 메일이 전부 실패했다.
+    #             destroy 와는 무관하다. 누가 지우면 여기서만 드러난다.
+    $v = Read-Native "aws" @("sesv2", "get-email-identity", "--region", $Region, "--email-identity", $SesDomain, "--query", "[VerifiedForSendingStatus,DkimAttributes.Status]", "--output", "text")
+    if ($script:ReadExit -ne 0 -or -not $v) { Warn "SES $SesDomain 도메인 인증이 없다 - 메일 발송이 전부 실패한다 (도메인 인증은 찬규님 몫)" }
+    elseif ("$v" -match "^True\s+SUCCESS") { Ok "SES $SesDomain 인증됨 (DKIM SUCCESS)" }
+    else { Warn "SES $SesDomain 인증 미완료: $v" }
+    $prod = Read-Native "aws" @("sesv2", "get-account", "--region", $Region, "--query", "ProductionAccessEnabled", "--output", "text")
+    if ("$prod".Trim() -eq "True") { Ok "SES 프로덕션 액세스" } else { Info "SES 샌드박스 - 인증된 주소로만 발송된다 (해제 신청은 계정 대시보드)" }
+
+    # 2026-09-11: tfvars 의 jenkins_allowed_cidr 가 주석이라 8080 이 인터넷 전체에 열려 있었다.
+    $open = Read-Native "aws" @("ec2", "describe-security-groups", "--region", $Region, "--filters", "Name=group-name,Values=queuing-jenkins-*", "Name=ip-permission.from-port,Values=8080", "Name=ip-permission.cidr,Values=0.0.0.0/0", "--query", "length(SecurityGroups)", "--output", "text")
+    if ($script:ReadExit -eq 0 -and "$open".Trim() -ne "0") { Warn "Jenkins 8080 이 인터넷 전체(0.0.0.0/0)에 열려 있다 - terraform.tfvars 의 jenkins_allowed_cidr 확인" }
+    elseif ($script:ReadExit -eq 0) { Ok "Jenkins 8080 인터넷 전체 공개 아님" }
 }
 
 function Get-OrphanVolumes {
@@ -485,7 +571,6 @@ function Invoke-Up {
         Redis     = Get-StoredSecret $store "REDIS_COUNTER_PASSWORD"  "D파트 Redis 비밀번호 (새로 정해도 된다)"
         Recap3    = Get-StoredSecret $store "RECAPTCHA_SECRET_KEY"    "reCAPTCHA v3 Secret Key (40자)" -Length 40
         Recap2    = Get-StoredSecret $store "RECAPTCHA_V2_SECRET_KEY" "reCAPTCHA v2 Secret Key (40자)" -Length 40
-        Grafana   = Get-StoredSecret $store "GRAFANA_ADMIN_PASSWORD"  "Grafana 관리자 비밀번호"
         JwtAuth   = Get-StoredSecret $store "JWT_AUTH_SECRET"         "" -Generate
         JwtAdmit  = Get-StoredSecret $store "JWT_SECRET"              "" -Generate
     }
@@ -540,7 +625,6 @@ function Invoke-Up {
     Set-K8sSecret "queuing-d"  "backend-counter-secret" ([ordered]@{ "db-password" = $S.Db; "redis-password" = $S.Redis })
     Set-K8sSecret "redis"      "redis-counter-secret"   ([ordered]@{ password = $S.Redis })
     Set-K8sSecret "realtime"   "stats-redis-secret"     ([ordered]@{ password = $S.Redis })
-    Set-K8sSecret "monitoring" "grafana-admin"          ([ordered]@{ "admin-user" = "admin"; "admin-password" = $S.Grafana })
     $S = $null
 
     # ── 6. 팀원 RBAC ──
@@ -603,11 +687,14 @@ function Invoke-Up {
     }
 
     Show-Health -WaitSeconds 180
+    Test-AccountGuards
     Write-Summary "up"
+    $promUrl = if ($tf.yeji_prometheus_url.value) { $tf.yeji_prometheus_url.value } else { "(연결 꺼짐)" }
     Write-Host @"
 
  매일 확인할 것
    - JWT 키는 저장소 값을 계속 쓴다. 로그인 세션은 클러스터가 다시 떠도 유지된다.
+   - 예지님 Grafana 의 Prometheus 데이터소스: $promUrl
    - 내리기 전에: .\queuing-aws.ps1 down
 "@ -ForegroundColor Gray
 }
@@ -619,10 +706,10 @@ function Invoke-Down {
     Assert-Tools
     if (-not $DryRun) {
         Write-Host "`n  클러스터·ALB·CloudFront·ElastiCache·S3·Jenkins 를 모두 지운다." -ForegroundColor Yellow
-        Write-Host "  (남는 것: NAT EIP, SES 도메인 인증, Route53 영역, 이 PC 의 비밀값 저장소)" -ForegroundColor Yellow
+        Write-Host "  (남는 것: NAT EIP, SES 도메인 인증, Route53 영역, 예지님 Grafana EC2, 이 PC 의 비밀값 저장소)" -ForegroundColor Yellow
         if ((Read-Host "  계속하려면 destroy 를 입력") -ne "destroy") { Die "취소했다" }
     }
-    Info "Grafana 대시보드는 볼륨과 함께 사라진다. 백업이 필요한 파트는 지금 해야 한다."
+    Info "Prometheus 지표는 볼륨과 함께 사라진다. Grafana(예지님 EC2)와 CloudWatch 지표는 남는다."
 
     # ── 1. Flow Log 먼저 ──
     # 로그를 쓰는 주체를 먼저 지워야 destroy 도중 로그 그룹이 다시 생기지 않는다.
@@ -680,6 +767,7 @@ function Invoke-Status {
         Info "노드 $($nodes.Count)대"
         Show-Health
     }
+    Test-AccountGuards
     if (Test-FlowLogGroupLeftover) { Warn "state 밖에 Flow Log 로그 그룹이 남아 있다 - up 이 자동으로 지운다" }
     $vols = Get-OrphanVolumes
     if ($vols.Count) { Info "클러스터가 남긴 EBS $($vols.Count)개 ($(($vols | Measure-Object GB -Sum).Sum)GB)" }

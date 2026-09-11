@@ -14,10 +14,21 @@
 # queuing-vpc(aws_vpc.main)도 매일 destroy 된다. 그 안에 두면 EC2 가 같이 지워진다.
 # CloudWatch 조회는 VPC 와 무관한 AWS API 라서 어느 VPC 에 있어도 된다.
 #
-# ■ 접속
-#   Grafana : http://<출력된 IP>:3000   (팀 IP 118.131.22.85 에서만 열린다)
+# ■ 접속 — 들어오는 포트는 전부 닫혀 있다 (2026-09-11 예지님 요청으로 3000 도 닫음)
+#   Grafana : SSM 포트 포워딩 후 브라우저에서 http://localhost:3000
+#             aws ssm start-session --region ap-northeast-2 --target <인스턴스 ID> --document-name AWS-StartPortForwardingSession --parameters "portNumber=3000,localPortNumber=3000"
+#             (PC 에 Session Manager 플러그인이 있어야 한다)
 #   쉘      : AWS 콘솔 > EC2 > 인스턴스 선택 > 연결 > Session Manager  (키·22번 포트 없음)
-#             또는 aws ssm start-session --target <인스턴스 ID>  (PC 에 플러그인 필요)
+#
+# ■ 퍼블릭 IP(EIP)를 남겨두는 이유
+#   들어오는 연결용이 아니다. SSM 에이전트·Grafana 패키지 설치·CloudWatch API 가 모두
+#   밖으로 나가는 통신이라 인터넷 출구가 필요하다. 없애려면 SSM·CloudWatch 용 VPC
+#   엔드포인트를 따로 만들어야 해서 비용이 더 든다. 보안그룹에 인바운드 규칙이 없으므로
+#   퍼블릭 IP 로 들어올 수 있는 포트는 없다.
+#
+# ■ 클러스터 Prometheus 연결
+#   terraform-final/yeji_prometheus_link.tf 가 매일 피어링 + 내부 NLB 를 만든다.
+#   데이터소스 주소: http://10.0.20.10:9090  (클러스터가 내려가 있을 때는 응답 없음)
 #
 # ■ 적용 (지예님, PowerShell)
 #   cd D:\realtime-ws-work\terraform-yeji-grafana
@@ -41,9 +52,9 @@ variable "region" {
 }
 
 variable "allowed_cidrs" {
-  description = "Grafana(3000) 에 접속할 수 있는 IP. 집 등 다른 곳에서 쓰려면 여기에 /32 로 추가한다."
+  description = "Grafana(3000) 를 직접 열 IP. 기본은 비어 있다 — SSM 포트 포워딩으로만 접속한다."
   type        = list(string)
-  default     = ["118.131.22.85/32"]
+  default     = []
 }
 
 variable "instance_type" {
@@ -85,13 +96,23 @@ resource "aws_security_group" "grafana" {
   description = "Grafana 3000 from team IP only. No SSH - use SSM."
   vpc_id      = data.aws_vpc.default.id
 
-  ingress {
-    description = "Grafana web from team IP"
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = var.allowed_cidrs
-  }
+  # ⚠️ 위 description 은 예전 문구지만 고치지 않는다. description 이 바뀌면 보안그룹을
+  #    새로 만들어야 하는데, 인스턴스에 붙어 있어서 교체가 실패한다.
+  #
+  # ⚠️ ingress 를 블록이 아니라 목록(= [...])으로 쓴다. 블록이 0개면 terraform 은
+  #    "인바운드를 관리하지 않음" 으로 보고 기존 3000 규칙을 지우지 않는다
+  #    (2026-09-11 plan 으로 확인). 목록이 [] 이면 규칙이 전부 지워진다.
+  ingress = [for c in(length(var.allowed_cidrs) > 0 ? [var.allowed_cidrs] : []) : {
+    description      = "Grafana web from team IP"
+    from_port        = 3000
+    to_port          = 3000
+    protocol         = "tcp"
+    cidr_blocks      = c
+    ipv6_cidr_blocks = []
+    prefix_list_ids  = []
+    security_groups  = []
+    self             = false
+  }]
 
   # Grafana/패키지 설치와 CloudWatch API 호출, SSM 에이전트 통신에 필요하다.
   egress {
@@ -204,8 +225,9 @@ resource "aws_eip" "grafana" {
   tags     = { Name = "queuing-yeji-grafana-eip" }
 }
 
-output "grafana_url" {
-  value = "http://${aws_eip.grafana.public_ip}:3000"
+output "grafana_port_forward" {
+  description = "PowerShell 에서 실행한 뒤 브라우저로 http://localhost:3000"
+  value       = "aws ssm start-session --region ${var.region} --target ${aws_instance.grafana.id} --document-name AWS-StartPortForwardingSession --parameters \"portNumber=3000,localPortNumber=3000\""
 }
 
 output "instance_id" {
@@ -218,6 +240,7 @@ output "connect" {
       1) AWS 콘솔 > EC2 > queuing-yeji-grafana 선택 > 연결 > Session Manager > 연결
       2) aws ssm start-session --region ${var.region} --target ${aws_instance.grafana.id}
          (PC 에 Session Manager 플러그인이 있어야 한다)
-    Grafana 는 이 서버에 직접 설치한다. 3000 번 포트는 ${join(", ", var.allowed_cidrs)} 에서만 열린다.
+    Grafana 는 이 서버에 직접 설치한다. 들어오는 포트는 없고 SSM 포트 포워딩으로만 연다.
+    클러스터 Prometheus 데이터소스: http://10.0.20.10:9090
   EOT
 }
