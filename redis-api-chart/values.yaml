@@ -120,7 +120,7 @@ env:
   # --- SES 발신자 주소 ---
   # SES에서 검증된 이메일 또는 도메인이어야 발송 가능.
   # 비워두면 SMTP_USER → 'noreply@queuing.com' 순서로 폴백한다.
-  fromEmail: "chlwldp02naver@gmail.com"
+  fromEmail: "noreply@queuing.com"
 
   # --- 사이트 URL (취소표 알림 이메일 내 링크) ---
   # 비워두면 http://localhost 로 폴백하여 이메일 링크가 깨진다.
