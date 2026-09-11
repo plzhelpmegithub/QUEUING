@@ -6,3 +6,10 @@ apache-jmeter-5.6.3/bin/*.jtl
 jmeter.log
 apache-jmeter-5.6.3/bin/dashboard_report/
 apache-jmeter-5.6.3/bin/dashboard_report/
+# helm 설치 스크립트 (저장소에 둘 필요 없음)
+get_helm.sh
+
+# JMeter 원시 결과 (재생성 가능, 용량 큼 — 리포트만 커밋)
+*.jtl
+# JMeter 배포판 (내려받은 도구, 저장소에 둘 것이 아님)
+apache-jmeter-5.6.3/
