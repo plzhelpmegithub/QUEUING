@@ -47,6 +47,9 @@
 #   Jenkins 8080 이 0.0.0.0/0                        -> 인터넷 전체에 열려 있으면 경고
 #   노드당 파드 한도 17 (t3.medium, VPC CNI)          -> 노드별 남은 자리를 보여준다
 #   terraform output -json 해석 실패로 3단계에서 멈춤 -> 외부 명령 출력을 UTF-8 로 읽는다
+#   B파트(건아) Step Functions + Lambda 5개           -> apply 전에 건아님 브랜치에서 패키지를 만들고,
+#                                                       DB 비밀번호는 apply 동안만 TF_VAR 로 넘기고,
+#                                                       queuing-b 에 ConfigMap/Secret b-part-workflow 를 만든다
 #     (한국어 윈도우 콘솔 기본 cp949 에서만 난다. UTF-8 콘솔에서는 재현되지 않아 dry-run 이 놓쳤다)
 #   예지님 Grafana(EC2) B안                          -> 클러스터 안 Grafana 를 내리고 Prometheus 를
 #                                                       NodePort 로 열어 NLB 대상 상태를 본다
@@ -95,6 +98,18 @@ $SesDomain = "queuing.kr"
 # terraform-final/yeji_prometheus_link.tf 의 var.prometheus_nodeport 와 같아야 한다
 $PrometheusNodePort = 30090
 $PrometheusLinkTg   = "queuing-prom-tg"
+
+# B파트(건아) 취소표 순차 배정. terraform-final/b_part_resale_workflow.tf 와 이름·경로가 맞아야 한다.
+# 코드는 건아님 브랜치에서 읽기만 한다.
+$BPart = @{
+    Branch       = "origin/geonah/aws-migration"
+    LambdaPath   = "lambda/b-part"
+    AslPath      = "step-functions/b-part"
+    BuildDir     = (Join-Path $TfDir ".terraform\queuing-build\b-part")   # .terraform/ 은 깃에 안 올라간다
+    StateMachine = "queuing-b-resale-workflow"
+    Functions    = @("queuing-b-get-next-user", "queuing-b-generate-signed-link", "queuing-b-send-email-via-ses", "queuing-b-update-allocation-status", "queuing-b-push-to-dlq")
+    Trigger      = "queuing-b-trigger-resale-workflow"   # SQS queuing-cancellation-events 에 연결, DB 비밀번호 없음
+}
 
 # 팀원 EKS 권한. 각자 본인 네임스페이스 안에서는 전권, 네임스페이스 자체와 클러스터 범위 쓰기는 불가.
 $Team = @(
@@ -420,6 +435,32 @@ function Export-FromGit([string]$Branch, [string]$PathInRepo, [string]$Dest) {
     finally { Remove-Item $zip -Force -ErrorAction SilentlyContinue }
 }
 
+# B파트 Lambda 패키지와 ASL 을 terraform 이 읽는 곳($BPart.BuildDir)에 만든다.
+#   - 의존성(pymysql, PyJWT, boto3)은 Lambda 가 도는 리눅스 python3.12 용으로 받는다. 이 PC 의 python 버전과 무관하다.
+#   - zip 은 python 으로 묶는다. PowerShell 5.1 Compress-Archive 는 폴더 경로를 역슬래시로 넣어서
+#     리눅스 Lambda 가 pymysql 같은 패키지를 import 하지 못한다.
+function Build-BPartWorkflow {
+    Step "2-1" "B파트 Lambda 패키지 ($($BPart.Branch))"
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { Warn "python 을 찾을 수 없다"; return $false }
+    [void](Invoke-Native "git fetch" "git" @("-C", $RepoDir, "fetch", "origin", "--quiet"))
+    $src = Join-Path $Work "bpart-src"; $sfn = Join-Path $Work "bpart-sfn"; $pkg = Join-Path $Work "bpart-pkg"
+    if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg }
+    if (-not (Export-FromGit $BPart.Branch $BPart.LambdaPath $src)) { return $false }
+    if (-not (Export-FromGit $BPart.Branch $BPart.AslPath $sfn)) { return $false }
+    $asl = Join-Path $sfn "resale-workflow.asl.json"
+    if (-not (Test-Path $asl)) { Warn "ASL 파일이 없다: $($BPart.AslPath)/resale-workflow.asl.json"; return $false }
+    if (-not (Invoke-Native "pip (리눅스 python3.12 용)" "python" @("-m", "pip", "install", "-q", "--disable-pip-version-check",
+                "-r", (Join-Path $src "requirements.txt"), "-t", $pkg,
+                "--platform", "manylinux2014_x86_64", "--only-binary=:all:", "--python-version", "3.12", "--implementation", "cp"))) { return $false }
+    Copy-Item (Join-Path $src "*.py") $pkg
+    if (-not (Test-Path $BPart.BuildDir)) { New-Item -ItemType Directory -Force -Path $BPart.BuildDir | Out-Null }
+    $zipBase = Join-Path $BPart.BuildDir "lambda"
+    if (-not (Invoke-Native "Lambda zip" "python" @("-c", "import shutil,sys; shutil.make_archive(sys.argv[1], 'zip', root_dir=sys.argv[2])", $zipBase, $pkg))) { return $false }
+    Copy-Item $asl (Join-Path $BPart.BuildDir "resale-workflow.asl.json") -Force
+    Ok ("Lambda 패키지 {0:N1}MB, ASL 복사 -> {1}" -f ((Get-Item "$zipBase.zip").Length / 1MB), $BPart.BuildDir)
+    return $true
+}
+
 # ══════════════════════════════════════════════
 # 확인 (up / status 공통, 읽기만 한다)
 # ══════════════════════════════════════════════
@@ -482,6 +523,27 @@ function Show-Health([int]$WaitSeconds = 0) {
         if ($healthy -gt 0) { Ok "Prometheus 연결 NLB 대상 healthy $healthy/$($states.Count) (http://10.0.20.10:9090)" }
         elseif ($states -contains "initial") { Info "Prometheus 연결 NLB 대상 확인 중 (방금 올라와서 1~2분 걸린다)" }
         else { Warn "Prometheus 연결 NLB 에 healthy 대상이 없다 ($($states -join ','))" }
+    }
+
+    # B파트 워크플로 (Step Functions + Lambda 5개)
+    $sm = Read-Native "aws" @("stepfunctions", "list-state-machines", "--region", $Region, "--query", "stateMachines[?name=='$($BPart.StateMachine)'].stateMachineArn", "--output", "text")
+    if ($script:ReadExit -ne 0 -or -not "$sm".Trim()) { Info "B파트 워크플로 없음 (terraform apply 전이거나 b_resale_workflow = false)" }
+    else {
+        $bad = @()
+        foreach ($fn in $BPart.Functions) {
+            # 비밀번호 값은 읽지 않고 길이만 본다
+            $st = Read-Native "aws" @("lambda", "get-function-configuration", "--region", $Region, "--function-name", $fn, "--query", "[State,length(Environment.Variables.MYSQL_PASSWORD)]", "--output", "text")
+            $p = @("$st".Trim() -split "\s+")
+            if ($script:ReadExit -ne 0 -or $p[0] -ne "Active") { $bad += "$fn 상태 $st" }
+            elseif ($p.Count -lt 2 -or $p[1] -eq "0") { $bad += "$fn DB 비밀번호 비어 있음 (스크립트 없이 apply 로 새로 만든 것 같다 - up 으로 다시)" }
+        }
+        $tr = Read-Native "aws" @("lambda", "get-function-configuration", "--region", $Region, "--function-name", $BPart.Trigger, "--query", "State", "--output", "text")
+        if ($script:ReadExit -ne 0 -or "$tr".Trim() -ne "Active") { $bad += "$($BPart.Trigger) 상태 $tr" }
+        $esm = "$(Read-Native "aws" @("lambda", "list-event-source-mappings", "--region", $Region, "--function-name", $BPart.Trigger, "--query", "EventSourceMappings[0].State", "--output", "text"))".Trim()
+        if ($esm -in @("Creating", "Enabling", "Updating")) { Info "B파트 트리거 SQS 연결 $esm (곧 Enabled 가 된다)" }
+        elseif ($esm -ne "Enabled") { $bad += "$($BPart.Trigger) SQS 연결 상태 $esm (Enabled 여야 한다. 일부러 껐다면 b_trigger_enabled = false)" }
+        if ($bad.Count) { $bad | ForEach-Object { Warn "B파트 Lambda $_" } }
+        else { Ok "B파트 상태 머신 $($BPart.StateMachine) + Lambda $($BPart.Functions.Count)개 + 트리거(SQS 연결 $esm)" }
     }
 }
 
@@ -584,14 +646,22 @@ function Invoke-Up {
         if (Test-FlowLogGroupLeftover) {
             if (Invoke-Native "남은 Flow Log 로그 그룹 삭제" "aws" @("logs", "delete-log-group", "--region", $Region, "--log-group-name", $FlowLogGroup) -SkipInDryRun) { Ok "남은 로그 그룹 정리" }
         }
-        if ($DryRun) {
-            Info "[dry-run] terraform plan"
-            & terraform "-chdir=$TfDir" plan -input=false -no-color -compact-warnings | Select-String -CaseSensitive -Pattern "^Plan:|^No changes|^Error:" | ForEach-Object { Info $_.Line }
-        } else {
-            # 직접 호출한다. 출력을 가로채면 "Enter a value" 입력 안내가 화면에 안 보인다.
-            & terraform "-chdir=$TfDir" apply
-            if ($LASTEXITCODE -ne 0) { Die "terraform apply 실패. 에러를 고친 뒤 다시 실행한다" }
-        }
+        # B파트 Lambda 는 apply 가 zip 과 ASL 을 읽으므로 먼저 만든다.
+        if (-not (Build-BPartWorkflow)) { Die "B파트 Lambda 패키지를 만들지 못했다. 위 에러를 확인한다 (급하면 terraform.tfvars 에 b_resale_workflow = false 로 끄고 진행)" }
+        # D-Cloud DB 비밀번호는 terraform 파일·tfvars 에 두지 않는다. 이 terraform 실행 동안만 환경변수로 넘기고 바로 지운다.
+        $tfExit = 0
+        $env:TF_VAR_b_lambda_db_password = $S.Db
+        try {
+            if ($DryRun) {
+                Info "[dry-run] terraform plan"
+                & terraform "-chdir=$TfDir" plan -input=false -no-color -compact-warnings | Select-String -CaseSensitive -Pattern "^Plan:|^No changes|^Error:" | ForEach-Object { Info $_.Line }
+            } else {
+                # 직접 호출한다. 출력을 가로채면 "Enter a value" 입력 안내가 화면에 안 보인다.
+                & terraform "-chdir=$TfDir" apply
+                $tfExit = $LASTEXITCODE
+            }
+        } finally { Remove-Item Env:TF_VAR_b_lambda_db_password -ErrorAction SilentlyContinue }
+        if ($tfExit -ne 0) { Die "terraform apply 실패. 에러를 고친 뒤 다시 실행한다" }
     }
 
     # ── 3. 연결 ──
@@ -626,6 +696,29 @@ function Invoke-Up {
     Set-K8sSecret "redis"      "redis-counter-secret"   ([ordered]@{ password = $S.Redis })
     Set-K8sSecret "realtime"   "stats-redis-secret"     ([ordered]@{ password = $S.Redis })
     $S = $null
+
+    # B파트 워크플로 값. 건아님 앱이 envFrom 으로 읽는다 (차트가 --set 을 받지 않아도 된다).
+    #   Secret    JWT_SECRET_KEY            — Lambda GenerateSignedLink 와 같은 링크 서명 키 (app.py 가 이 이름을 읽는다)
+    #   ConfigMap RESALE_STATE_MACHINE_ARN  — StartExecution 대상
+    #             RESALE_DLQ_URL, AWS_REGION
+    if ($tf.b_link_jwt_secret_id.value) {
+        $jwt = Read-Native "aws" @("secretsmanager", "get-secret-value", "--region", $Region, "--secret-id", $tf.b_link_jwt_secret_id.value, "--query", "SecretString", "--output", "text")
+        if ($script:ReadExit -eq 0 -and "$jwt".Trim()) { Set-K8sSecret "queuing-b" "b-part-workflow" ([ordered]@{ JWT_SECRET_KEY = "$jwt".Trim() }) }
+        else { Warn "B파트 링크 서명 키를 Secrets Manager 에서 읽지 못했다 ($($tf.b_link_jwt_secret_id.value))" }
+        $jwt = $null
+        $cm = @"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: b-part-workflow
+  namespace: queuing-b
+data:
+  RESALE_STATE_MACHINE_ARN: "$($tf.b_resale_state_machine_arn.value)"
+  RESALE_DLQ_URL: "$($tf.b_resale_dlq_url.value)"
+  AWS_REGION: "$Region"
+"@
+        if (Kube "ConfigMap queuing-b/b-part-workflow" @("apply", "-f", "-") $cm) { Ok "ConfigMap queuing-b/b-part-workflow (RESALE_STATE_MACHINE_ARN, RESALE_DLQ_URL, AWS_REGION)" }
+    } else { Info "B파트 워크플로 출력 없음 (terraform apply 전이거나 b_resale_workflow = false)" }
 
     # ── 6. 팀원 RBAC ──
     Step 6 "팀원 RBAC"
@@ -695,6 +788,7 @@ function Invoke-Up {
  매일 확인할 것
    - JWT 키는 저장소 값을 계속 쓴다. 로그인 세션은 클러스터가 다시 떠도 유지된다.
    - 예지님 Grafana 의 Prometheus 데이터소스: $promUrl
+   - 건아님 앱이 읽을 값: queuing-b 의 ConfigMap/Secret b-part-workflow
    - 내리기 전에: .\queuing-aws.ps1 down
 "@ -ForegroundColor Gray
 }

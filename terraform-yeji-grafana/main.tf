@@ -244,3 +244,32 @@ output "connect" {
     클러스터 Prometheus 데이터소스: http://10.0.20.10:9090
   EOT
 }
+
+# ── 예지님이 콘솔에서 이 EC2 에 Session Manager 로 접속할 때 필요한 조회 권한 ──
+#
+# 2026-09-11 예지님 콘솔 "연결 > Session Manager" 가 iam:GetInstanceProfile AccessDenied 로 막혔다
+# (CloudTrail 확인). 팀원 권한(PowerUserAccess)에는 IAM 조회가 없다.
+# 이 EC2 의 인스턴스 프로파일과 역할을 "읽기만" 할 수 있게 한다. 다른 IAM 은 여전히 못 본다.
+# 콘솔은 프로파일 다음에 역할에 SSM 정책이 붙었는지도 확인하므로 역할 조회까지 준다.
+resource "aws_iam_user_policy" "yeji_grafana_inspect" {
+  name = "queuing-yeji-grafana-inspect"
+  user = "yeji" # 콘솔에서 만든 사용자라 이름으로 가리킨다
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "ReadOwnGrafanaInstanceRole"
+      Effect = "Allow"
+      Action = [
+        "iam:GetInstanceProfile",
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+      ]
+      Resource = [
+        aws_iam_instance_profile.grafana.arn,
+        aws_iam_role.grafana.arn,
+      ]
+    }]
+  })
+}
