@@ -39,13 +39,13 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "http_server_requests_seconds_count{job=\"backend-counter-service\"}",
+                        "expr": "sum(rate(http_server_requests_seconds_count{job=\"backend-counter-service\", uri!~\"/actuator.*\"}[1m])) by (uri, method)",
                         "legendFormat": "{{method}} {{uri}}",
                         "range": true
                       },
@@ -62,7 +62,7 @@
           "description": "",
           "id": 1,
           "links": [],
-          "title": "HTTP 요청 처리율 (http_server_requests_seconds_count)",
+          "title": "HTTP 요청 처리율 (req/s)",
           "vizConfig": {
             "group": "timeseries",
             "kind": "VizConfig",
@@ -133,7 +133,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -150,7 +150,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -249,7 +249,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -266,7 +266,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -371,7 +371,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -388,7 +388,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -485,7 +485,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -502,7 +502,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -599,7 +599,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -616,7 +616,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -680,7 +680,7 @@
                 "showHeader": true
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -697,7 +697,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -775,7 +775,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -792,13 +792,14 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "prometheus"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "rate(custom_idempotency_blocked_total[5m])",
+                        "expr": "sum(rate(custom_idempotency_blocked_total[5m]))",
+                        "interval": "",
                         "legendFormat": "__auto",
                         "range": true
                       },
@@ -889,7 +890,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       }
@@ -1030,36 +1031,6 @@
       "to": "now"
     },
     "title": "Integrated Traffic & System Monitoring Dashboard",
-    "variables": [
-      {
-        "kind": "QueryVariable",
-        "spec": {
-          "allowCustomValue": true,
-          "current": {
-            "text": "",
-            "value": ""
-          },
-          "hide": "dontHide",
-          "includeAll": false,
-          "multi": false,
-          "name": "query0",
-          "options": [],
-          "query": {
-            "datasource": {
-              "name": "prometheus"
-            },
-            "group": "prometheus",
-            "kind": "DataQuery",
-            "spec": {},
-            "version": "v0"
-          },
-          "refresh": "onDashboardLoad",
-          "regex": "",
-          "regexApplyTo": "value",
-          "skipUrlSync": false,
-          "sort": "disabled"
-        }
-      }
-    ]
+    "variables": []
   }
 }

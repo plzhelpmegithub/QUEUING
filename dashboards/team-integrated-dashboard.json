@@ -42,14 +42,14 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "cfxgelt1dh79cc"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
                         "expr": "kube_horizontalpodautoscaler_status_current_replicas",
-                        "legendFormat": "{{hpa}}",
+                        "legendFormat": "{{horizontalpodautoscaler}}",
                         "range": true
                       },
                       "version": "v0"
@@ -141,7 +141,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -158,7 +158,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "cfxgelt1dh79cc"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -257,7 +257,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -274,7 +274,7 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "cfxgelt1dh79cc"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
@@ -371,7 +371,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -388,13 +388,15 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "cfxgelt1dh79cc"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum(rate(http_server_requests_seconds_count[1m])) by (status)",
-                        "legendFormat": "HTTP {{status}}"
+                        "editorMode": "code",
+                        "expr": "sum(rate(http_server_requests_seconds_count{job=\"backend-counter-service\", uri!~\"/actuator.*\"}[1m])) by (status)",
+                        "legendFormat": "{{status}}",
+                        "range": true
                       },
                       "version": "v0"
                     },
@@ -483,7 +485,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -500,13 +502,13 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "cfxgelt1dh79cc"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum(rate(http_server_requests_seconds_count[5m])) by (uri) - sum(rate(http_server_requests_seconds_bucket{le=~\"0\\\\..*\"}[5m])) by (uri)",
+                        "expr": "sum(rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[5m])) by (uri)\r\n- sum(rate(http_server_requests_seconds_bucket{uri!~\"/actuator.*\", le=\"1.0\"}[5m])) by (uri)",
                         "legendFormat": "__auto",
                         "range": true
                       },
@@ -570,7 +572,7 @@
                 ]
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -587,14 +589,15 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "cfxgelt1dh79cc"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
                         "expr": "100 - ((node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}) * 100)",
-                        "legendFormat": "__auto",
+                        "interval": "",
+                        "legendFormat": "{{instance}}",
                         "range": true
                       },
                       "version": "v0"
@@ -668,7 +671,7 @@
                 "valueMode": "color"
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       },
@@ -685,13 +688,13 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "cfxgelt1dh79cc"
+                        "name": "queuing-prometheus"
                       },
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum(rate(http_server_requests_seconds_sum{uri!=\"\"}[1m])) by (uri) / sum(rate(http_server_requests_seconds_count{uri!=\"\"}[1m])) by (uri)",
+                        "expr": "sum(rate(http_server_requests_seconds_sum{uri!~\"/actuator.*\"}[1m])) by (uri)\r\n/ sum(rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[1m])) by (uri)",
                         "legendFormat": "__auto",
                         "range": true
                       },
@@ -782,7 +785,7 @@
                 }
               }
             },
-            "version": "13.2.0"
+            "version": "13.2.1"
           }
         }
       }
@@ -917,7 +920,7 @@
           "allowCustomValue": true,
           "current": {
             "text": "Prometheus",
-            "value": "prometheus"
+            "value": "queuing-prometheus"
           },
           "hide": "dontHide",
           "includeAll": false,
