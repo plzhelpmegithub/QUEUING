@@ -31,10 +31,12 @@ spec:
             memory: "256Mi"
         env:
         # ===== [보안] DB 비밀번호 — 평문 대신 Kubernetes Secret에서 안전하게 가져옴 =====
+        # Spring Boot가 SPRING_DATASOURCE_PASSWORD를 자동으로 spring.datasource.password로 읽어감
+        # (application.yml에 비밀번호를 적을 필요가 없는 이유)
         - name: SPRING_DATASOURCE_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: backend-counter-secret   # 지예가 queuing-d 네임스페이스에 만든 Secret 이름
+              name: backend-counter-secret   # queuing-d 네임스페이스의 Secret 이름
               key: db-password                # Secret 안의 db-password 키 값을 가져옴
 
         # ===== [보안] Redis 비밀번호 — 마찬가지로 Secret에서 가져옴 =====
@@ -47,14 +49,22 @@ spec:
         # ===== 일반 설정값 (비밀번호 아님, 그냥 values.yaml에서 그대로 전달) =====
         - name: SERVER_PORT
           value: "{{ .Values.service.port }}"
+
+        # --- D-Cloud 외부 MariaDB 접속 정보 ---
+        # 이 4개가 모여서 application.yml의 JDBC URL을 완성함
+        #   jdbc:mariadb://${DB_HOST}:${DB_PORT}/${DB_NAME}
         - name: DB_HOST
           value: "{{ .Values.env.dbHost }}"
         - name: DB_PORT
           value: "{{ .Values.env.dbPort }}"
-        - name: DB_USER                        # 👈 지예가 지적한 부분 - 이번에 새로 추가
+        - name: DB_USER
           value: "{{ .Values.env.dbUser }}"
+        - name: DB_NAME                        # 👈 새로 추가 — 이게 없으면 JDBC URL이 불완전해짐
+          value: "{{ .Values.env.dbName }}"
+
+        # --- Redis 접속 정보 ---
         - name: REDIS_HOST
-          value: "{{ .Values.env.redisHost }}"   # 👈 이제 전용 Redis 주소를 가리킴
+          value: "{{ .Values.env.redisHost }}"   # 전용 Redis 주소
         - name: REDIS_PORT
           value: "{{ .Values.env.redisPort }}"
 
@@ -70,9 +80,16 @@ spec:
         - containerPort: {{ .Values.service.port }}
 
         # 이 Pod가 "살아있는지" 주기적으로 확인 (죽어있으면 재시작)
+        # ===== 헬스체크 경로에 대한 주의 =====
+        # /actuator/health 를 그대로 쓰면 DB 상태까지 포함되어,
+        # DB가 잠깐 불안정해지는 것만으로 파드가 재시작되고 Redis 기능까지 같이 죽는다.
+        # /liveness, /readiness 그룹은 앱 자체의 생존 상태만 보므로 외부 의존성에 영향받지 않음.
+        # (DB 상태는 /actuator/health 에 그대로 노출되므로 Grafana 알람으로는 여전히 감지 가능)
+
+        # 이 Pod가 "살아있는지" 확인 (죽어있으면 재시작)
         livenessProbe:
           httpGet:
-            path: /actuator/health
+            path: /actuator/health/liveness
             port: {{ .Values.service.port }}
           initialDelaySeconds: 15   # 컨테이너 뜨고 15초 뒤부터 확인 시작
           periodSeconds: 20          # 20초마다 확인
@@ -80,7 +97,7 @@ spec:
         # 이 Pod가 "트래픽 받을 준비가 됐는지" 확인 (준비 안 됐으면 트래픽 안 보냄)
         readinessProbe:
           httpGet:
-            path: /actuator/health
+            path: /actuator/health/readiness
             port: {{ .Values.service.port }}
           initialDelaySeconds: 15
-          periodSeconds: 20
+          periodSeconds: 10
