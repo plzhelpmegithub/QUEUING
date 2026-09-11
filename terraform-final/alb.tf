@@ -156,14 +156,48 @@ resource "aws_lb_listener_rule" "ws_rest" {
   listener_arn = aws_lb_listener.https.arn
   priority     = 20
 
+  # /publish/* 와 /metrics 는 아래 block_internal 규칙이 먼저 막는다.
   condition {
     path_pattern {
-      values = ["/rooms", "/rooms/*", "/publish/*", "/healthz", "/metrics"]
+      values = ["/rooms", "/rooms/*", "/healthz"]
     }
   }
 
   action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.ws.arn
+  }
+}
+
+# 인터넷에 열려 있으면 안 되는 경로를 ALB 에서 403 으로 막는다. (2026-09-11)
+#
+# /publish/*  C파트 테스트용 쓰기 API. 인증이 없어서 누구나 가짜 좌석 상태를
+#             전체 접속자 화면에 뿌릴 수 있었다. A파트는 이 API 를 쓰지 않고
+#             Redis 에 직접 publish 하고, 프론트엔드도 호출하지 않는다.
+# /metrics    A·C 파트 둘 다 이 경로로 내부 지표를 내보낸다. Prometheus 는
+#             ServiceMonitor 로 파드에 직접 수집하므로 ALB 를 거칠 필요가 없다.
+#
+# ws_rest 에서 빼기만 하면 기본 규칙(A파트 api)으로 넘어가서 A파트 /metrics 가
+# 대신 노출된다. 그래서 규칙에서 빼는 것으로 끝내지 않고 명시적으로 403 을 돌려준다.
+#
+# POST /rooms 는 막지 않는다. 프론트엔드가 채팅을 열 때 브라우저에서 직접 호출한다.
+resource "aws_lb_listener_rule" "block_internal" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 5
+
+  condition {
+    path_pattern {
+      values = ["/publish/*", "/metrics"]
+    }
+  }
+
+  action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Forbidden"
+      status_code  = "403"
+    }
   }
 }
