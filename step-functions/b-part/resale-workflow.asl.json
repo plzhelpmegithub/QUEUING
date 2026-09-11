@@ -141,6 +141,9 @@
           "status": "EXPIRED"
         }
       },
+      "ResultSelector": {
+        "event_id.$": "$.Payload.event_id"
+      },
       "Next": "GetNextUser"
     },
 
@@ -155,6 +158,9 @@
           "queue_index.$": "$.queue_index",
           "token.$": "$.token"
         }
+      },
+      "ResultSelector": {
+        "event_id.$": "$.Payload.event_id"
       },
       "Next": "GetNextUser"
     }
