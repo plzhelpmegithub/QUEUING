@@ -1,0 +1,162 @@
+{
+  "Comment": "QUEUING B-part - resale ticket sequential allocation workflow. FunctionName 값들은 팀장이 terraform으로 실제 Lambda를 만들 때 실제 이름/ARN으로 바꿔야 함 (지금은 논리적 이름).",
+  "StartAt": "GetNextUser",
+  "States": {
+    "GetNextUser": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "GetNextUser",
+        "Payload": {
+          "event_id.$": "$.event_id"
+        }
+      },
+      "ResultSelector": {
+        "has_candidate.$": "$.Payload.has_candidate",
+        "event_id.$": "$.Payload.event_id",
+        "user_id.$": "$.Payload.user_id",
+        "queue_index.$": "$.Payload.queue_index"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "HasCandidate?"
+    },
+
+    "HasCandidate?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.has_candidate",
+          "BooleanEquals": true,
+          "Next": "GenerateSignedLink"
+        }
+      ],
+      "Default": "NoCandidateAvailable"
+    },
+
+    "NoCandidateAvailable": {
+      "Type": "Succeed"
+    },
+
+    "GenerateSignedLink": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "GenerateSignedLink",
+        "Payload": {
+          "event_id.$": "$.event_id",
+          "user_id.$": "$.user_id",
+          "queue_index.$": "$.queue_index"
+        }
+      },
+      "ResultSelector": {
+        "event_id.$": "$.Payload.event_id",
+        "user_id.$": "$.Payload.user_id",
+        "queue_index.$": "$.Payload.queue_index",
+        "token.$": "$.Payload.token",
+        "expires_at.$": "$.Payload.expires_at",
+        "hold_duration_seconds.$": "$.Payload.hold_duration_seconds"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "SendEmailAndWait"
+    },
+
+    "SendEmailAndWait": {
+      "Comment": "waitForTaskToken: 이 Lambda가 이메일을 보내고 리턴해도 상태는 끝나지 않는다. /verify-link API가 SendTaskSuccess를 부르거나, TimeoutSecondsPath만큼 지나면 States.Timeout으로 자동 종료된다.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "TimeoutSecondsPath": "$.hold_duration_seconds",
+      "Parameters": {
+        "FunctionName": "SendEmailViaSES",
+        "Payload": {
+          "event_id.$": "$.event_id",
+          "user_id.$": "$.user_id",
+          "queue_index.$": "$.queue_index",
+          "token.$": "$.token",
+          "expires_at.$": "$.expires_at",
+          "hold_duration_seconds.$": "$.hold_duration_seconds",
+          "TaskToken.$": "$$.Task.Token"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "ResultPath": "$.error",
+          "Next": "MarkExpired"
+        },
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "PushToDLQ"
+        }
+      ],
+      "Next": "MarkCompleted"
+    },
+
+    "MarkCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "UpdateAllocationStatus",
+        "Payload": {
+          "event_id.$": "$.event_id",
+          "user_id.$": "$.user_id",
+          "token.$": "$.token",
+          "status": "COMPLETED"
+        }
+      },
+      "End": true
+    },
+
+    "MarkExpired": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "UpdateAllocationStatus",
+        "Payload": {
+          "event_id.$": "$.event_id",
+          "user_id.$": "$.user_id",
+          "token.$": "$.token",
+          "status": "EXPIRED"
+        }
+      },
+      "Next": "GetNextUser"
+    },
+
+    "PushToDLQ": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "PushToDLQ",
+        "Payload": {
+          "event_id.$": "$.event_id",
+          "user_id.$": "$.user_id",
+          "queue_index.$": "$.queue_index",
+          "token.$": "$.token"
+        }
+      },
+      "Next": "GetNextUser"
+    }
+  }
+}
