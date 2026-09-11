@@ -2,7 +2,7 @@ replicaCount: 2  # 항상 2개 Pod를 유지 (트래픽 분산용)
 
 image:
   repository: "ttomang/backend-counter"  # Docker Hub 이미지 경로
-  tag: "1.0.9"                            # 이미지 버전
+  tag: "1.0.10"                            # 이미지 버전
   pullPolicy: IfNotPresent
 
 service:
