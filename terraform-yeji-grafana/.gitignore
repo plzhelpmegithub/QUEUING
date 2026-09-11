@@ -1,0 +1,5 @@
+# state 에는 계정·리소스 정보가 들어 있다. 깃에 올리지 않는다.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
