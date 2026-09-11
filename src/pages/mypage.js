@@ -1,4 +1,4 @@
-// 마이페이지 — 예매내역, 취소·환불내역, 관심 공연, 회원정보 수정 섹션으로 구성.
+// 마이페이지 — 예매내역, 취소·환불내역, 취소표 대기열, 관심 공연, 회원정보 수정 섹션으로 구성.
 // URL 해시의 section 파라미터(/mypage/:section)로 하위 탭을 직접 링크할 수 있다.
 
 import { CONCERTS, getConcert, getConcertImage } from '../data/concerts.js';
@@ -8,6 +8,7 @@ import { openModal, closeModal } from '../components/modal.js';
 import { showToast } from '../components/toast.js';
 import { authHeaders } from '../utils/authToken.js';
 import { calcCancelFeeRate } from '../data/refundPolicy.js';
+import { cancelQueuePage } from './cancelQueue.js';
 import {
   getState,
   isLoggedIn,
@@ -189,13 +190,14 @@ function openRefundConfirm(b, meta) {
 }
 
 export const myPage = {
-  render(container, params) {
+  render(container, params, query = {}) {
     if (!isLoggedIn()) {
       setReturnTo('mypage');
       navigate('login');
       return;
     }
     const section = params.section || '';
+    const cancelQueueEventId = query.eventId || '';
     const { user, bookings, interests, cancelQueues } = getState();
 
     container.innerHTML = `
@@ -316,11 +318,13 @@ export const myPage = {
     // Refund status flips from "처리 중" to "완료" a few seconds after the user
     // confirms — re-render the booking list/overview so that shows up live.
     const cleanup = subscribe(() => {
-      if (section === 'bookings' || section === '') renderCurrentSection();
+      if (section === 'bookings' || section === '' || section === 'refunds') renderCurrentSection();
     });
 
     function renderOverview() {
-      const activeBookings = bookings.filter((b) => b.status !== 'refunded' && b.status !== 'refund_pending');
+      const activeBookings = bookings.filter(
+        (b) => b.status !== 'cancelled' && b.status !== 'refunded' && b.status !== 'refund_pending'
+      );
       const interestCount = interests.size;
       const cancelQueueCount = Object.keys(cancelQueues).length;
       const membershipActive = hasMembership();
@@ -354,7 +358,9 @@ export const myPage = {
     }
 
     function renderBookings() {
-      const activeBookings = bookings.filter((b) => b.status !== 'refunded' && b.status !== 'refund_pending');
+      const activeBookings = bookings.filter(
+        (b) => b.status !== 'cancelled' && b.status !== 'refunded' && b.status !== 'refund_pending'
+      );
       withRealEvents((realEvents) => {
         content.innerHTML = `
           <div class="mypage-section-title" style="margin-top:0;">예매내역</div>
@@ -364,34 +370,50 @@ export const myPage = {
       });
     }
 
+    let nestedSectionCleanup = null;
+
     function renderCancelQueue() {
+      if (nestedSectionCleanup) {
+        nestedSectionCleanup();
+        nestedSectionCleanup = null;
+      }
+
+      // 취소표 상세 화면은 별도 페이지가 아니라 마이페이지 안에 표시한다.
+      // 실제 순번·멤버십·Secret Link 상태는 기존 cancelQueuePage가 서버에서 조회한다.
+      if (cancelQueueEventId) {
+        nestedSectionCleanup = cancelQueuePage.render(content, { id: cancelQueueEventId }) || null;
+        return;
+      }
+
       const entries = Object.entries(cancelQueues);
-      content.innerHTML = `
-        <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
-        ${
-          entries.length
-            ? entries
-                .map(([concertId, q]) => {
-                  const c = getConcert(concertId);
-                  if (!c) return '';
-                  return `
-                  <div class="ticket-row" data-open="${concertId}" style="cursor:pointer;">
-                    <div>
-                      <div class="ticket-row__concert">${c.artist} · ${c.title}</div>
-                      <div class="ticket-row__meta">전체 대기자 ${formatNumber(q.total)}명 · 예상 대기시간 약 ${Math.max(1, Math.round((q.myNumber / q.total) * 210))}분</div>
-                    </div>
-                    <div style="text-align:right;">
-                      <div class="ticket-row__price num-mono text-red">${formatNumber(q.myNumber)}번</div>
-                      <div class="ticket-row__meta">${hasMembership() ? 'Private Link 이용 가능' : '멤버십 필요'}</div>
-                    </div>
-                  </div>`;
-                })
-                .join('')
-            : emptyRow('취소표 대기열에 참여 중인 공연이 없습니다.')
-        }
-      `;
-      content.querySelectorAll('[data-open]').forEach((el) => {
-        el.addEventListener('click', () => navigate(`cancel-queue/${el.dataset.open}`));
+      withRealEvents((realEvents) => {
+        const rows = entries
+          .map(([concertId, q]) => {
+            const c = resolveConcert(concertId, realEvents);
+            if (!c) return '';
+            const total = Number(q.total || 0);
+            const position = Number(q.myNumber || 0);
+            const eta = total && position ? Math.max(1, Math.round((position / total) * 210)) : '-';
+            return `
+              <div class="ticket-row" data-open="${escapeAttr(concertId)}" style="cursor:pointer;">
+                <div>
+                  <div class="ticket-row__concert">${escapeAttr(c.name)}</div>
+                  <div class="ticket-row__meta">전체 대기자 ${total ? formatNumber(total) : '-'}명 · 예상 대기시간 약 ${eta === '-' ? '-' : `${eta}분`}</div>
+                </div>
+                <div style="text-align:right;">
+                  <div class="ticket-row__price num-mono text-red">${position ? formatNumber(position) : '-'}번</div>
+                  <div class="ticket-row__meta">${q.status === 'allocated' ? 'Secret Link 발급됨' : hasMembership() ? '멤버십 대기 중' : '멤버십 필요'}</div>
+                </div>
+              </div>`;
+          })
+          .join('');
+        content.innerHTML = `
+          <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
+          ${rows || emptyRow('취소표 대기열에 참여 중인 공연이 없습니다.')}
+        `;
+        content.querySelectorAll('[data-open]').forEach((el) => {
+          el.addEventListener('click', () => navigate(`mypage/cancel-queue?eventId=${encodeURIComponent(el.dataset.open)}`));
+        });
       });
     }
 
@@ -537,10 +559,13 @@ export const myPage = {
       if (!meta) return '';
       const days = daysUntilShow(b, meta);
       const rate = calcCancelFeeRate(days);
-      const fee = Math.round(b.price * rate);
-      const refundAmount = Math.max(0, b.price - fee);
+      const isUnpaidCancellation = b.status === 'cancelled';
+      const fee = isUnpaidCancellation ? 0 : Math.round(b.price * rate);
+      const refundAmount = isUnpaidCancellation ? 0 : Math.max(0, b.price - fee);
       const statusText =
-        b.status === 'refunded'
+        isUnpaidCancellation
+          ? `<span class="badge badge-gray">예매 취소</span>`
+          : b.status === 'refunded'
           ? `<span class="badge badge-gray">환불 완료</span>`
           : `<span class="badge badge-orange">환불 처리 중</span>`;
       return `
@@ -565,7 +590,7 @@ export const myPage = {
       withRealEvents((realEvents) => {
         const list = bookings.filter(
           (b) =>
-            (b.status === 'refund_pending' || b.status === 'refunded') &&
+            (b.status === 'cancelled' || b.status === 'refund_pending' || b.status === 'refunded') &&
             (!b.cancelledAt || Date.now() - b.cancelledAt <= REFUND_HISTORY_MS)
         );
         content.innerHTML = `
@@ -772,6 +797,9 @@ export const myPage = {
       return `<div class="card" style="padding:40px;text-align:center;color:var(--color-disabled);font-size:13.5px;">${msg}</div>`;
     }
 
-    return cleanup;
+    return () => {
+      if (nestedSectionCleanup) nestedSectionCleanup();
+      cleanup();
+    };
   },
 };

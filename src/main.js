@@ -14,7 +14,6 @@ import { zoneSelectPage } from './pages/zoneSelect.js';
 import { seatSelectPage } from './pages/seatSelect.js';
 import { paymentPage } from './pages/payment.js';
 import { bookingCompletePage } from './pages/bookingComplete.js';
-import { cancelQueuePage } from './pages/cancelQueue.js';
 import { membershipPage } from './pages/membership.js';
 import { membershipCheckoutPage } from './pages/membershipCheckout.js';
 import { privateLinkPage } from './pages/privateLink.js';
@@ -24,10 +23,9 @@ import { loginPage } from './pages/login.js';
 import { signupPage } from './pages/signup.js';
 import { signupCompletePage } from './pages/signupComplete.js';
 import { adminPage } from './pages/admin.js';
-import { monitoringPage } from './pages/monitoring.js';
 import { seatMapperPage } from './pages/seatMapper.js';
 import { olympicHallPreviewPage } from './pages/olympicHallPreview.js';
-import { subscribe, isAdmin, isMonitor, clearSeatSelectTimer, clearCurrentOrder, touchSession } from './state/store.js';
+import { subscribe, isAdmin, clearSeatSelectTimer, clearCurrentOrder, touchSession } from './state/store.js';
 
 registerRoute(/^$/, homePage);
 registerRoute(/^concerts$/, concertsListPage);
@@ -38,7 +36,12 @@ registerRoute(/^zones\/(?<id>[\w-]+)$/, zoneSelectPage);
 registerRoute(/^seats\/(?<id>[\w-]+)\/(?<zoneId>[\w-]+)$/, seatSelectPage);
 registerRoute(/^payment\/(?<type>regular|cancel)$/, paymentPage);
 registerRoute(/^complete\/(?<id>[\w-]+)$/, bookingCompletePage);
-registerRoute(/^cancel-queue\/(?<id>[\w-]+)$/, cancelQueuePage);
+// 이전 취소표 상세 URL은 마이페이지의 취소표 대기열 상세 화면으로 호환 이동한다.
+registerRoute(/^cancel-queue\/(?<id>[\w-]+)$/, {
+  render(_, params) {
+    nav(`mypage/cancel-queue?eventId=${encodeURIComponent(params.id)}`);
+  },
+});
 registerRoute(/^membership$/, membershipPage);
 registerRoute(/^membership-checkout\/(?<plan>monthly|yearly)$/, membershipCheckoutPage);
 registerRoute(/^private-link\/(?<id>[\w-]+)$/, privateLinkPage);
@@ -48,7 +51,6 @@ registerRoute(/^login$/, loginPage);
 registerRoute(/^signup$/, signupPage);
 registerRoute(/^signup-complete$/, signupCompletePage);
 registerRoute(/^admin$/, adminPage);
-registerRoute(/^monitoring$/, monitoringPage);
 registerRoute(/^seat-mapper$/, seatMapperPage);
 registerRoute(/^olympic-hall$/, olympicHallPreviewPage);
 
@@ -65,8 +67,8 @@ document.addEventListener('DOMContentLoaded', () => {
   mountFooter(document.getElementById('site-footer'));
   mountToastRoot(document.getElementById('toast-root'));
 
-  document.body.classList.toggle('admin-dark', isAdmin() || isMonitor());
-  subscribe(() => document.body.classList.toggle('admin-dark', isAdmin() || isMonitor()));
+  document.body.classList.toggle('admin-dark', isAdmin());
+  subscribe(() => document.body.classList.toggle('admin-dark', isAdmin()));
 
   const rawHash = (location.hash || '#/').replace(/^#\/?/, '');
   if (BOOKING_GUARD_RE.test(rawHash)) {

@@ -37,14 +37,14 @@ export const bookingCompletePage = {
         <div class="container complete-page">
           ${
             isUnpaid
-              ? `<div class="vbank-notice">🏦 마이페이지의 예매한 티켓에서 가상계좌를 확인해서 입금을 완료해주세요.</div>`
+              ? `<div class="vbank-notice">🏦 24시간 이내에 입금해야 좌석이 최종 확정됩니다. 마이페이지의 예매한 티켓에서 가상계좌를 확인해주세요.</div>`
               : ''
           }
           <div class="complete-check">${isUnpaid ? '🏦' : '✓'}</div>
           <h2 class="section-title">${isUnpaid ? '입금 확인 대기 중' : booking.status === 'confirmed' ? '예매가 완료되었습니다' : '예매 티켓'}</h2>
           <p class="section-sub">${
             isUnpaid
-              ? '아래 가상계좌로 입금을 완료하면 예매가 확정됩니다.'
+              ? '24시간 이내에 아래 가상계좌로 입금이 확인되면 예매가 확정됩니다.'
               : booking.source === 'cancel'
                 ? '취소표 예매가 정상적으로 확정되었습니다.'
                 : '결제가 정상적으로 완료되었습니다.'

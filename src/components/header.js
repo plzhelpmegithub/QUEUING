@@ -179,7 +179,6 @@ function render() {
               <span>${user.name}님</span>
               ${membership ? `<span class="site-header__member-chip">MEMBERSHIP</span>` : ''}
               ${user.isAdmin ? `<span class="site-header__member-chip site-header__member-chip--admin">ADMIN</span>` : ''}
-              ${user.isMonitor ? `<span class="site-header__member-chip site-header__member-chip--admin">MONITOR</span>` : ''}
               <span class="profile-caret">▾</span>
             </button>
             <div class="profile-dropdown ${profileOpen ? 'open' : ''}" data-profile-panel>
@@ -193,7 +192,6 @@ function render() {
             </div>
           </div>
           ${user.isAdmin ? `<a href="#/admin" class="site-header__ghost-btn">관리</a>` : ''}
-          ${user.isMonitor ? `<a href="#/monitoring" class="site-header__ghost-btn">모니터링</a>` : ''}
         `
             : `
           <a href="#/login" class="site-header__ghost-btn">로그인</a>

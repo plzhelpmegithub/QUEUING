@@ -1,3 +1,117 @@
+## [2026-09-11 17:54] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/payment.js]**: `/seats/confirm` 호출에 결제 수단을 전달하고 무통장 입금 화면에 24시간 입금 기한 및 좌석 최종 확정 조건을 명시
+- **[src/pages/bookingComplete.js]**: 무통장 입금 완료 화면에 24시간 입금 기한과 좌석 확정 조건을 표시
+- **[src/state/store.js]**: 입금 대기 알림에 24시간 입금 기한을 추가
+- **[src/pages/mypage.js]**: 취소된 입금 전 예매를 예매내역에서 제외하고 취소/환불내역에 표시. 취소 상태는 환불 처리 중과 구분하고 수수료·환불금액을 0원으로 표시
+- **[README.md]**: 결제 수단 전달, 무통장 입금 안내, 취소 예매 이동 규칙 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 마이페이지에서 입금 전 예매를 취소해도 예매내역에 남고, 취소/환불내역에서는 조회되지 않았음
+- **원인(Cause):** `cancelUnpaidBooking()`이 `cancelled` 상태만 설정했지만 예매 목록 필터가 해당 상태를 제외하지 않았고, 환불 목록도 `refund_pending`·`refunded`만 조회함
+- **해결(Solution):** 예매 목록에서 `cancelled`를 제외하고 취소/환불 목록에 포함했으며, 취소 상태용 표시와 0원 정산을 추가
+
+## [2026-09-11 17:11] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/monitoring.js]**: 모니터링 대시보드 페이지 삭제
+- **[src/components/miniChart.js]**: 모니터링 대시보드 전용 차트 컴포넌트 삭제
+- **[src/main.js]**: 모니터링 페이지 import·라우트·모니터링 전용 테마 처리 제거
+- **[src/components/header.js]**: 모니터링 역할 표시와 대시보드 메뉴 제거
+- **[src/pages/login.js]**, **[src/state/store.js]**: 모니터링 역할 로그인 상태와 이동 처리 제거
+- **[vite.config.js]**: 삭제된 대시보드 전용 모니터링 프록시 제거
+- **[README.md]**: 삭제된 페이지 구조를 문서에서 제거
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 삭제 대상인 모니터링 계정과 대시보드 페이지가 프론트엔드 메뉴·라우터·로그인 상태에 남아 있었음
+- **원인(Cause):** 계정 역할과 모니터링 화면이 별도 모듈로 연결된 상태였음
+- **해결(Solution):** 모니터링 페이지 파일과 전용 차트 컴포넌트를 삭제하고 관련 import·라우트·메뉴·역할 상태·프록시를 제거함
+
+## [2026-09-11 16:44] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 취소표 시뮬레이션의 단계4 수동 Secret Link 발급 버튼과 호출 로직을 제거하고, B파트 Step Functions 위임 상태로 표시
+- **[src/pages/admin.js]**: 단계3 이후에는 A파트가 SQS 취소 이벤트만 발행하고 B파트가 순차 배정한다는 안내 문구 추가
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 시뮬레이션에서 A파트가 직접 Secret Link를 발급하면 B파트와 동일 좌석을 중복 처리할 수 있음
+- **원인(Cause):** 프론트엔드에 A파트 직접 발급용 단계4 버튼과 API 호출이 남아 있었음
+- **해결(Solution):** 단계4 버튼을 비활성화하고 취소표 배정·링크 발급을 B파트 파이프라인의 책임으로 명시
+
+## [2026-09-11 14:53] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: `admitted` 상태에서 중복적인 Admission Token 요청을 방지하고, `admitting` 상태를 대기열 재진입 없이 다음 폴링에서 처리하도록 수정
+- **[src/pages/queue.js]**: `/queue/position`·`/queue/enter`의 비정상 HTTP 응답과 순번 누락을 별도 오류·처리중 상태로 표시하도록 수정
+- **[src/pages/queue.js]**: 유효하지 않은 순번을 `formatNumber()`에 전달하지 않아 대기번호가 `NaN`으로 표시되지 않도록 방어 로직 추가
+- **[README.md]**: 대기열 승인·오류·순번 표시 동작을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 승인 직후 대기 화면이 유지되거나 API 오류 응답에서 대기번호가 `NaN`으로 표시됨
+- **원인(Cause):** 승인 상태와 토큰 발급 사이의 짧은 경쟁 상태, 그리고 프론트가 HTTP 오류 응답에 `position`이 없어도 숫자로 변환하던 처리
+- **해결(Solution):** 승인 요청을 단일 실행으로 제한하고 `admitting`·비정상 응답·순번 누락을 별도로 처리하며, 유효하지 않은 값은 `-`로 표시
+
+## [2026-09-11 11:30] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 관리자 화면을 운영 콘솔 구조로 재배치하고 사이드바, 요약 카드, 명령 팔레트, 공연 표의 키보드 행 이동을 추가. 기존 관리자 API와 데이터 속성은 유지.
+- **[src/styles/components.css]**: 관리자 화면에만 적용되는 다크 Linear 스타일 토큰, 조밀한 표·폼·버튼 상태, 포커스 링, 명령 팔레트 및 반응형 규칙을 추가.
+- **[README.md]**: 관리자 콘솔의 화면 구조와 키보드 조작 방법을 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 기존 관리자 화면은 기능이 한 열로 길게 이어지고, 주요 운영 도구와 표를 키보드로 빠르게 탐색하기 어려웠음.
+- **원인(Cause):** 관리자 화면에 전용 레이아웃·명령 탐색·행 포커스 모델이 없었음.
+- **해결(Solution):** 기존 `data-*` API 제어 셀렉터를 보존한 채 사이드바, `Ctrl/Cmd + K` 명령 팔레트, 방향키 표 탐색을 추가하고 관리자 영역에만 전용 CSS 변수를 적용함.
+
+## [2026-09-11 11:04] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[public/favicon.svg]**: favicon을 빨간색 둥근 정사각형 배경과 흰색 대문자 `Q`만 표시하는 형태로 변경
+- **[README.md]**: 변경된 favicon 디자인을 문서에 반영
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 흰색 심볼만 표시하는 투명 favicon이 요청한 탭 아이콘 형태와 달랐음
+- **원인(Cause):** 기존 favicon이 QUEUING 전체 심볼을 사용하는 구조였음
+- **해결(Solution):** 64×64 SVG에 헤더와 동일한 빨간색(`#B11018`) 둥근 정사각형과 흰색 `Q`를 배치함
+
+## [2026-09-11 10:59] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[public/favicon.svg]**: favicon의 빨간색 배경과 유색 심볼을 제거하고 투명 배경의 흰색 QUEUING 심볼로 변경
+- **[index.html]**: favicon을 투명 배경 SVG 심볼로 연결
+- **[README.md]**: 헤더용 PNG와 탭용 SVG favicon의 역할을 구분해 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 헤더 로고와 탭 아이콘에 빨간색 배경이 함께 표시되어 탭에서 로고가 다르게 보임
+- **원인(Cause):** 헤더용 빨간색 배경 PNG를 favicon으로 직접 사용하고 있었음
+- **해결(Solution):** 기존 QUEUING 심볼을 흰색으로 통일한 투명 배경 SVG를 favicon으로 사용하도록 변경
+
+## [2026-09-11 10:56] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[index.html]**: 브라우저 탭 favicon을 기존 `favicon.svg`에서 사이트 헤더 좌측 로고와 동일한 `/images/queuing-logo-header.png`로 변경
+- **[README.md]**: 헤더와 favicon이 동일한 로고 원본을 사용한다는 구조 및 운영 설명 추가
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 브라우저 탭에는 헤더 좌측 로고와 다른 아이콘이 표시됨
+- **원인(Cause):** 헤더는 `queuing-logo-header.png`를 사용하지만 `index.html`은 별도의 `favicon.svg`를 참조하고 있었음
+- **해결(Solution):** favicon 참조를 헤더 로고 PNG로 통일하여 동일한 로고 원본을 사용하도록 수정
+
+## [2026-09-11 10:32] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/mypage.js]**: 취소표 대기열을 마이페이지 메뉴로 통합하고, `eventId`가 포함된 경우 기존 실시간 취소표 상세 화면을 마이페이지 콘텐츠 영역에 표시하도록 변경
+- **[src/main.js]**: 기존 `#/cancel-queue/:eventId` 주소를 마이페이지 취소표 대기열로 보내는 호환 리다이렉트 추가
+- **[src/components/soldOutModal.js / src/pages/cancelSeatSelect.js / src/pages/privateLink.js / src/pages/payment.js]**: 취소표 관련 이동 경로를 마이페이지 취소표 대기열로 통일
+- **[cancel-ticketing.html]**: 별도 독립 취소표 페이지 제거. 로그인한 사용자의 마이페이지에서 서버 상태를 확인하는 흐름으로 통합
+- **[README.md]**: 취소표 화면 구조와 Secret Link 접근 경로를 통합 화면 기준으로 갱신
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 기능이 일반 마이페이지와 분리된 독립 페이지로 표시되고, 이메일 링크에 사용자 식별 정보와 `linkToken`이 포함됨
+- **원인(Cause):** 기존 `cancel-ticketing.html`이 SPA 마이페이지 밖에서 URL 파라미터를 직접 처리하는 구조였음
+- **해결(Solution):** 독립 페이지를 제거하고 `#/mypage/cancel-queue?eventId=...`를 공식 경로로 사용하도록 통합했다. 사용자는 로그인 후 Access JWT로 자신의 대기열·Secret Link 상태를 서버에서 조회하며, 기존 `#/cancel-queue/:eventId` 링크는 새 경로로 호환 이동한다.
+
 ## [2026-09-10 08:35] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -495,3 +609,25 @@
 - **해결(Solution):** 공통 `authHeaders()`와 관리자용 `authFetch()`를 적용하고, 페이지 종료 해제는 `keepalive` fetch로 전환했다. 독립 링크는 linkToken을 서버 검증용으로만 전달한다.
 
 ---
+## [2026-09-11 09:01] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/utils/websocketUrl.js]**: 현재 페이지의 HTTP/HTTPS 프로토콜을 기준으로 `ws://` 또는 `wss://` WebSocket URL을 생성하는 공통 유틸리티를 추가하고 query parameter를 안전하게 인코딩하도록 구성.
+- **[src/services/realtimeIntegration.js]**: 실시간 채팅·좌석 상태 연결이 공통 URL 생성기를 사용하도록 변경하여 HTTPS 운영 사이트에서 `wss://`로 연결하도록 수정.
+- **[src/utils/realtimeChat.js]**: 자동 재연결 좌석 WebSocket도 현재 페이지 프로토콜에 따라 `ws://`/`wss://`를 사용하도록 수정.
+- **[README.md]**: 실시간 WebSocket의 프로토콜 선택 규칙과 운영 인프라의 `/ws` 전달 조건을 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** HTTPS로 제공되는 프론트엔드가 `ws://`로 실시간 서버에 연결하려 하여 브라우저의 Mixed Content 정책에 의해 채팅·좌석 실시간 연결이 차단될 수 있음.
+- **원인(Cause):** 채팅과 좌석 WebSocket URL이 `ws://`로 고정되어 있었음.
+- **해결(Solution):** 페이지 프로토콜이 `https:`이면 `wss:`, 그 외에는 `ws:`를 선택하는 `createRealtimeWebSocketUrl()`을 추가하고 모든 프론트 WebSocket 연결에 적용.
+## [2026-09-11 16:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 취소표 시뮬레이션 상태 패널에서 실제 유저가 아직 대기열에 직접 진입하지 않은 상태를 명확히 표시
+- **[README.md]**: 매진 연출 후 실제 유저가 프론트엔드 대기열에 직접 진입하는 테스트 흐름을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 매진 연출 직후 실제 유저의 취소표 대기 등록 여부가 실제 사용자 동작과 구분되지 않음
+- **원인(Cause):** 시뮬레이션 API가 실제 유저를 매진 단계에서 사전 등록하는 구조였음
+- **해결(Solution):** 관리 화면에서 사전 등록 상태 대신 `아직 대기열에 진입하지 않음`을 표시하고, 실제 `/queue/enter` 요청 이후 서버 상태를 확인하도록 흐름을 정리

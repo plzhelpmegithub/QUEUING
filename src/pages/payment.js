@@ -250,12 +250,12 @@ export const paymentPage = {
       vbankBankField.style.display = 'block';
       if (!virtualAccount) virtualAccount = generateVirtualAccount(vbankBankSelect.value);
       vbankBox.style.display = 'block';
-      vbankBox.innerHTML = `
+        vbankBox.innerHTML = `
         <div class="vbank-box__label">입금할 가상계좌</div>
         <div class="vbank-box__bank">${virtualAccount.bank}</div>
         <div class="vbank-box__number num-mono">${virtualAccount.number}</div>
         <div class="vbank-box__amount">입금액 <b class="num-mono">${formatPrice(finalPrice)}</b></div>
-        <p class="policy-note mt-8">결제하기를 누른 뒤, 마이페이지 &gt; 예매내역의 "티켓 확인"에서 이 계좌로 입금하시면 예매가 확정됩니다.</p>
+        <p class="policy-note mt-8">결제하기를 누른 뒤 <strong>24시간 이내</strong>에 마이페이지 &gt; 예매내역의 "티켓 확인"에서 이 계좌로 입금해주세요. 입금이 확인되어야 좌석이 최종 확정됩니다.</p>
       `;
     }
 
@@ -310,7 +310,7 @@ export const paymentPage = {
                 bodyHtml: `<p>${type === 'cancel' ? '취소표 Secret Link의 제한시간이 초과되었습니다.' : '좌석 선택 제한시간 내에 결제하기를 누르지 않아 예매가 취소되었습니다.'}<br/>좌석은 자동으로 해제되고 다음 대기자에게 넘어갑니다.</p>`,
                 footerHtml: `<button type="button" class="btn btn-primary btn-block" data-modal-close data-goto-zones>${type === 'cancel' ? '취소표 대기열로' : '구역 다시 선택하기'}</button>`,
               });
-              document.querySelector('[data-goto-zones]')?.addEventListener('click', () => navigate(type === 'cancel' ? `cancel-queue/${c.eventId}` : `zones/${c.eventId}`));
+              document.querySelector('[data-goto-zones]')?.addEventListener('click', () => navigate(type === 'cancel' ? `mypage/cancel-queue?eventId=${encodeURIComponent(c.eventId)}` : `zones/${c.eventId}`));
             },
     });
 
@@ -356,6 +356,7 @@ export const paymentPage = {
                     eventId: c.eventId,
                     sessionDate: order.session?.date || '',
                     sessionTime: order.session?.time || '',
+                    paymentMethod: method,
                   }, 'seat_confirm')
                   .then(({ status, data }) => ({ ok: status >= 200 && status < 300, data }))
               )

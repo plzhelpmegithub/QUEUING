@@ -1,7 +1,7 @@
 // 매진 안내 모달 컴포넌트 — 마지막 좌석이 팔리는 순간 한 번만 표시된다.
 // 멤버십 보유 시 취소표 대기열에 자동 등록하고 대기번호를 안내한다.
 
-import { getSelectedSession, getState, hasMembership } from '../state/store.js';
+import { getSelectedSession, getState, hasMembership, setCancelQueueEntry } from '../state/store.js';
 import { openModal, closeModal } from './modal.js';
 import { navigate } from '../router.js';
 import { formatNumber } from '../utils/format.js';
@@ -24,6 +24,14 @@ export function showSoldOutModal(concertId) {
       sessionTime: session.time || '',
     }).then(({ ok, data }) => {
       const position = data.standbyPosition || data.position;
+      if (ok && position) {
+        setCancelQueueEntry(concertId, {
+          myNumber: Number(position),
+          total: Number(data.totalStandby || data.totalWaiting || 0),
+          joinedAt: Date.now(),
+          status: data.status || 'WAITING',
+        });
+      }
       openModal({
         title: ok && position ? '취소표 대기 등록 완료' : '매진 안내',
         bodyHtml: ok && position
@@ -31,7 +39,7 @@ export function showSoldOutModal(concertId) {
           : `<p>${data.message || '취소표 대기열 등록에 실패했습니다.'}</p>`,
         footerHtml: `<button type="button" class="btn btn-primary btn-block" data-modal-close data-confirm>확인</button>`,
       });
-      document.querySelector('[data-confirm]')?.addEventListener('click', () => navigate(`cancel-queue/${concertId}`));
+      document.querySelector('[data-confirm]')?.addEventListener('click', () => navigate(`mypage/cancel-queue?eventId=${encodeURIComponent(concertId)}`));
     }).catch(() => {
       openModal({
         title: '매진 안내',

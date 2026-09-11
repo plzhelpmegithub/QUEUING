@@ -95,6 +95,7 @@ export const queuePage = {
         let redirectTimer = null;
         let settled = false; // guards against navigating twice if both polls resolve near-simultaneously
         let recovering = false; // guards against firing multiple concurrent re-entries below
+        let admissionRequestRunning = false; // prevents duplicate token requests while admission is being finalized
         let standbyPollTick = 0;
 
         function clearTimers() {
@@ -125,34 +126,84 @@ export const queuePage = {
 
         function renderWaitingState(pos) {
           const isStandby = pos.type === 'standby';
-          const position = isStandby ? pos.standbyPosition : pos.position;
-          const total = isStandby ? pos.totalStandby : pos.totalWaiting;
+          const rawPosition = isStandby ? pos.standbyPosition : pos.position;
+          const rawTotal = isStandby ? pos.totalStandby : pos.totalWaiting;
+          const position = Number(rawPosition);
+          const total = Number(rawTotal);
+          const hasPosition = Number.isFinite(position) && position > 0;
+          const hasTotal = Number.isFinite(total) && total >= 0;
 
           myNumLabelEl.textContent = isStandby ? '취소표 대기번호' : '내 대기번호';
-          myNumEl.textContent = formatNumber(position);
-          myNumEl.classList.toggle('hot', position <= 1000);
-          myNumEl.classList.toggle('pulse-red', position <= 200);
-          totalEl.textContent = total != null ? `${formatNumber(total)}명` : '-';
-          statusEl.textContent = isStandby ? '취소표 대기 중' : '대기 중';
-          etaEl.textContent = isStandby ? '취소표 발생 시 안내' : estimateEtaLabel(position);
+          myNumEl.textContent = hasPosition ? formatNumber(position) : '-';
+          myNumEl.classList.toggle('hot', hasPosition && position <= 1000);
+          myNumEl.classList.toggle('pulse-red', hasPosition && position <= 200);
+          totalEl.textContent = hasTotal ? `${formatNumber(total)}명` : '-';
+          statusEl.textContent = hasPosition
+            ? (isStandby ? '취소표 대기 중' : '대기 중')
+            : '순번 확인 중';
+          etaEl.textContent = hasPosition
+            ? (isStandby ? '취소표 발생 시 안내' : estimateEtaLabel(position))
+            : '잠시 후 다시 확인합니다';
 
-          const pct = total > 0 ? Math.min(99, Math.max(1, Math.round((1 - position / total) * 100))) : 1;
+          const pct = hasPosition && hasTotal && total > 0
+            ? Math.min(99, Math.max(1, Math.round((1 - position / total) * 100)))
+            : 1;
           rocket.update(isStandby ? Math.min(pct, 40) : pct); // standby progress is capped — no seats guaranteed yet
+
+          // A previous transient API error should disappear after a valid
+          // queue response arrives.
+          if (hasPosition) enterBox.innerHTML = '';
+        }
+
+        function createHttpError(response, payload) {
+          const error = new Error(payload?.message || `대기열 조회 실패 (${response.status})`);
+          error.status = response.status;
+          error.payload = payload;
+          return error;
+        }
+
+        function showPositionError(error) {
+          const code = error?.payload?.code;
+          const serverMessage = error?.payload?.message;
+          const message = code === 'auth_not_configured'
+            ? '서버 인증 설정을 확인하는 중입니다.'
+            : error?.status === 401
+              ? '로그인 세션이 만료되었습니다. 다시 로그인해주세요.'
+              : serverMessage || '대기열 정보를 잠시 불러오지 못했습니다. 다시 확인 중입니다.';
+
+          statusEl.textContent = '대기열 확인 지연';
+          etaEl.textContent = '잠시 후 다시 확인합니다';
+          enterBox.innerHTML = '<div class="notice-box" aria-live="polite"><p data-queue-error-message></p></div>';
+          enterBox.querySelector('[data-queue-error-message]').textContent = message;
         }
 
         function pollPosition() {
           const query = new URLSearchParams(queueContext);
           fetch(`/queue/position/${encodeURIComponent(userId)}?${query.toString()}`, { headers: { ...authHeaders() } })
-            .then((r) => r.json())
+            .then(async (response) => {
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok) throw createHttpError(response, payload);
+              return payload;
+            })
             .then((pos) => {
               if (settled) return;
               if (pos.status === 'admitted') {
                 statusEl.textContent = '입장 허용됨 · 토큰 발급 중...';
-                if (!settled) {
-                  requestQueueEnter()
-                    .then(handleEnterResult)
-                    .catch(() => {});
-                }
+                if (admissionRequestRunning) return;
+                admissionRequestRunning = true;
+                requestQueueEnter()
+                  .then(handleEnterResult)
+                  .catch(showPositionError)
+                  .finally(() => { admissionRequestRunning = false; });
+                return;
+              }
+              if (pos.status === 'admitting') {
+                statusEl.textContent = '입장 승인 처리 중...';
+                etaEl.textContent = 'Admission Token 준비 중';
+                return;
+              }
+              if (pos.status === 'error') {
+                showPositionError({ payload: pos });
                 return;
               }
               if (pos.status === 'not_found') {
@@ -175,7 +226,10 @@ export const queuePage = {
                 }
               }
             })
-            .catch(() => {});
+            .catch((error) => {
+              if (settled || destroyed) return;
+              showPositionError(error);
+            });
         }
 
         function startPolling() {
@@ -262,6 +316,12 @@ export const queuePage = {
             enterBox.innerHTML = `<div class="notice-box"><p>${enterResult.message || '대기열 진입 중 오류가 발생했습니다.'}</p></div>`;
             return;
           }
+          if (enterResult.status === 'admitting') {
+            statusEl.textContent = '입장 승인 처리 중...';
+            etaEl.textContent = 'Admission Token 준비 중';
+            startPolling();
+            return;
+          }
           if (enterResult.token) {
             setAdmissionToken(c.eventId, enterResult, session);
             enterConfirmed();
@@ -273,7 +333,12 @@ export const queuePage = {
 
         function requestQueueEnter() {
           return fetchWithRecaptcha('/queue/enter', { userId, ...queueContext }, 'queue_enter')
-            .then(({ data }) => data);
+            .then(({ status, data }) => {
+              if (status < 200 || status >= 300) {
+                throw createHttpError({ status }, data);
+              }
+              return data;
+            });
         }
 
         function enterQueue() {

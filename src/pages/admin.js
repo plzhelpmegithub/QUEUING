@@ -301,6 +301,8 @@ function refreshEventsList(container) {
     .then((res) => res.json())
     .then((data) => {
       eventsCache = data.events || [];
+      const eventCount = container.querySelector('[data-admin-event-count]');
+      if (eventCount) eventCount.textContent = eventsCache.length.toLocaleString();
       if (eventsCache.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="text-secondary">생성된 공연이 없습니다.</td></tr>';
         updateBulkDeleteButton(container);
@@ -309,7 +311,7 @@ function refreshEventsList(container) {
       tbody.innerHTML = eventsCache
         .map(
         (e, i) => `
-        <tr>
+        <tr class="admin-event-row" data-admin-row="${e.eventId}" tabindex="0">
           <td class="num-mono">${i + 1}</td>
           <td>${e.eventName}</td>
           <td>${e.eventDate || '-'}</td>
@@ -885,7 +887,8 @@ function initSimulationPanel(container) {
     btnSellout.disabled = manualActionDisabled;
     btnClose.disabled = manualActionDisabled;
     btnCancel.disabled = manualActionDisabled;
-    btnLinks.disabled = manualActionDisabled;
+    // 취소표 순차 배정과 Secret Link 발급은 B파트 Step Functions가 담당한다.
+    btnLinks.disabled = true;
     btnInit.disabled = actionInProgress;
     btnCleanup.disabled = actionInProgress;
   }
@@ -921,6 +924,9 @@ function initSimulationPanel(container) {
       if (ru.isAdmitted) html += '<span style="color:#27ae60;">입장 허용됨</span> · ';
       if (ru.hasAllocation) {
         html += `<span style="color:#8e44ad;">시크릿 링크 발급됨</span> (좌석: ${ru.allocation.seatId}, 만료: ${new Date(ru.allocation.expiresAt).toLocaleTimeString('ko-KR')})`;
+      }
+      if (!ru.standbyPosition && !ru.isAdmitted && !ru.hasAllocation) {
+        html += '<span style="color:var(--color-text-secondary);">아직 대기열에 진입하지 않음</span>';
       }
       html += '</div>';
     }
@@ -1080,30 +1086,6 @@ function initSimulationPanel(container) {
       });
   });
 
-  btnLinks.addEventListener('click', () => {
-    const params = getSimParams();
-    if (!params.eventId) return;
-    if (!confirm('적격 멤버십 유저에게 시크릿 링크를 발급할까요?')) return;
-    actionInProgress = true;
-    updateButtons();
-    btnLinks.textContent = '링크 발급 중...';
-    logMsg('단계4: 시크릿 링크 발급 시작');
-    simFetch('/admin/simulation/issue-links', params)
-      .then((r) => {
-        if (r.error) { showToast({ title: '링크 발급 실패', body: r.error }); return; }
-        showToast({ title: '시크릿 링크 발급 완료', body: r.message, type: 'success' });
-        logMsg(r.message);
-        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
-      })
-      .then((s) => { if (s) renderStatus(s); })
-      .catch((e) => showToast({ title: '링크 발급 오류', body: e.message }))
-      .finally(() => {
-        actionInProgress = false;
-        btnLinks.textContent = '단계4: 시크릿 링크 발급';
-        updateButtons();
-      });
-  });
-
   btnCleanup.addEventListener('click', () => {
     const params = getSimParams();
     if (!params.eventId) { showToast({ title: '공연을 선택해주세요' }); return; }
@@ -1136,6 +1118,215 @@ function initSimulationPanel(container) {
   });
 }
 
+function focusAdminSection(container, section) {
+  const target = container.querySelector(`[data-admin-focus="${section}"]`);
+  if (!target) return;
+
+  target.scrollIntoView({ block: 'start', behavior: 'auto' });
+  container.querySelectorAll('[data-admin-section]').forEach((item) => {
+    const active = item.dataset.adminSection === section;
+    item.classList.toggle('is-active', active);
+    if (active) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
+}
+
+function initAdminInteractions(container) {
+  const navItems = [...container.querySelectorAll('[data-admin-section]')];
+  navItems.forEach((item, index) => { item.tabIndex = index === 0 ? 0 : -1; });
+
+  const onClick = (event) => {
+    const navItem = event.target.closest('[data-admin-section]');
+    if (!navItem || !container.contains(navItem)) return;
+    focusAdminSection(container, navItem.dataset.adminSection);
+  };
+
+  const onKeydown = (event) => {
+    const navItem = event.target.closest('[data-admin-section]');
+    if (navItem && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault();
+      const currentIndex = navItems.indexOf(navItem);
+      const nextIndex = event.key === 'ArrowDown'
+        ? (currentIndex + 1) % navItems.length
+        : (currentIndex - 1 + navItems.length) % navItems.length;
+      navItems.forEach((item, index) => item.tabIndex = index === nextIndex ? 0 : -1);
+      navItems[nextIndex].focus();
+      return;
+    }
+
+    const row = event.target.closest('[data-admin-row]');
+    if (!row || !container.contains(row)) return;
+    if (event.target !== row && event.target.closest('button, a, input, select, textarea')) return;
+
+    const rows = [...container.querySelectorAll('[data-admin-row]')];
+    const currentIndex = rows.indexOf(row);
+    let nextIndex = currentIndex;
+
+    if (event.key === 'ArrowDown') nextIndex = Math.min(rows.length - 1, currentIndex + 1);
+    if (event.key === 'ArrowUp') nextIndex = Math.max(0, currentIndex - 1);
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = rows.length - 1;
+
+    if (nextIndex !== currentIndex) {
+      event.preventDefault();
+      rows.forEach((item) => item.classList.remove('is-keyboard-active'));
+      rows[nextIndex].classList.add('is-keyboard-active');
+      rows[nextIndex].focus();
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      row.querySelector('[data-set-open-time]')?.focus();
+    }
+  };
+
+  const onFocusIn = (event) => {
+    const row = event.target.closest('[data-admin-row]');
+    if (!row || !container.contains(row)) return;
+    container.querySelectorAll('[data-admin-row]').forEach((item) => item.classList.remove('is-keyboard-active'));
+    row.classList.add('is-keyboard-active');
+  };
+
+  container.addEventListener('click', onClick);
+  container.addEventListener('keydown', onKeydown);
+  container.addEventListener('focusin', onFocusIn);
+
+  return () => {
+    container.removeEventListener('click', onClick);
+    container.removeEventListener('keydown', onKeydown);
+    container.removeEventListener('focusin', onFocusIn);
+  };
+}
+
+function initAdminCommandPalette(container) {
+  const palette = container.querySelector('[data-command-palette]');
+  const trigger = container.querySelector('[data-command-open]');
+  const input = container.querySelector('[data-command-input]');
+  const list = container.querySelector('[data-command-list]');
+  if (!palette || !trigger || !input || !list) return () => {};
+
+  const commands = [
+    { id: 'overview', label: '개요로 이동', hint: '운영 대시보드', action: () => focusAdminSection(container, 'overview') },
+    { id: 'events', label: '공연 관리로 이동', hint: '등록된 공연 목록', action: () => focusAdminSection(container, 'events') },
+    { id: 'dummy', label: '더미 유저 도구로 이동', hint: 'HOT 공연 관리', action: () => focusAdminSection(container, 'dummy') },
+    { id: 'simulation', label: '취소표 시뮬레이션으로 이동', hint: '수동 실행 패널', action: () => focusAdminSection(container, 'simulation') },
+    { id: 'create-event', label: '새 공연 생성', hint: '공연 생성 모달 열기', action: () => container.querySelector('[data-open-create-event]')?.click() },
+    { id: 'refresh-events', label: '공연 목록 새로고침', hint: '최신 상태 조회', action: () => refreshEventsList(container) },
+    { id: 'toggle-simulation', label: '취소표 시뮬레이션 펼치기', hint: '패널 열기', action: () => {
+      const body = container.querySelector('[data-sim-body]');
+      if (body?.style.display === 'none') container.querySelector('[data-sim-toggle]')?.click();
+      focusAdminSection(container, 'simulation');
+    } },
+  ];
+
+  let filteredCommands = commands;
+  let activeIndex = 0;
+  let lastFocused = null;
+
+  function renderCommands() {
+    const query = input.value.trim().toLowerCase();
+    filteredCommands = commands.filter((command) => `${command.label} ${command.hint}`.toLowerCase().includes(query));
+    activeIndex = Math.min(activeIndex, Math.max(filteredCommands.length - 1, 0));
+    list.innerHTML = filteredCommands.length
+      ? filteredCommands.map((command, index) => `
+          <button type="button" class="admin-command-item${index === activeIndex ? ' is-active' : ''}"
+            data-command-id="${command.id}" role="option" aria-selected="${index === activeIndex}">
+            <span class="admin-command-item__label">${command.label}</span>
+            <span class="admin-command-item__hint">${command.hint}</span>
+          </button>`).join('')
+      : '<div class="admin-command-empty">일치하는 명령이 없습니다.</div>';
+  }
+
+  function setActive(index) {
+    if (!filteredCommands.length) return;
+    activeIndex = (index + filteredCommands.length) % filteredCommands.length;
+    list.querySelectorAll('[data-command-id]').forEach((item, itemIndex) => {
+      const active = itemIndex === activeIndex;
+      item.classList.toggle('is-active', active);
+      item.setAttribute('aria-selected', String(active));
+    });
+  }
+
+  function close() {
+    if (palette.open) palette.close();
+  }
+
+  function open() {
+    lastFocused = document.activeElement;
+    input.value = '';
+    activeIndex = 0;
+    renderCommands();
+    if (typeof palette.showModal === 'function') palette.showModal();
+    else palette.setAttribute('open', '');
+    input.focus();
+  }
+
+  const onTriggerClick = () => open();
+  const onDocumentKeydown = (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      if (palette.open) close();
+      else open();
+    }
+  };
+  const onInput = () => {
+    activeIndex = 0;
+    renderCommands();
+  };
+  const onPaletteKeydown = (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActive(activeIndex + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActive(activeIndex - 1);
+    } else if (event.key === 'Enter' && filteredCommands.length) {
+      event.preventDefault();
+      const command = filteredCommands[activeIndex];
+      close();
+      command.action();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+    }
+  };
+  const onPaletteClick = (event) => {
+    if (event.target === palette) {
+      close();
+      return;
+    }
+    const item = event.target.closest('[data-command-id]');
+    if (!item) return;
+    const command = commands.find((candidate) => candidate.id === item.dataset.commandId);
+    if (!command) return;
+    close();
+    command.action();
+  };
+  const onPaletteClose = () => {
+    lastFocused?.focus?.();
+    lastFocused = null;
+  };
+
+  trigger.addEventListener('click', onTriggerClick);
+  document.addEventListener('keydown', onDocumentKeydown);
+  input.addEventListener('input', onInput);
+  palette.addEventListener('keydown', onPaletteKeydown);
+  palette.addEventListener('click', onPaletteClick);
+  palette.addEventListener('close', onPaletteClose);
+  renderCommands();
+
+  return () => {
+    trigger.removeEventListener('click', onTriggerClick);
+    document.removeEventListener('keydown', onDocumentKeydown);
+    input.removeEventListener('input', onInput);
+    palette.removeEventListener('keydown', onPaletteKeydown);
+    palette.removeEventListener('click', onPaletteClick);
+    palette.removeEventListener('close', onPaletteClose);
+    if (palette.open) palette.close();
+  };
+}
+
 export const adminPage = {
   render(container) {
     if (!isAdmin()) {
@@ -1145,121 +1336,207 @@ export const adminPage = {
     }
 
     container.innerHTML = `
-      <div class="container admin-topbar">
-        <div>
-          <div class="eyebrow">ADMIN CONSOLE</div>
-          <h2 class="section-title">공연 관리</h2>
-          <p class="section-sub">공연 생성 · 오픈 시간 설정 · 삭제</p>
-        </div>
-        <div class="admin-status">
-          <button type="button" class="btn btn-primary btn-sm" data-open-create-event>+ 공연 생성</button>
-          <button type="button" class="btn btn-outline btn-sm" data-random-create-event>📋 포스터 공연 생성</button>
-          <button type="button" class="btn btn-outline btn-sm" data-bulk-delete disabled>5개씩 삭제</button>
-          <button type="button" class="btn btn-outline btn-sm" data-redis-reset style="border-color:#e67e22;color:#e67e22;">Redis 초기화</button>
-          <button type="button" class="btn btn-outline btn-sm" data-redis-recover style="border-color:#27ae60;color:#27ae60;">DB→Redis 복구</button>
-        </div>
-      </div>
-
-      <div class="container admin-grid">
-        <div class="admin-panel admin-panel--wide">
-          <div class="mchart__head"><span class="mchart__title">생성된 공연 목록</span></div>
-          <table class="qtable">
-            <thead><tr><th>No.</th><th>공연명</th><th>날짜</th><th>장소</th><th>총좌석</th><th>예매 상태</th><th></th></tr></thead>
-            <tbody data-events-tbody><tr><td colspan="7" class="text-secondary">불러오는 중...</td></tr></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="container" style="margin-top:32px;">
-        <div class="admin-panel admin-panel--wide" data-dummy-panel>
-          <div class="mchart__head">
-            <span class="mchart__title">더미 유저 · HOT 공연 관리</span>
-            <button type="button" class="btn btn-outline btn-sm" data-dummy-toggle style="margin-left:auto;">펼치기</button>
+      <div class="admin-app">
+        <div class="container admin-topbar">
+          <div class="admin-topbar__identity">
+            <div class="admin-brand-mark">Q</div>
+            <div>
+              <div class="eyebrow">OPERATIONS</div>
+              <h2 class="section-title">운영 대시보드</h2>
+              <p class="section-sub">공연과 대기열 흐름을 한 곳에서 관리합니다.</p>
+            </div>
           </div>
-          <div data-dummy-body style="display:none;">
-            <p class="text-secondary" style="font-size:12px;margin-bottom:12px;">
-              더미 유저를 생성하고, 현재 등록된 공연 중 랜덤으로 최대 5개에 관심(위시리스트)을 분배합니다.<br/>
-              분배된 관심 수는 메인 페이지 "요즘 HOT 공연" 순위에 실시간 반영됩니다.
-            </p>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
-              <div class="field">
-                <label>생성할 더미 유저 수</label>
-                <input type="number" data-dummy-count value="500" min="1" max="50000" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
-              </div>
-              <div class="field">
-                <label>분배 공연 수 (최대)</label>
-                <input type="number" data-dummy-max-events value="5" min="1" max="20" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
-              </div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-              <button type="button" class="btn btn-primary btn-sm" data-dummy-create>더미 유저 생성</button>
-              <button type="button" class="btn btn-outline btn-sm" data-dummy-distribute style="border-color:#8e44ad;color:#8e44ad;">관심 공연 분배 (HOT 반영)</button>
-              <button type="button" class="btn btn-outline btn-sm" data-dummy-cleanup style="border-color:#e74c3c;color:#e74c3c;">더미 데이터 삭제</button>
-            </div>
-            <div data-dummy-status style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:16px;min-height:60px;">
-              <p class="text-secondary">더미 유저를 생성하고 관심 공연을 분배하면 결과가 여기에 표시됩니다.</p>
+          <div class="admin-topbar__actions">
+            <button type="button" class="admin-command-trigger" data-command-open aria-label="명령 팔레트 열기">
+              <span class="admin-command-trigger__icon">⌘</span><span>명령 검색</span><kbd>Ctrl K</kbd>
+            </button>
+            <div class="admin-status">
+              <button type="button" class="btn btn-primary btn-sm" data-open-create-event>+ 공연 생성</button>
+              <button type="button" class="btn btn-outline btn-sm" data-random-create-event>포스터 공연 생성</button>
+              <button type="button" class="btn btn-outline btn-sm" data-bulk-delete disabled>5개씩 삭제</button>
+              <button type="button" class="btn btn-outline btn-sm" data-redis-reset style="border-color:#e67e22;color:#e67e22;">Redis 초기화</button>
+              <button type="button" class="btn btn-outline btn-sm" data-redis-recover style="border-color:#27ae60;color:#27ae60;">DB→Redis 복구</button>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="container" style="margin-top:32px;">
-        <div class="admin-panel admin-panel--wide" data-sim-panel>
-          <div class="mchart__head">
-            <span class="mchart__title">취소표 시뮬레이션</span>
-            <button type="button" class="btn btn-outline btn-sm" data-sim-toggle style="margin-left:auto;">펼치기</button>
-          </div>
-          <div data-sim-body style="display:none;">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
-              <div class="field">
-                <label>공연 선택</label>
-                <select data-sim-event style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface);">
-                  <option value="">불러오는 중...</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>회차 선택</label>
-                <select data-sim-session style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface);">
-                  <option value="">공연을 먼저 선택하세요</option>
-                </select>
-              </div>
+        <div class="container admin-layout">
+          <aside class="admin-sidebar" aria-label="관리자 메뉴">
+            <div class="admin-sidebar__label">WORKSPACE</div>
+            <nav class="admin-sidebar__nav" data-admin-nav>
+              <button type="button" class="admin-nav-item is-active" data-admin-section="overview" aria-current="page">
+                <span class="admin-nav-item__index">01</span><span>개요</span>
+              </button>
+              <button type="button" class="admin-nav-item" data-admin-section="events" tabindex="-1">
+                <span class="admin-nav-item__index">02</span><span>공연 관리</span>
+              </button>
+              <button type="button" class="admin-nav-item" data-admin-section="dummy" tabindex="-1">
+                <span class="admin-nav-item__index">03</span><span>더미 유저 도구</span>
+              </button>
+              <button type="button" class="admin-nav-item" data-admin-section="simulation" tabindex="-1">
+                <span class="admin-nav-item__index">04</span><span>취소표 시뮬레이션</span>
+              </button>
+            </nav>
+            <div class="admin-sidebar__footer">
+              <span class="admin-live-indicator" aria-hidden="true"></span>
+              <span>API 연결됨</span>
+              <span class="admin-sidebar__shortcut">?</span>
             </div>
-            <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:16px;">
-              <div class="field">
-                <label>실제 멤버십 유저 이메일</label>
-                <input type="email" data-sim-real-email placeholder="test@example.com" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
-              </div>
-              <div class="field">
-                <label>더미 유저 수</label>
-                <input type="number" data-sim-dummy-count value="10000" min="100" max="50000" style="width:100%;padding:8px;border:1px solid var(--color-border);border-radius:6px;" />
-              </div>
-            </div>
+          </aside>
 
-            <p class="text-secondary" style="font-size:12px;margin:-4px 0 12px;">
-              수동 실행 모드: 공연을 선택하면 각 단계 버튼을 원하는 시점에 직접 실행할 수 있습니다. 권장 순서는 초기화 → 매진 → 마감 → 취소표 생성 → 링크 발급입니다.
-            </p>
-
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
-              <button type="button" class="btn btn-primary btn-sm" data-sim-init>시뮬레이션 초기화</button>
-              <button type="button" class="btn btn-outline btn-sm" data-sim-sellout disabled style="border-color:#e74c3c;color:#e74c3c;">단계1: 매진 연출</button>
-              <button type="button" class="btn btn-outline btn-sm" data-sim-close disabled style="border-color:#e67e22;color:#e67e22;">단계2: 조기 마감</button>
-              <div style="display:flex;align-items:center;gap:4px;">
-                <input type="number" data-sim-cancel-count value="5" min="1" max="100" style="width:60px;padding:6px;border:1px solid var(--color-border);border-radius:6px;text-align:center;" />
-                <button type="button" class="btn btn-outline btn-sm" data-sim-cancel disabled style="border-color:#8e44ad;color:#8e44ad;">단계3: 취소표 생성</button>
+          <main class="admin-main" data-admin-focus="overview" id="admin-main-content">
+            <div class="admin-main__intro">
+              <div>
+                <div class="admin-section-kicker">TODAY / OPERATIONS</div>
+                <h1>운영 상태</h1>
               </div>
-              <button type="button" class="btn btn-outline btn-sm" data-sim-links disabled style="border-color:#27ae60;color:#27ae60;">단계4: 시크릿 링크 발급</button>
-              <button type="button" class="btn btn-outline btn-sm" data-sim-cleanup style="border-color:#95a5a6;color:#95a5a6;">데이터 삭제</button>
-              <button type="button" class="btn btn-outline btn-sm" data-sim-refresh>상태 새로고침</button>
+              <div class="admin-key-hint"><kbd>↑</kbd><kbd>↓</kbd> 표 이동 <span>·</span> <kbd>⌘</kbd><kbd>K</kbd> 명령 검색</div>
             </div>
 
-            <div data-sim-status style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:16px;min-height:80px;">
-              <p class="text-secondary">시뮬레이션을 초기화하면 여기에 진행 상태가 표시됩니다.</p>
+            <div class="admin-metric-grid" aria-label="관리자 요약">
+              <div class="admin-metric">
+                <span class="admin-metric__label">등록 공연</span>
+                <strong class="admin-metric__value" data-admin-event-count>-</strong>
+                <span class="admin-metric__meta">서버 목록 기준</span>
+              </div>
+              <div class="admin-metric">
+                <span class="admin-metric__label">상태 갱신</span>
+                <strong class="admin-metric__value">1s</strong>
+                <span class="admin-metric__meta">오픈 · 마감 시간</span>
+              </div>
+              <div class="admin-metric">
+                <span class="admin-metric__label">시뮬레이션</span>
+                <strong class="admin-metric__value">수동</strong>
+                <span class="admin-metric__meta">단계별 직접 실행</span>
+              </div>
             </div>
 
-            <div data-sim-log style="margin-top:12px;max-height:200px;overflow-y:auto;font-size:12px;font-family:var(--font-mono);background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:8px;display:none;">
+            <div class="admin-grid">
+              <section class="admin-panel admin-panel--wide" data-admin-focus="events">
+                <div class="mchart__head admin-panel__head">
+                  <div>
+                    <span class="admin-panel__eyebrow">EVENTS</span>
+                    <span class="mchart__title">생성된 공연 목록</span>
+                  </div>
+                  <span class="admin-panel__hint">행을 선택하고 방향키로 이동</span>
+                </div>
+                <div class="admin-table-wrap">
+                  <table class="qtable admin-events-table">
+                    <thead><tr><th>No.</th><th>공연명</th><th>날짜</th><th>장소</th><th>총좌석</th><th>예매 상태</th><th></th></tr></thead>
+                    <tbody data-events-tbody><tr><td colspan="7" class="text-secondary">불러오는 중...</td></tr></tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="admin-panel admin-panel--wide" data-dummy-panel data-admin-focus="dummy">
+                <div class="mchart__head admin-panel__head">
+                  <div>
+                    <span class="admin-panel__eyebrow">DATA TOOLS</span>
+                    <span class="mchart__title">더미 유저 · HOT 공연 관리</span>
+                  </div>
+                  <button type="button" class="btn btn-outline btn-sm" data-dummy-toggle>펼치기</button>
+                </div>
+                <div data-dummy-body style="display:none;">
+                  <p class="text-secondary admin-panel__description">
+                    더미 유저를 생성하고, 현재 등록된 공연 중 랜덤으로 최대 5개에 관심(위시리스트)을 분배합니다.<br/>
+                    분배된 관심 수는 메인 페이지 "요즘 HOT 공연" 순위에 실시간 반영됩니다.
+                  </p>
+                  <div class="admin-form-grid admin-form-grid--two">
+                    <div class="field">
+                      <label>생성할 더미 유저 수</label>
+                      <input type="number" data-dummy-count value="500" min="1" max="50000" />
+                    </div>
+                    <div class="field">
+                      <label>분배 공연 수 (최대)</label>
+                      <input type="number" data-dummy-max-events value="5" min="1" max="20" />
+                    </div>
+                  </div>
+                  <div class="admin-action-row">
+                    <button type="button" class="btn btn-primary btn-sm" data-dummy-create>더미 유저 생성</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-dummy-distribute style="border-color:#8e44ad;color:#8e44ad;">관심 공연 분배 (HOT 반영)</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-dummy-cleanup style="border-color:#e74c3c;color:#e74c3c;">더미 데이터 삭제</button>
+                  </div>
+                  <div data-dummy-status class="admin-result-box">
+                    <p class="text-secondary">더미 유저를 생성하고 관심 공연을 분배하면 결과가 여기에 표시됩니다.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="admin-panel admin-panel--wide" data-sim-panel data-admin-focus="simulation">
+                <div class="mchart__head admin-panel__head">
+                  <div>
+                    <span class="admin-panel__eyebrow">CANCELLATION QUEUE</span>
+                    <span class="mchart__title">취소표 시뮬레이션</span>
+                  </div>
+                  <button type="button" class="btn btn-outline btn-sm" data-sim-toggle>펼치기</button>
+                </div>
+                <div data-sim-body style="display:none;">
+                  <div class="admin-form-grid admin-form-grid--two">
+                    <div class="field">
+                      <label>공연 선택</label>
+                      <select data-sim-event>
+                        <option value="">불러오는 중...</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label>회차 선택</label>
+                      <select data-sim-session>
+                        <option value="">공연을 먼저 선택하세요</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="admin-form-grid admin-form-grid--wide">
+                    <div class="field">
+                      <label>실제 멤버십 유저 이메일</label>
+                      <input type="email" data-sim-real-email placeholder="test@example.com" />
+                    </div>
+                    <div class="field">
+                      <label>더미 유저 수</label>
+                      <input type="number" data-sim-dummy-count value="10000" min="100" max="50000" />
+                    </div>
+                  </div>
+
+                  <p class="text-secondary admin-panel__description">
+                    수동 실행 모드: 공연을 선택하면 각 단계 버튼을 원하는 시점에 직접 실행할 수 있습니다. 권장 순서는 초기화 → 매진 → 마감 → 취소표 생성입니다. 취소표 배정과 링크 발급은 B파트 파이프라인이 처리합니다.
+                  </p>
+
+                  <div class="admin-action-row admin-action-row--simulation">
+                    <button type="button" class="btn btn-primary btn-sm" data-sim-init>시뮬레이션 초기화</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-sellout disabled style="border-color:#e74c3c;color:#e74c3c;">단계1: 매진 연출</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-close disabled style="border-color:#e67e22;color:#e67e22;">단계2: 조기 마감</button>
+                    <div class="admin-inline-action">
+                      <input type="number" data-sim-cancel-count value="5" min="1" max="100" aria-label="취소표 생성 수" />
+                      <button type="button" class="btn btn-outline btn-sm" data-sim-cancel disabled style="border-color:#8e44ad;color:#8e44ad;">단계3: 취소표 생성</button>
+                    </div>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-links disabled style="border-color:#27ae60;color:#27ae60;">단계4: B파트 링크 발급</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-cleanup style="border-color:#95a5a6;color:#95a5a6;">데이터 삭제</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-refresh>상태 새로고침</button>
+                  </div>
+
+                  <div data-sim-status class="admin-result-box admin-result-box--large">
+                    <p class="text-secondary">시뮬레이션을 초기화하면 여기에 진행 상태가 표시됩니다.</p>
+                  </div>
+
+                  <div data-sim-log class="admin-log-box">
+                  </div>
+                </div>
+              </section>
             </div>
-          </div>
+          </main>
         </div>
+
+        <dialog class="admin-command-palette" data-command-palette aria-labelledby="admin-command-title">
+          <div class="admin-command-palette__box">
+            <div class="admin-command-palette__head">
+              <span id="admin-command-title">명령 검색</span>
+              <kbd>ESC</kbd>
+            </div>
+            <label class="sr-only" for="admin-command-input">실행할 명령 검색</label>
+            <input id="admin-command-input" class="admin-command-palette__input" data-command-input type="search" placeholder="무엇을 실행할까요?" autocomplete="off" />
+            <div class="admin-command-list" data-command-list role="listbox" aria-label="관리자 명령"></div>
+            <div class="admin-command-palette__footer"><span><kbd>↑</kbd><kbd>↓</kbd> 이동</span><span><kbd>Enter</kbd> 실행</span></div>
+          </div>
+        </dialog>
       </div>
     `;
 
@@ -1267,6 +1544,8 @@ export const adminPage = {
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
     initDummyPanel(container);
     initSimulationPanel(container);
+    const cleanupAdminInteractions = initAdminInteractions(container);
+    const cleanupCommandPalette = initAdminCommandPalette(container);
 
     container.querySelector('[data-bulk-delete]').addEventListener('click', () => {
       const targets = eventsCache.slice(0, 5);
@@ -1408,6 +1687,8 @@ export const adminPage = {
 
     return () => {
       clearInterval(openStatusTimer);
+      cleanupAdminInteractions();
+      cleanupCommandPalette();
     };
   },
 };

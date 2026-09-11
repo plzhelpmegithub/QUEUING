@@ -91,7 +91,6 @@ export function login({
   name,
   email,
   isAdmin = false,
-  isMonitor = false,
   role: rawRole,
   userId,
   phone = '',
@@ -101,7 +100,7 @@ export function login({
   accessToken = '',
   refreshToken = '',
 }) {
-  const resolvedRole = rawRole || (isAdmin ? 'ADMIN' : isMonitor ? 'MONITOR' : 'USER');
+  const resolvedRole = rawRole || (isAdmin ? 'ADMIN' : 'USER');
   const nextUserId = userId || (email || 'guest').split('@')[0];
   if (!state.user || state.user.userId !== nextUserId) clearAccountScopedState();
   if (accessToken) setTokens(accessToken, refreshToken);
@@ -110,7 +109,6 @@ export function login({
     userId: nextUserId,
     email: email || 'guest@queuing.app',
     isAdmin: isAdmin || resolvedRole === 'ADMIN',
-    isMonitor: isMonitor || resolvedRole === 'MONITOR',
     role: resolvedRole,
     phone: phone || '',
     birthDate: birthDate || '',
@@ -194,10 +192,6 @@ export function deleteAccountOnServer(password) {
 
 export function isAdmin() {
   return !!(state.user && state.user.isAdmin);
-}
-
-export function isMonitor() {
-  return !!(state.user && state.user.isMonitor);
 }
 
 export function logout() {
@@ -367,7 +361,7 @@ export function addBooking(booking) {
     title: ownedBooking.status === 'unpaid' ? '입금 대기 중인 예매가 있어요' : '예매가 확정되었습니다',
     body:
       ownedBooking.status === 'unpaid'
-        ? `예매번호 ${ownedBooking.bookingId} · 가상계좌로 입금을 완료해주세요.`
+        ? `예매번호 ${ownedBooking.bookingId} · 24시간 이내 가상계좌 입금을 완료해주세요.`
         : `예매번호 ${ownedBooking.bookingId} 결제가 정상적으로 완료되었습니다.`,
   });
   emit();

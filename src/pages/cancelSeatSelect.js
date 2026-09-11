@@ -24,7 +24,7 @@ export const cancelSeatSelectPage = {
     const userId = getState().user?.userId || getState().user?.email;
 
     if (!isLoggedIn() || !hasMembership() || !userId) {
-      navigate(`cancel-queue/${eventId}`);
+      navigate(`mypage/cancel-queue?eventId=${encodeURIComponent(eventId)}`);
       return;
     }
 
@@ -41,7 +41,7 @@ export const cancelSeatSelectPage = {
           <div class="center-state__desc">${escapeHtml(desc)}</div>
           <button class="btn btn-primary" data-back>취소표 대기열로</button>
         </div>`;
-      container.querySelector('[data-back]')?.addEventListener('click', () => navigate(`cancel-queue/${eventId}`));
+      container.querySelector('[data-back]')?.addEventListener('click', () => navigate(`mypage/cancel-queue?eventId=${encodeURIComponent(eventId)}`));
     }
 
     async function load() {

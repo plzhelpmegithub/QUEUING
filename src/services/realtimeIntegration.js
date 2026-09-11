@@ -2,6 +2,8 @@
 // JWT(HS256)를 순수 JS SHA-256으로 직접 서명해 crypto.subtle 없는 HTTP 환경에서도 동작.
 // REALTIME_SECRET은 개발용 더미값 — 운영 배포 시 환경변수로 교체 필요.
 
+import { createRealtimeWebSocketUrl } from '../utils/websocketUrl.js';
+
 const REALTIME_SECRET = 'dev-only-secret-change-me';
 
 // ===== 순수 JS SHA-256 (crypto.subtle 없이 HTTP에서도 동작) =====
@@ -79,7 +81,7 @@ function getRealtimeToken(userId, nickname) {
 // ===== 채팅 연결 =====
 export function connectChat(eventId, userId, nickname, { onMessage, onOpen, onClose, onError } = {}) {
   const token = getRealtimeToken(userId, nickname);
-  const url = `ws://${location.host}/ws/chat/${eventId}?token=${token}`;
+  const url = createRealtimeWebSocketUrl(`/ws/chat/${encodeURIComponent(eventId)}`, { token });
   console.log('[Chat] 연결 시도:', url.replace(/token=.*/, 'token=***'));
   const ws = new WebSocket(url);
   ws.addEventListener('open', () => { console.log('[Chat] 연결 성공'); onOpen?.(); });
@@ -99,7 +101,8 @@ export function connectChat(eventId, userId, nickname, { onMessage, onOpen, onCl
 // ===== 좌석 실시간 연결 =====
 export function connectSeats(eventId, userId, nickname, { onMessage, onOpen, onClose } = {}) {
   const token = getRealtimeToken(userId, nickname);
-  const ws = new WebSocket(`ws://${location.host}/ws/seats/${eventId}?token=${token}`);
+  const url = createRealtimeWebSocketUrl(`/ws/seats/${encodeURIComponent(eventId)}`, { token });
+  const ws = new WebSocket(url);
   ws.addEventListener('open', () => onOpen?.());
   ws.addEventListener('message', (e) => { try { onMessage?.(JSON.parse(e.data)); } catch (_) {} });
   ws.addEventListener('close', () => onClose?.());

@@ -63,7 +63,7 @@ export const cancelQueuePage = {
     const userId = getState().user?.userId || getState().user?.email;
 
     if (!userId) {
-      setReturnTo(`cancel-queue/${eventId}`);
+      setReturnTo(`mypage/cancel-queue?eventId=${encodeURIComponent(eventId)}`);
       navigate('login');
       return;
     }

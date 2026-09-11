@@ -224,7 +224,7 @@ export const myPage = {
         }
       `;
       content.querySelectorAll('[data-open]').forEach((el) => {
-        el.addEventListener('click', () => navigate(`cancel-queue/${el.dataset.open}`));
+        el.addEventListener('click', () => navigate(`mypage/cancel-queue?eventId=${encodeURIComponent(el.dataset.open)}`));
       });
     }
 

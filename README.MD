@@ -14,9 +14,9 @@ Vite 기반 Vanilla JS 싱글 페이지 애플리케이션. 콘서트 예매 티
 nginx/
 ├── index.html                      # Vite 진입점
 ├── vite.config.js                  # Vite 설정 (프록시, HMR)
-├── cancel-ticketing.html            # 멤버십 전용 취소표 예매 독립 페이지 (시크릿 링크 대상)
 ├── seat_editor.html                # 인터랙티브 좌석 위치 에디터 (개발용)
-├── public/images/queuing-logo-header.png # 가로형 최종 디자인의 헤더용 QUEUING 로고
+├── public/favicon.svg                 # 빨간색 둥근 정사각형 안의 흰색 Q favicon
+├── public/images/queuing-logo-header.png # 사이트 헤더 좌측에 사용하는 QUEUING 로고
 └── src/
     ├── main.js                     # 앱 진입점 (라우터 초기화)
     ├── router.js                   # SPA 라우터 (hash 기반)
@@ -50,7 +50,6 @@ nginx/
     │   ├── login.js                # 로그인
     │   ├── membership.js           # 멤버십
     │   ├── membershipCheckout.js   # 멤버십 결제
-    │   ├── monitoring.js           # 모니터링 대시보드
     │   ├── mypage.js               # 마이페이지
     │   ├── olympicHallPreview.js   # 올림픽홀 미리보기
     │   ├── payment.js              # 결제 페이지
@@ -79,7 +78,8 @@ nginx/
         ├── recaptcha.js            # Google reCAPTCHA v3/v2 토큰 발급 및 자동 폴백
         ├── calendarEvents.js       # 달력 이벤트 유틸리티
         ├── format.js               # 날짜/숫자 포맷
-        └── realtimeChat.js         # 실시간 채팅 유틸리티
+        ├── realtimeChat.js         # 실시간 채팅 유틸리티
+        └── websocketUrl.js         # 페이지 프로토콜에 따른 ws/wss URL 생성
 ```
 
 ---
@@ -153,18 +153,20 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 - 좌석 좌표 변경 시 `olympicHallSeats.js`만 수정하면 됨 (seatMap.js의 변환 로직은 변경 불필요)
 - 개발용 reCAPTCHA v3는 `.env.local`에 `VITE_RECAPTCHA_SITE_KEY`를, v2 폴백은 `VITE_RECAPTCHA_V2_SITE_KEY`를 설정한다. secret key는 프론트엔드에 넣지 않고 API 서버 환경변수로만 관리한다.
 - 로그인 성공 시 API가 반환한 Access/Refresh JWT를 브라우저에 저장한다. API 호출에는 Access JWT를 `Authorization: Bearer ...` 헤더로 전송하며, Refresh JWT는 `/auth/refresh`에서 Access JWT가 만료된 경우 갱신하는 용도다.
-- `cancel-ticketing.html`은 일반 로그인 토큰이 없는 독립 페이지이므로 이메일 링크의 짧은 만료 `linkToken`을 취소표 API 요청에만 전송한다. 링크 토큰은 사용자·공연·좌석·할당 ID와 묶여 있다.
+- 취소표 대기열과 Secret Link 상세 화면은 로그인 후 `#/mypage/cancel-queue?eventId=...`에서 제공한다. 이메일에는 토큰을 넣지 않고 공연 ID만 전달하며, 실제 대기순번·멤버십·할당 상태는 로그인한 사용자의 Access JWT로 서버에서 조회한다.
+- `index.html`의 favicon은 `/favicon.svg`를 사용한다. 헤더 색상(`#B11018`)의 빨간색 둥근 정사각형 안에 흰색 대문자 `Q`만 표시한다.
+- 실시간 채팅·좌석 WebSocket은 현재 페이지가 HTTP이면 `ws://`, HTTPS이면 `wss://`를 자동으로 사용한다. 운영 프론트가 HTTPS로 제공될 때는 CloudFront/ALB 또는 Ingress에서 `/ws`와 `/ws/*`를 실시간 서버로 전달하고 WebSocket 업그레이드 헤더를 통과시켜야 한다.
 
 ## ⚙️ Core Logic & Code Description
 
 ### src/pages/mypage.js
 - **목적:** 로그인 사용자의 예매·취소/환불·관심 공연·멤버십·회원정보 화면을 제공.
-- **주요 기능:** 멤버십 상태를 개요와 상세 화면에서 동일한 이모지 로켓으로 표시한다. 활성화 상태는 컬러 로켓, 비활성화 상태는 회색 발사 대기 로켓으로 표시하며 움직임은 사용하지 않는다. 현재 마이페이지 메뉴에는 캘린더 항목을 두지 않는다. 예매내역 조회는 현재 로그인한 `userId`와 일치하는 경우에만 브라우저 상태에 반영한다.
-- **API 명세 / 라우팅 규칙:** 예매 내역과 실제 공연 정보는 `/reservations/user/:userId`, `/events`를 사용한다. 마이페이지의 회원정보 수정은 `updateProfileOnServer()`를 통해 백엔드에 저장하며 이메일은 수정하지 않는다.
+- **주요 기능:** 멤버십 상태를 개요와 상세 화면에서 동일한 이모지 로켓으로 표시한다. 활성화 상태는 컬러 로켓, 비활성화 상태는 회색 발사 대기 로켓으로 표시하며 움직임은 사용하지 않는다. 현재 마이페이지 메뉴에는 캘린더 항목을 두지 않는다. 예매내역 조회는 현재 로그인한 `userId`와 일치하는 경우에만 브라우저 상태에 반영한다. 취소한 예매는 예매내역에서 제외하고 `취소/환불내역`에 취소 또는 환불 상태로 표시한다. `취소표 대기열` 메뉴에서는 참여 중인 대기열 요약을 보여주고 `eventId`가 있으면 실제 서버 상태 상세 화면을 내부에 표시한다.
+- **API 명세 / 라우팅 규칙:** 예매 내역과 실제 공연 정보는 `/reservations/user/:userId`, `/events`를 사용한다. 취소표 상세는 `cancelQueuePage`를 마이페이지 콘텐츠 영역에 마운트하여 `/cancel-queue/join`, `/cancel-queue/status/:eventId/:userId`, `/cancel-queue/pool/:eventId`를 호출한다. 마이페이지의 회원정보 수정은 `updateProfileOnServer()`를 통해 백엔드에 저장하며 이메일은 수정하지 않는다.
 
 ### src/state/store.js
 - **목적:** 로그인 세션과 사용자별 브라우저 상태를 관리.
-- **주요 기능:** 로그인 계정이 바뀌거나 로그아웃·세션 만료가 발생하면 이전 사용자의 예매내역, 관심 공연, 대기열·알림 상태를 비운다. 새 예매와 서버에서 복원한 예매에는 소유 계정 식별자를 붙여 다른 계정의 예매가 표시되지 않도록 한다.
+- **주요 기능:** 로그인 계정이 바뀌거나 로그아웃·세션 만료가 발생하면 이전 사용자의 예매내역, 관심 공연, 대기열·알림 상태를 비운다. 새 예매와 서버에서 복원한 예매에는 소유 계정 식별자를 붙여 다른 계정의 예매가 표시되지 않도록 한다. 무통장 입금 예매 알림에는 24시간 입금 기한을 포함하고, 입금 전 예매 취소 시 `cancelled` 상태로 전환한다.
 - **인증 연동:** 멤버십·위시리스트·회원정보·회원탈퇴 요청에 Access JWT를 포함하고, 사용자 ID는 URL 인코딩한다.
 
 ### src/utils/authToken.js
@@ -173,18 +175,29 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 - **API 명세 / 라우팅 규칙:** `authHeaders()` 결과는 보호 API의 `Authorization` 헤더에 병합한다. Access 토큰이 없으면 빈 헤더를 반환하여 API의 401 응답을 그대로 처리한다.
 
 ### src/services/realtimeIntegration.js
-- **보안 주의:** 이 모듈의 WebSocket HMAC 토큰은 별도 realtime 서버와의 기존 프로토콜에 묶여 있다. 현재 브라우저에 개발용 `REALTIME_SECRET`과 `ws://`·query token 방식이 남아 있으므로, 운영 전에는 realtime 서버가 발급하는 단기 토큰과 `wss://` 프로토콜로 C팀과 함께 교체해야 한다. 프론트 번들에 realtime 공유 비밀을 넣는 방식은 안전한 Secret 보관으로 볼 수 없다.
+- **주요 기능:** 채팅과 좌석 상태 WebSocket을 `/ws/chat/:eventId`, `/ws/seats/:eventId`로 연결하고, 기존 realtime 서버 프로토콜에 필요한 HMAC JWT를 query token으로 전달한다. WebSocket 주소는 `websocketUrl.js`를 통해 현재 페이지가 HTTP이면 `ws://`, HTTPS이면 `wss://`로 생성한다.
+- **보안 주의:** 현재 HMAC 토큰 서명에 사용하는 `REALTIME_SECRET`은 프론트 번들에 포함되는 개발용 값이다. WSS는 전송 구간만 암호화하므로, 운영에서는 realtime 서버가 발급하는 짧은 수명의 토큰 방식으로 교체해야 한다.
+
+### src/utils/websocketUrl.js
+- **목적:** 페이지 접속 프로토콜에 맞춰 WebSocket 연결 주소를 일관되게 생성한다.
+- **주요 기능:** HTTP 페이지에서는 `ws://현재호스트`, HTTPS 페이지에서는 `wss://현재호스트`를 사용하고, query parameter를 URL 인코딩해 추가한다. 채팅·좌석 연결에서 공통으로 사용한다.
 
 ### src/pages/admin.js
 - **목적:** 관리자 공연 생성·오픈/마감 시간 설정·삭제 화면 및 취소표 시뮬레이션 제어판을 제공.
 - **인증 연동:** 모든 관리자 API 호출을 `authFetch()`로 감싸 관리자 Access JWT를 전송한다. API에서 관리자 역할을 다시 검증하므로 프론트 화면 진입만으로는 관리자 기능을 실행할 수 없다.
 - **주요 기능:** 선택 체크박스 없이 `5개씩 삭제` 버튼을 누르면 현재 공연 목록의 앞에서부터 최대 5개를 확인 후 삭제한다. 공연이 5개보다 적으면 남은 공연을 모두 삭제한다. 배치 API가 구버전인 운영 서버에서는 기존 단일 삭제 API를 순차 호출하는 대체 경로를 사용한다. 아직 오픈 시간이 없는 공연은 오픈 시간 모달을 열 때 공연 목록 순서별로 서로 다른 기본 시각을 표시하여, 여러 포스터 공연이 같은 `현재 시각 + 5분`으로 저장되지 않도록 한다. "즉시 마감" 버튼으로 `ticketCloseAt`을 현재 시각으로 설정하여 즉시 예매를 마감할 수 있다.
-- **취소표 시뮬레이션 패널:** 접기/펼치기 토글로 표시. DB 등록 공연 드롭다운 + 회차 선택, 실제 멤버십 유저 이메일 입력, 더미 유저 수 설정. 공연 선택 후 초기화·매진 연출·조기 마감·취소표 생성·시크릿 링크 발급 버튼을 현재 단계와 관계없이 관리자가 수동 실행할 수 있으며, 처리 중에는 중복 요청만 잠근다. 작업의 선행조건은 API 응답으로 확인하고 상태 패널에 좌석 통계·대기열 수치·실제 유저 상태·취소표 할당 내역을 표시한다.
+- **취소표 시뮬레이션 패널:** 접기/펼치기 토글로 표시. DB 등록 공연 드롭다운 + 회차 선택, 실제 멤버십 유저 이메일 입력, 더미 유저 수 설정. 공연 선택 후 초기화·매진 연출·조기 마감·취소표 생성 버튼을 관리자가 수동 실행할 수 있다. 매진 연출 단계에서는 실제 유저를 사전 등록하지 않고, 실제 유저가 프론트엔드에서 `/queue/enter`를 호출한 뒤 상태 패널에서 대기번호를 확인한다. 취소표 생성 시 API는 좌석 취소 SQS 이벤트만 발행하며, 단계4 시크릿 링크 발급은 B파트 Step Functions가 담당하므로 관리자 버튼을 비활성화했다. 작업의 선행조건은 API 응답으로 확인하고 상태 패널에 좌석 통계·대기열 수치·실제 유저 상태·취소표 할당 내역을 표시한다.
+- **운영 콘솔 UI:** `admin-app` 내부를 사이드바 + 작업 영역으로 구성하고, 공연 수·상태 갱신 주기·시뮬레이션 실행 모드를 요약 카드로 표시한다. 사이드바는 개요·공연 관리·더미 유저 도구·취소표 시뮬레이션 섹션으로 이동한다.
+- **키보드 조작:** `Ctrl/Cmd + K` 또는 상단 명령 검색 버튼으로 명령 팔레트를 열고, 입력 검색·상하 방향키·Enter·Escape로 명령을 실행한다. 공연 표의 행은 포커스할 수 있으며 상하 방향키와 Home/End로 행을 이동하고 Enter로 첫 번째 행 액션에 포커스를 옮긴다.
 
 ### src/pages/payment.js
 - **목적:** 결제 전 구매자 정보와 좌석 확정 흐름을 처리.
-- **주요 기능:** 사용자가 입력한 전화번호가 저장된 회원 전화번호와 다를 때만 확인창을 표시하고, 확인 시 전화번호만 회원정보에 저장한 뒤 결제를 진행한다. 일반 예매와 취소표 모두 `/seats/confirm`으로 좌석을 SOLD 처리하고 MariaDB reservations에 확정 저장한다. 취소표는 서버 Secret Link 만료시각을 결제 마감으로 사용한다.
-- **API 명세 / 라우팅 규칙:** 회원정보 변경 요청은 `PATCH /auth/profile`에 `userId`와 `phone`만 전달한다. 결제 확정은 좌석마다 `POST /seats/confirm`, 페이지 이탈·만료 시 `POST /seats/release`, 취소표 할당 만료 시 `POST /cancel-queue/expire`를 사용한다. 브라우저 종료는 `releaseSeatBeacon()`으로 선점 좌석을 해제한다.
+- **주요 기능:** 사용자가 입력한 전화번호가 저장된 회원 전화번호와 다를 때만 확인창을 표시하고, 확인 시 전화번호만 회원정보에 저장한 뒤 결제를 진행한다. 일반 예매와 취소표 모두 `/seats/confirm`으로 좌석을 SOLD 처리하고 MariaDB reservations에 저장한다. 결제 수단을 함께 전달하며, 무통장 입금 선택 시 화면 상태를 `unpaid`로 유지하고 24시간 입금 기한을 표시한다. 취소표는 서버 Secret Link 만료시각을 결제 마감으로 사용한다.
+- **API 명세 / 라우팅 규칙:** 회원정보 변경 요청은 `PATCH /auth/profile`에 `userId`와 `phone`만 전달한다. 결제 확정은 좌석마다 `POST /seats/confirm`에 `paymentMethod`를 함께 전달하고, 페이지 이탈·만료 시 `POST /seats/release`, 취소표 할당 만료 시 `POST /cancel-queue/expire`를 사용한다. 브라우저 종료는 `releaseSeatBeacon()`으로 선점 좌석을 해제한다.
+
+### src/pages/bookingComplete.js
+- **목적:** 예매 완료 또는 무통장 입금 대기 상태를 표시.
+- **주요 기능:** 무통장 입금 예매는 `unpaid` 상태와 함께 24시간 이내 입금해야 좌석이 최종 확정된다는 안내와 가상계좌 정보를 표시한다.
 
 ### src/pages/seatSelect.js
 - **목적:** 좌석 선택 페이지. 실시간 좌석 상태 표시, 좌석 선점(hold), 결제 진행 흐름을 처리.
@@ -203,21 +216,18 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 
 ### src/pages/queue.js
 - **인증 연동:** `/queue/enter`와 순번 조회에 로그인 Access JWT를 포함한다. 입장 승인용 `/queue/admit`은 브라우저 사용자 화면에서 호출하지 않고 관리자 API로만 실행한다.
+- **승인 처리:** 순번 API가 `admitted`를 반환하면 `/queue/enter`에서 회차별 Admission Token을 받아 저장한 뒤 좌석 구역으로 이동한다. 토큰 준비 중인 `admitting` 상태는 대기열 재진입 없이 다음 폴링에서 재확인한다.
+- **오류·순번 표시:** 순번 API의 비정상 HTTP 응답과 position 누락을 대기 상태로 안전하게 표시하며, 숫자 변환이 불가능한 값을 `NaN`으로 렌더링하지 않는다.
 
 ### src/pages/cancelQueue.js
-- **목적:** 로그인 사용자의 취소표 대기열과 Secret Link 발급 상태를 표시.
+- **목적:** 마이페이지 안에서 로그인 사용자의 취소표 대기열과 Secret Link 발급 상태를 표시.
 - **주요 기능:** 서버 대기열에 실제 진입한 뒤 대기순번·멤버십·활성 할당을 2초 주기로 조회한다. 취소표 현황은 Redis 좌석 상태를 3초 주기로 조회하며, 임의 대기번호·Pool 시뮬레이션을 사용하지 않는다.
 - **API 명세 / 라우팅 규칙:** `POST /queue/enter`, `GET /cancel-queue/status/:eventId/:userId`, `GET /cancel-queue/pool/:eventId` 사용. Secret Link 발급 시 서버 `expiresAt`을 기준으로 5분 카운트다운을 표시한다.
 
 ### src/pages/privateLink.js
 - **목적:** 서버에서 발급한 취소표 Secret Link의 입장과 만료를 처리.
 - **주요 기능:** 사용자·공연별 활성 할당을 서버에서 확인하고, 할당된 좌석과 서버 만료시각만 사용한다. 만료 시 `/cancel-queue/expire`를 호출해 다음 대기자에게 재배정을 요청한다.
-- **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/expire` 사용. 일반 로그인 토큰이 있으면 Bearer JWT를, 독립 링크 흐름이면 서버 발급 `linkToken`을 사용한다. 유효한 할당이 없으면 취소표 대기열로 되돌린다.
-
-### cancel-ticketing.html — 멤버십 전용 취소표 예매 독립 페이지
-- **목적:** 시뮬레이션 시크릿 링크 이메일에서 직접 연결되는 독립 HTML 페이지. SPA 라우터를 거치지 않고 단독 동작.
-- **주요 기능:** URL 파라미터(`eventId`, `userId`, `allocationId`, `linkToken`)로 할당 상태를 확인하고, 3단계 워크플로(좌석 확인 → 결제수단 선택 → 결제 완료)를 제공. 5분 카운트다운 타이머, 구역별 좌석 현황 지도, 배정 좌석 하이라이트, 넘기기(양보) 기능 포함.
-- **API 명세 / 라우팅 규칙:** `linkToken`을 `GET /cancel-queue/status/:eventId/:userId`의 query와 취소표 hold/confirm/expire/respond body에 전달한다. 서버는 토큰의 사용자·공연·좌석·할당 범위를 검증한다. 일반 사용자 Bearer JWT 없이도 시크릿 링크가 유효한 동안만 해당 취소표 흐름이 가능하며, 만료 시 자동으로 expire 호출한다.
+- **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/expire` 사용. 로그인 Access JWT로 본인 상태를 조회하며, 유효한 할당이 없으면 마이페이지 취소표 대기열로 돌아간다.
 
 ### src/pages/cancelSeatSelect.js
 - **목적:** Secret Link 보유자에게 서버가 배정한 취소표 좌석을 보여주고 선점.
@@ -238,7 +248,7 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 위에 좌�
 
 ### src/pages/queue.js
 - **목적:** 선택한 공연 회차의 대기열 진입과 입장 승인을 표시.
-- **주요 기능:** `eventId`, `sessionDate`, `sessionTime`을 모든 대기열 순번·입장 승인 요청에 포함해 날짜가 다른 공연 회차가 서로 같은 대기열을 사용하지 않도록 한다. 이벤트별 오픈 시간이 없는 공연은 다른 공연의 전역 오픈 예약을 물려받지 않고 즉시 예매 흐름으로 진입한다.
+- **주요 기능:** `eventId`, `sessionDate`, `sessionTime`을 모든 대기열 순번·입장 승인 요청에 포함해 날짜가 다른 공연 회차가 서로 같은 대기열을 사용하지 않도록 한다. `admitted` 응답 후 Admission Token을 확인하고, `admitting`·일시적 API 오류·순번 누락은 재진입이나 `NaN` 표시 없이 다음 조회로 처리한다. 이벤트별 오픈 시간이 없는 공연은 다른 공연의 전역 오픈 예약을 물려받지 않고 즉시 예매 흐름으로 진입한다.
 
 ### src/components/header.js / src/pages/concertsList.js
 - **목적:** 공통 헤더 검색과 공연 목록 검색을 처리.

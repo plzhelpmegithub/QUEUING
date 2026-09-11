@@ -26,8 +26,7 @@ function handleLoginSuccess(result, email) {
     name: result.name || email.split('@')[0] || '게스트',
     email: result.email || email,
     isAdmin: result.role === 'admin',
-    isMonitor: result.role === 'monitor',
-    role: result.role === 'admin' ? 'ADMIN' : result.role === 'monitor' ? 'MONITOR' : 'USER',
+    role: result.role === 'admin' ? 'ADMIN' : 'USER',
     userId: result.userId || email,
     phone: result.phone || '',
     birthDate: result.birthDate || '',
@@ -38,7 +37,6 @@ function handleLoginSuccess(result, email) {
   });
   const back = popReturnTo();
   if (result.role === 'admin') navigate(back || 'admin');
-  else if (result.role === 'monitor') navigate('monitoring');
   else navigate(back || '');
 }
 

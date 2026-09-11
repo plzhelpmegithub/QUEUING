@@ -37,7 +37,7 @@ export const privateLinkPage = {
             <button class="btn btn-primary btn-lg" data-go-queue>취소표 대기열로 돌아가기</button>
           </div>
         </div>`;
-      container.querySelector('[data-go-queue]')?.addEventListener('click', () => navigate(`cancel-queue/${eventId}`));
+      container.querySelector('[data-go-queue]')?.addEventListener('click', () => navigate(`mypage/cancel-queue?eventId=${encodeURIComponent(eventId)}`));
     }
 
     function renderActive(event) {
