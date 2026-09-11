@@ -1,3 +1,79 @@
+## [2026-09-11 17:54] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/seatRoutes.js]**: `/seats/confirm` 요청의 `paymentMethod`를 받아 무통장 입금(`vbank`/`bank_transfer`)이면 24시간 이내 입금 확인이 필요하다는 접수 안내 메일을 발송하고, 카드·간편결제는 기존 확정 메일을 유지
+- **[README.MD]**: 결제 수단별 메일 발송 규칙과 무통장 입금 안내 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 무통장 입금 예매도 일반 결제와 동일한 “예매 완료” 메일이 발송되어 입금 기한과 좌석 확정 조건을 알 수 없었음
+- **원인(Cause):** 백엔드가 결제 수단을 받지 않고 모든 `/seats/confirm` 요청에 동일한 메일 템플릿을 사용함
+- **해결(Solution):** 프론트엔드가 `paymentMethod`를 전달하고, API가 무통장 입금 요청을 별도 템플릿으로 분기해 “예매 접수 시각부터 24시간 이내 입금 확인 필요”를 안내하도록 수정
+
+## [2026-09-11 17:11] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/authService.js]**: 모니터링 bootstrap 계정 생성 로직 제거. 기존 DB의 `monitor` 역할 계정도 로그인할 수 없도록 차단
+- **[src/routes/authRoutes.js]**: 공개 회원가입에서 관리자·모니터링 역할을 지정할 수 없고 항상 일반 사용자로 생성되도록 수정
+- **[.env.example]**: `MONITOR_BOOTSTRAP_USER/PASSWORD` 제거
+- **[README.MD]**: 모니터링 계정 관련 환경변수와 설명 제거
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 사용하지 않는 모니터링 계정이 bootstrap 환경변수와 로그인 경로에 남아 있었음
+- **원인(Cause):** `initUsersTable()`이 관리자와 모니터링 계정을 함께 초기화하고, 인증 응답이 모니터링 역할을 허용하고 있었음
+- **해결(Solution):** 모니터링 계정 자동 생성과 로그인 경로를 제거하고, 기존 레거시 계정은 로그인 거부하도록 변경
+
+## [2026-09-11 16:55] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: 기존 테이블의 누락 컬럼을 자동으로 추가·변경하던 `addColumns()`·`modifyColumns()` 함수와 모든 호출 제거
+- **[README.MD]**: `initTable()`은 테이블이 없을 때만 생성하며 기존 테이블 스키마는 변경하지 않는다는 운영 원칙 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** API 시작 시 DB 스키마를 코드가 임의로 변경하거나, 컬럼 오류를 내부에서 무시해 실제 스키마 불일치가 늦게 발견될 수 있음
+- **원인(Cause):** `dbService.js`가 서버 시작 때 `ALTER TABLE ... ADD COLUMN` 및 `MODIFY COLUMN`을 시도하고 오류를 무시했음
+- **해결(Solution):** 자동 컬럼 추가·변경 로직을 삭제하고 테이블 생성(`CREATE TABLE IF NOT EXISTS`)만 유지함. 컬럼이 필요한 경우 DB 관리자가 명시적으로 마이그레이션하도록 변경
+
+## [2026-09-11 16:44] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/cancellationEventPublisher.js]**: `queuing-cancellation-events` SQS 큐로 `event_id`, `seat_id`, `status`, `timestamp`, `user_id`를 발행하는 B파트 연동 모듈 추가
+- **[src/services/seatService.js]**: `cancelSeat()`의 A파트 직접 `allocateNextForSeat()` 호출 제거. 예약 취소 후 SQS 이벤트만 발행하도록 변경하고, `releaseSeat()`의 standby 직접 승격 제거
+- **[src/services/timerService.js]**: 선점 만료 시 standby 승격·Secret Link 발급·할당 기록을 제거하고 좌석 해제만 수행
+- **[src/services/cancelAllocationService.js]**: 할당 만료 후 다음 사용자 직접 재배정 로직과 `allocateNextForSeat()` 제거
+- **[src/routes/cancelQueueRoutes.js]**: 과거 수동 배정 엔드포인트를 HTTP 410으로 비활성화해 A파트 이중 배정 방지
+- **[src/routes/simulationRoutes.js]**: 시뮬레이션 취소 시 직접 승격 대신 SQS 이벤트를 발행하고 수동 링크 발급 엔드포인트 비활성화
+- **[package.json]**: SQS 발행을 위한 `@aws-sdk/client-sqs` 의존성 추가
+- **[.env.example]**: B파트 SQS 큐 URL 환경변수 예시 추가
+- **[README.MD]**: B파트 위임 구조, SQS 환경변수, 비활성화된 엔드포인트 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 좌석 취소·선점 만료 시 A파트와 B파트가 동시에 다음 대기자를 처리할 수 있음
+- **원인(Cause):** `seatService.js`, `timerService.js`, `cancelAllocationService.js`, 시뮬레이션 라우트에 A파트의 standby 승격 및 Secret Link 직접 발급 경로가 남아 있었음
+- **해결(Solution):** A파트는 좌석 상태/예약 취소를 처리한 뒤 SQS 이벤트만 발행하고, 다음 사용자 선택·링크 발급은 B파트 Step Functions + Lambda의 단일 책임으로 정리함
+
+## [2026-09-11 14:53] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: eligible 및 standby 승인 시 Admission Token을 먼저 발급·저장한 뒤 Redis `admitted` 집합에 등록하도록 순서를 변경. 승인 직후 토큰이 아직 없는 순간에 `/queue/enter`가 사용자를 `RE_QUEUED`로 되돌리는 경쟁 상태를 방지하고, 이미 승인됐지만 토큰이 없는 요청에는 재대기 대신 토큰 재발급을 시도하도록 수정
+- **[src/services/queueService.js]**: 승인 상태를 MariaDB의 `status`와 `queue_status`에 함께 기록해 두 상태 컬럼의 불일치를 완화
+- **[README.md]**: Admission Token 발급 순서와 토큰 미준비 상태 처리 방식을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 대기열 사용자가 DB에서 `ADMITTED`로 바뀐 뒤에도 화면에 남고, 일부 요청에서 `RE_QUEUED`가 반복됨
+- **원인(Cause):** Redis `admitted` 등록이 Admission Token 저장보다 먼저 실행되어, 프론트가 토큰 발급 전 승인 상태를 관찰할 수 있었음
+- **해결(Solution):** 모든 승인 대상의 토큰을 먼저 저장한 후 `zrem`·`sadd`를 실행하고, 승인 상태에서 토큰이 누락된 경우 사용자를 제거하지 않고 토큰을 재발급하도록 변경
+
+## [2026-09-11 10:32] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 취소표 발급 이메일의 링크를 삭제된 독립 페이지 대신 `SITE_URL/#/mypage/cancel-queue?eventId=...`로 변경하고 URL에 `linkToken`·사용자 ID·할당 ID를 포함하지 않도록 수정
+- **[README.MD]**: 시뮬레이션 발급 이메일과 취소표 인증 흐름을 로그인 기반 마이페이지 경로에 맞춰 갱신
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 독립 취소표 페이지를 제거하면 기존 시크릿 링크 이메일이 존재하지 않는 HTML을 가리키게 됨
+- **원인(Cause):** 이메일 템플릿이 `/cancel-ticketing.html`과 URL의 만료형 `linkToken`을 직접 사용하고 있었음
+- **해결(Solution):** 이메일은 `SITE_URL/#/mypage/cancel-queue?eventId=...`로 이동시키고, 실제 사용자·할당 검증은 로그인 Access JWT를 사용하는 기존 서버 API에 위임했다.
+
 ## [2026-09-10 12:58] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -562,3 +638,14 @@
 - **해결(Solution):** 환경변수 기반 강제 키 검증, Access/Refresh JWT 인증, 관리자·본인 계정 권한 미들웨어, 만료형 취소표 링크 JWT를 도입했다. 독립 페이지는 linkToken을 전달하고 서버에서 사용자·공연·좌석·할당 범위를 재검증한다.
 
 ---
+## [2026-09-11 16:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 취소표 시뮬레이션의 `매진 연출` 단계에서 실제 멤버십 유저를 standby 대기열에 사전 등록하지 않도록 수정. 실제 유저는 매진 후 프론트엔드에서 `/queue/enter`를 호출할 때만 취소표 대기번호를 발급받음
+- **[src/routes/simulationRoutes.js]**: 실제 유저를 제외한 더미 standby 수에 맞춰 Redis 대기열 카운터와 응답 메시지·통계를 조정
+- **[README.MD]**: 시뮬레이션 매진 단계와 실제 유저의 대기열 진입 절차를 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `매진 연출` 직후 실제 멤버십 유저에게 취소표 대기 등록 완료 모달과 대기번호가 표시됨
+- **원인(Cause):** 시뮬레이션 API가 매진 처리와 동시에 `realUserEmail`을 standby Redis Sorted Set에 등록하고 있었음
+- **해결(Solution):** 매진 단계에서는 더미 standby만 생성하고 실제 유저 등록을 제거. 실제 사용자의 `/queue/enter` 요청이 들어올 때 `queueService.enter()`가 `sold_out` 상태를 확인해 standby 대기번호를 발급하도록 변경

@@ -56,19 +56,16 @@ async function expireAllOverdue() {
      WHERE status = 'LINK_SENT' AND expires_at < UTC_TIMESTAMP()`,
   );
   let expired = 0;
-  let reassigned = 0;
   for (const row of overdue) {
     const result = await markExpired(row.user_id, row.seat_id, row.event_id);
     if (!result.affected) continue;
     expired += 1;
-    const next = await allocateNextForSeat(row.event_id, row.seat_id, {
-      eventId: row.event_id,
-      sessionDate: row.session_date || '',
-      sessionTime: row.session_time || '',
-    });
-    if (next.success) reassigned += 1;
   }
-  return { expired, reassigned };
+  return {
+    expired,
+    reassigned: 0,
+    message: '만료 처리만 완료했습니다. 다음 취소표 배정은 B파트 파이프라인이 담당합니다.',
+  };
 }
 
 async function getAllocation(userId, eventId = '', includeExpired = false) {
@@ -102,53 +99,14 @@ async function getActiveAllocation(userId, eventId = '') {
   return getAllocation(userId, eventId, false);
 }
 
-// 취소된 좌석을 standby 대기열의 다음 멤버십 사용자에게 실제로 배정한다.
-// 좌석 취소, 링크 만료, 관리자 수동 재배정에서 공통으로 사용한다.
-async function allocateNextForSeat(eventId, seatId, context = {}, maxSkip = 10) {
-  const queueService = require('./queueService');
-  const membershipService = require('./membershipService');
-  const skipped = [];
-
-  for (let i = 0; i < maxSkip; i += 1) {
-    const next = await queueService.getNextStandby(context);
-    if (!next.userId) {
-      return { success: false, skipped, message: '취소표 대기자가 없습니다.' };
-    }
-
-    const membership = await membershipService.getMembership(next.userId);
-    if (!membership.isMembership) {
-      skipped.push(next.userId);
-      await queueService.skipStandby(next.userId, context);
-      continue;
-    }
-
-    const allocation = await createAllocation(next.userId, seatId, eventId, 300, context);
-    const promoted = await queueService.promoteStandby(next.userId, context);
-    if (!promoted.success) {
-      await markExpired(next.userId, seatId, eventId);
-      continue;
-    }
-
-    return {
-      success: true,
-      userId: next.userId,
-      allocation,
-      skipped,
-      message: `${next.userId}에게 Secret Link 발급 완료 (5분 유효)`,
-    };
-  }
-
-  return { success: false, skipped, message: '확인한 대기자 중 멤버십 회원이 없습니다.' };
-}
-
 async function expireAllocation(userId, eventId, seatId, context = {}) {
   const allocation = await getAllocation(userId, eventId, true);
   if (!allocation || (seatId && allocation.seatId !== seatId)) {
     return { success: false, message: '활성화된 취소표 할당이 없습니다.' };
   }
 
-  // 결제 화면에서 이미 좌석을 선점했다면, 일반 standby 자동 승격보다 먼저
-  // 기존 사용자의 선점을 풀어 같은 좌석을 다음 취소표 사용자에게 넘긴다.
+  // 결제 화면에서 이미 좌석을 선점했다면 기존 사용자의 선점만 해제한다.
+  // 다음 취소표 사용자 배정은 B파트 Step Functions 파이프라인이 담당한다.
   try {
     await require('./seatService').releaseSeat(userId, allocation.seatId);
   } catch (err) {
@@ -160,16 +118,12 @@ async function expireAllocation(userId, eventId, seatId, context = {}) {
     return { success: false, message: '이미 처리된 취소표 할당입니다.' };
   }
 
-  const next = await allocateNextForSeat(
-    allocation.eventId,
-    allocation.seatId,
-    {
-      eventId: allocation.eventId,
-      sessionDate: allocation.sessionDate || context.sessionDate || '',
-      sessionTime: allocation.sessionTime || context.sessionTime || '',
-    },
-  );
-  return { success: true, expired: allocation, next };
+  return {
+    success: true,
+    expired: allocation,
+    next: null,
+    message: '취소표 할당이 만료되었습니다. 다음 배정은 B파트 파이프라인이 처리합니다.',
+  };
 }
 
 async function getAllocationHistory(eventId) {
@@ -200,6 +154,5 @@ module.exports = {
   getActiveAllocation,
   getAllocation,
   getAllocationHistory,
-  allocateNextForSeat,
   expireAllocation,
 };

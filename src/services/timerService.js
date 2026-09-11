@@ -1,12 +1,6 @@
 const Redis = require('ioredis');
 const redis = require('../config/redis');
-const pool = require('../config/mariadb');
-const { publishSeatEvent, EVENT_TYPE } = require('./eventService');
 const { timerExpirations } = require('./metricsService');
-const { createAllocation, markExpired } = require('./cancelAllocationService');
-const { syncToMariaDB } = require('./syncRetryService');
-const { sessionFromSeat } = require('./sessionContext');
-const queueService = require('./queueService');
 
 const TIMER_PREFIX = 'timer:seat:';
 const SEAT_PREFIX = 'seat:';
@@ -69,61 +63,17 @@ async function initExpiryListener() {
       const heldBy = seatInfo.heldBy;
       timerExpirations.inc();
 
-      const sessionContext = sessionFromSeat(seatId, seatInfo);
-      const next = await queueService.getNextStandby(sessionContext);
-
-      if (next.userId) {
-        const nextUser = next.userId;
-        const promoted = await queueService.promoteStandby(nextUser, sessionContext);
-        if (!promoted.success) return;
-
-        await redis.hset(seatKey, {
-          status: 'HELD',
-          heldBy: nextUser,
-          heldAt: Date.now().toString(),
-        });
-
-        await startTimer(seatId, nextUser);
-
-        await publishSeatEvent(EVENT_TYPE.HELD, {
-          seatId,
-          userId: nextUser,
-          reason: 'standby_auto_assign',
-          message: `${heldBy} 시간 초과 → ${nextUser}에게 자동 배정`,
-        });
-
-        const holdDuration = await getCurrentHoldDuration();
-        try {
-          const eventId = sessionContext.eventId;
-          await createAllocation(nextUser, seatId, eventId, holdDuration);
-          await markExpired(heldBy, seatId);
-        } catch (allocErr) {
-          console.error('[Timer] cancel_allocation 기록 실패:', allocErr.message);
+      // 선점 만료는 일반 좌석 반환이다. 취소표 순차 배정은 B파트가 담당하므로
+      // A파트에서 standby 승격·Secret Link 발급을 수행하지 않는다.
+      try {
+        const result = await require('./seatService').releaseSeat(heldBy, seatId);
+        if (result.success) {
+          console.log(`[Timer] ${heldBy} 시간 초과 — ${seatId} available 복구 (직접 재배정 없음)`);
+        } else {
+          console.warn(`[Timer] ${seatId} 만료 후 좌석 해제 실패: ${result.message || result.reason}`);
         }
-
-        await syncToMariaDB(
-          `UPDATE seats SET status = 'HELD', held_by = ?, held_at = NOW() WHERE seat_id = ?`,
-          [nextUser, seatId],
-          `timer:reassign ${seatId}→${nextUser}`,
-        );
-
-        console.log(`[Timer] ${heldBy} 시간 초과 → ${nextUser}에게 바로 배정 (${seatId} held)`);
-
-      } else {
-        await redis.hset(seatKey, {
-          status: 'AVAILABLE',
-          heldBy: '',
-          heldAt: '',
-        });
-        await publishSeatEvent(EVENT_TYPE.RELEASED, { seatId, userId: heldBy });
-
-        await syncToMariaDB(
-          `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id = ?`,
-          [seatId],
-          `timer:release ${seatId}`,
-        );
-
-        console.log(`[Timer] standby 없음 — ${seatId} → available 복구`);
+      } catch (err) {
+        console.error(`[Timer] ${seatId} 만료 좌석 해제 실패:`, err.message);
       }
     }
   });

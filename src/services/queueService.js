@@ -132,7 +132,7 @@ async function enter(userId, context = {}) {
   );
 
   if (isAdmitted) {
-    const { getRawToken } = require('./tokenService');
+    const { getRawToken, issueToken } = require('./tokenService');
 
     const existing = await getRawToken(
       userId,
@@ -148,28 +148,31 @@ async function enter(userId, context = {}) {
       };
     }
 
-    await redis.srem(
-      keys.admittedKey,
-      userId
-    );
-
-    await syncToMariaDB(
-      `UPDATE waiting_queue
-       SET status = 'RE_QUEUED',
-           updated_at = NOW()
-       WHERE user_id = ?
-         AND event_id = ?
-         AND session_date = ?
-         AND session_time = ?
-         AND status IN ('ADMITTED', 'PROMOTED')`,
-      [
+    // The admission set can become visible a few milliseconds before the
+    // token write when an older worker is still finishing its cycle. Do not
+    // immediately remove the user and put them back in the queue; re-issue
+    // the token while the admission is still valid.
+    try {
+      const refreshed = await issueToken(
         userId,
-        currentEventId,
-        keys.sessionDate,
-        keys.sessionTime,
-      ],
-      `queue:re_queue ${userId}`,
-    );
+        undefined,
+        keys
+      );
+
+      return {
+        status: 'admitted',
+        token: refreshed.token,
+        expiresAt: refreshed.expiresAt,
+        message: '입장이 허용되었습니다. Admission Token을 재발급했습니다.',
+      };
+    } catch (err) {
+      console.warn(`[Queue] 승인 토큰 준비 중 — ${userId}: ${err.message}`);
+      return {
+        status: 'admitting',
+        code: 'admission_token_pending',
+        message: '입장 승인 처리가 진행 중입니다. 잠시 후 다시 확인해주세요.',
+      };
+    }
   }
 
   const existingScore = await redis.zscore(
@@ -628,7 +631,7 @@ async function getPosition(
 async function admitBatch(
   context = {}
 ) {
-  const { issueToken } =
+  const { issueToken, revokeToken } =
     require('./tokenService');
 
   const keys = queueKeys(context);
@@ -649,37 +652,59 @@ async function admitBatch(
     };
   }
 
-  const pipeline =
-    redis.pipeline();
-
-  pipeline.zrem(
-    keys.waitingKey,
-    ...users
-  );
-
-  pipeline.sadd(
-    keys.admittedKey,
-    ...users
-  );
-
-  await pipeline.exec();
-
   const tokens = {};
 
-  for (const userId of users) {
-    const {
-      token,
-      expiresAt,
-    } = await issueToken(
-      userId,
-      undefined,
-      keys
+  // Prepare every token before exposing the users through admittedKey. The
+  // position endpoint can be polled immediately after admittedKey changes,
+  // so publishing admission first creates a race where /queue/enter sees an
+  // admitted user but cannot find the token yet.
+  try {
+    for (const userId of users) {
+      const {
+        token,
+        expiresAt,
+      } = await issueToken(
+        userId,
+        undefined,
+        keys
+      );
+
+      tokens[userId] = {
+        token,
+        expiresAt,
+      };
+    }
+  } catch (err) {
+    await Promise.all(
+      Object.keys(tokens).map((userId) =>
+        revokeToken(userId, keys).catch(() => {})
+      )
+    );
+    throw err;
+  }
+
+  try {
+    const pipeline =
+      redis.pipeline();
+
+    pipeline.zrem(
+      keys.waitingKey,
+      ...users
     );
 
-    tokens[userId] = {
-      token,
-      expiresAt,
-    };
+    pipeline.sadd(
+      keys.admittedKey,
+      ...users
+    );
+
+    await pipeline.exec();
+  } catch (err) {
+    await Promise.all(
+      users.map((userId) =>
+        revokeToken(userId, keys).catch(() => {})
+      )
+    );
+    throw err;
   }
 
   const placeholders =
@@ -688,6 +713,7 @@ async function admitBatch(
   await syncToMariaDB(
     `UPDATE waiting_queue
      SET status = 'ADMITTED',
+         queue_status = 'ADMITTED',
          updated_at = NOW()
      WHERE user_id IN (${placeholders})
        AND event_id = ?
@@ -789,10 +815,15 @@ async function promoteStandby(
   userId,
   context = {}
 ) {
-  const { issueToken } =
+  const { issueToken, revokeToken } =
     require('./tokenService');
 
   const keys = queueKeys(context);
+
+  const standbyScore = await redis.zscore(
+    keys.standbyKey,
+    userId
+  );
 
   const removed =
     await redis.zrem(
@@ -808,23 +839,37 @@ async function promoteStandby(
     };
   }
 
-  await redis.sadd(
-    keys.admittedKey,
-    userId
-  );
+  let tokenInfo;
+  try {
+    // As with eligible admission, prepare the token before exposing the
+    // user through admittedKey so the frontend cannot observe a tokenless
+    // admission.
+    tokenInfo = await issueToken(
+      userId,
+      undefined,
+      keys
+    );
 
-  const {
-    token,
-    expiresAt,
-  } = await issueToken(
-    userId,
-    undefined,
-    keys
-  );
+    await redis.sadd(
+      keys.admittedKey,
+      userId
+    );
+  } catch (err) {
+    if (standbyScore !== null) {
+      await redis.zadd(
+        keys.standbyKey,
+        standbyScore,
+        userId
+      ).catch(() => {});
+    }
+    await revokeToken(userId, keys).catch(() => {});
+    throw err;
+  }
 
   await syncToMariaDB(
     `UPDATE waiting_queue
      SET status = 'PROMOTED',
+         queue_status = 'PROMOTED',
          updated_at = NOW()
      WHERE user_id = ?
        AND event_id = ?
@@ -844,8 +889,8 @@ async function promoteStandby(
   return {
     success: true,
     userId,
-    token,
-    expiresAt,
+    token: tokenInfo.token,
+    expiresAt: tokenInfo.expiresAt,
     message:
       `${userId} 입장 허용 + Token 발급`,
   };

@@ -69,27 +69,15 @@ async function cancelQueueRoutes(fastify) {
     });
   });
 
-  fastify.post('/cancel-queue/allocate', adminAuth, async (request, reply) => {
-    const { eventId, seatId } = request.body || {};
-    if (!eventId || !seatId) {
-      return reply.status(400).send({ error: 'eventId와 seatId는 필수입니다.' });
-    }
-
-    const context = getQueueContext(request, eventId);
-    const result = await cancelAllocationService.allocateNextForSeat(eventId, seatId, context, 1);
-    return reply.send(result);
+  // 취소표 순차 배정은 B파트 Step Functions + SQS 파이프라인의 단일 책임이다.
+  // 과거 운영 도구가 이 엔드포인트를 호출해도 A파트에서 이중 배정하지 않도록 명시적으로 차단한다.
+  const allocationDelegated = async (_request, reply) => reply.status(410).send({
+    success: false,
+    code: 'allocation_delegated',
+    message: '취소표 배정은 B파트 Step Functions 파이프라인에서 처리합니다.',
   });
-
-  fastify.post('/cancel-queue/allocate-next', adminAuth, async (request, reply) => {
-    const { eventId, seatId, maxSkip } = request.body || {};
-    if (!eventId || !seatId) {
-      return reply.status(400).send({ error: 'eventId와 seatId는 필수입니다.' });
-    }
-
-    const context = getQueueContext(request, eventId);
-    const result = await cancelAllocationService.allocateNextForSeat(eventId, seatId, context, maxSkip || 10);
-    return reply.send(result);
-  });
+  fastify.post('/cancel-queue/allocate', adminAuth, allocationDelegated);
+  fastify.post('/cancel-queue/allocate-next', adminAuth, allocationDelegated);
 
   // Secret Link 보유자만 배정된 좌석을 선점할 수 있게 한다.
   fastify.post('/cancel-queue/hold', userAuth, async (request, reply) => {
@@ -119,7 +107,8 @@ async function cancelQueueRoutes(fastify) {
     return reply.status(statusCode).send({ ...result, allocation });
   });
 
-  // 브라우저가 제한시간 만료를 감지했을 때 할당을 만료시키고 같은 좌석을 다음 사용자에게 넘긴다.
+  // 브라우저가 제한시간 만료를 감지했을 때 할당을 만료시키고 선점을 해제한다.
+  // 다음 사용자에게 넘기는 작업은 B파트 파이프라인이 담당한다.
   fastify.post('/cancel-queue/expire', userAuth, async (request, reply) => {
     const { userId, eventId, seatId } = request.body || {};
     if (!userId || !eventId) {

@@ -11,7 +11,7 @@ async function authRoutes(fastify) {
 
   fastify.post('/auth/register', async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'register')) return;
-    const { userId, password, email, role, name, phone, birthDate } = request.body || {};
+    const { userId, password, email, name, phone, birthDate } = request.body || {};
     if (!userId || !password) {
       return reply.status(400).send({ error: 'userId와 password는 필수입니다.' });
     }
@@ -21,7 +21,8 @@ async function authRoutes(fastify) {
     if (password.length < 4) {
       return reply.status(400).send({ error: '비밀번호는 4자 이상이어야 합니다.' });
     }
-    const userRole = (role === 'admin' || role === 'monitor') ? 'user' : (role || 'user');
+    // 공개 회원가입으로 관리자·삭제된 모니터링 역할을 지정할 수 없게 한다.
+    const userRole = 'user';
     const result = await register(userId, password, email, userRole, { name, phone, birthDate });
     const statusCode = result.success ? 201 : 409;
     return reply.status(statusCode).send(result);

@@ -4,7 +4,7 @@ const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
 const membershipService = require('../services/membershipService');
 const cancelAllocationService = require('../services/cancelAllocationService');
-const { sendEmail } = require('../services/notificationService');
+const { publishCancellationEvent } = require('../services/cancellationEventPublisher');
 const { normalizeSessionContext, getScopedKey } = require('../services/sessionContext');
 const { authenticate, requireRole } = require('../middleware/auth');
 
@@ -14,18 +14,6 @@ const SIM_USER_PREFIX = 'sim-user-';
 
 function simUserId(index) {
   return `${SIM_USER_PREFIX}${String(index).padStart(6, '0')}@test.com`;
-}
-
-function formatSeatLabel(seatId, sections) {
-  const parts = seatId.split(':');
-  const lastPart = parts[parts.length - 1];
-  const dashIdx = lastPart.lastIndexOf('-');
-  if (dashIdx < 0) return seatId;
-  const section = lastPart.slice(0, dashIdx);
-  const number = parseInt(lastPart.slice(dashIdx + 1), 10) || lastPart.slice(dashIdx + 1);
-  const sectionData = Array.isArray(sections) ? sections.find((s) => (s.name || s.id) === section) : null;
-  const grade = sectionData?.grade || '';
-  return `${section}구역${grade ? ' ' + grade + '석' : ''} ${number}번`;
 }
 
 function getContext(body) {
@@ -245,10 +233,11 @@ async function simulationRoutes(fastify) {
       await pipeline.exec();
     }
 
-    const realUserScore = 0;
-    await redis.zadd(keys.standbyKey, realUserScore, realUserEmail);
-
-    await redis.set(keys.counterKey, dummyCount + 1);
+    // The real user must join through the normal frontend flow after the
+    // sellout stage. Pre-registering the account here makes the simulation
+    // appear to complete the user's cancellation-queue entry before the user
+    // has actually called /queue/enter.
+    await redis.set(keys.counterKey, dummyCount);
     await redis.set(keys.statusKey, 'sold_out');
     await redis.set(getScopedKey('event:sold-out', context), '1');
 
@@ -259,14 +248,14 @@ async function simulationRoutes(fastify) {
       soldOutAt: new Date().toISOString(),
     });
 
-    console.log(`[Simulation] 매진 완료: ${seatsToSell}석 판매, standby ${standbyDummyCount}명 + 실제유저 1명`);
+    console.log(`[Simulation] 매진 완료: ${seatsToSell}석 판매, standby 더미 ${standbyDummyCount}명 (실제유저는 /queue/enter 호출 시 등록)`);
     return reply.send({
       success: true,
       seatsSold: seatsToSell,
       standbyDummies: standbyDummyCount,
-      realUserPosition: 1,
-      totalStandby: standbyDummyCount + 1,
-      message: `매진 연출 완료 — ${seatsToSell.toLocaleString()}석 판매, 대기열 ${(standbyDummyCount + 1).toLocaleString()}명 (실제유저: 1번째)`,
+      realUserPosition: null,
+      totalStandby: standbyDummyCount,
+      message: `매진 연출 완료 — ${seatsToSell.toLocaleString()}석 판매, 더미 취소표 대기 ${standbyDummyCount.toLocaleString()}명. 실제 유저는 예매 화면에서 직접 대기열에 진입해주세요.`,
     });
   });
 
@@ -406,24 +395,31 @@ async function simulationRoutes(fastify) {
 
     await redis.del(getScopedKey('event:sold-out', context));
 
-    const promotions = [];
-    for (let i = 0; i < cancelCount; i++) {
-      const next = await queueService.getNextStandby(context);
-      if (!next.userId) break;
-      const result = await queueService.promoteStandby(next.userId, context);
-      if (result.success) {
-        promotions.push({ userId: result.userId });
+    // 시뮬레이션도 실제 취소와 동일하게 좌석 반환 이벤트만 발행한다.
+    // standby 승격·Secret Link 발급은 B파트 Step Functions가 순차 처리한다.
+    let cancellationEventsPublished = 0;
+    for (const seat of toCancel) {
+      try {
+        const eventResult = await publishCancellationEvent({
+          eventId,
+          seatId: seat.seatId,
+          userId: seat.heldBy,
+          status: 'CANCELLED',
+          sessionDate: context.sessionDate,
+          sessionTime: context.sessionTime,
+          reason: 'simulation_cancelled',
+        });
+        if (eventResult.published) cancellationEventsPublished += 1;
+      } catch (err) {
+        console.error(`[Simulation] 취소 이벤트 SQS 발행 실패 (${seat.seatId}):`, err.message);
       }
-    }
-
-    if (promotions.length > 0) {
-      console.log(`[Simulation] standby → admitted 프로모션 ${promotions.length}명`);
     }
 
     await redis.hset(`simulation:${eventId}`, {
       stage: 'seats_cancelled',
       cancelledCount: cancelCount.toString(),
-      promotedCount: promotions.length.toString(),
+      promotedCount: '0',
+      cancellationEventsPublished: cancellationEventsPublished.toString(),
       cancelledAt: new Date().toISOString(),
     });
 
@@ -432,87 +428,17 @@ async function simulationRoutes(fastify) {
       success: true,
       cancelledCount: cancelCount,
       cancelledSeats,
-      promotedCount: promotions.length,
-      promotions,
-      message: `더미 좌석 ${cancelCount}석이 취소되었습니다. standby ${promotions.length}명 입장 허용됨.`,
+      promotedCount: 0,
+      cancellationEventsPublished,
+      message: `더미 좌석 ${cancelCount}석이 취소되었습니다. SQS 이벤트를 B파트 파이프라인으로 전달했습니다.`,
     });
   });
 
   fastify.post('/admin/simulation/issue-links', adminAuth, async (request, reply) => {
-    const { eventId, sessionDate, sessionTime } = request.body || {};
-    if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
-
-    const simData = await redis.hgetall(`simulation:${eventId}`);
-    if (!simData || !simData.realUserEmail) {
-      return reply.status(400).send({ error: '시뮬레이션 데이터가 없습니다.' });
-    }
-
-    const context = getContext({
-      eventId,
-      sessionDate: sessionDate || simData.sessionDate,
-      sessionTime: sessionTime || simData.sessionTime,
-    });
-
-    const allSeats = await seatService.getAllSeats(eventId, context);
-    const availableSeats = allSeats.filter(s => s.status === 'AVAILABLE');
-
-    if (availableSeats.length === 0) {
-      return reply.send({ success: false, message: '취소된 좌석이 없습니다. 먼저 취소표를 생성해주세요.' });
-    }
-
-    const allocations = [];
-    for (const seat of availableSeats) {
-      const result = await cancelAllocationService.allocateNextForSeat(
-        eventId,
-        seat.seatId,
-        context,
-        50,
-      );
-      if (result.success) {
-        allocations.push({
-          userId: result.userId,
-          seatId: seat.seatId,
-          allocation: result.allocation,
-          skipped: result.skipped?.length || 0,
-        });
-
-        const userRows = await pool.query('SELECT email FROM users WHERE user_id = ?', [result.userId]);
-        const email = userRows[0]?.email;
-        if (email && !result.userId.startsWith(SIM_USER_PREFIX)) {
-          const card = JSON.parse(await redis.hget(EVENT_LIST_KEY, eventId) || '{}');
-          const linkToken = result.allocation?.linkToken || '';
-          sendEmail(
-            email,
-            `[QUEUING] 취소표 알림 — ${card.eventName || eventId}`,
-            `<h2>취소표 시크릿 링크 안내</h2>
-            <p>안녕하세요, ${result.userId}님.</p>
-            <p>멤버십 회원 전용 취소표가 발생했습니다.</p>
-            <hr>
-            <p><strong>공연:</strong> ${card.eventName || eventId}</p>
-            <p><strong>좌석:</strong> ${formatSeatLabel(seat.seatId, card.sections)}</p>
-            <p><strong>유효 시간:</strong> 5분</p>
-            <hr>
-            <p>아래 링크를 통해 취소표 예매 페이지로 이동하세요:</p>
-            <p><a href="${process.env.SITE_URL || 'http://localhost'}/cancel-ticketing.html?eventId=${encodeURIComponent(eventId)}&userId=${encodeURIComponent(result.userId)}&allocationId=${result.allocation?.id || ''}&linkToken=${encodeURIComponent(linkToken)}${process.env.API_BASE ? '&apiBase=' + encodeURIComponent(process.env.API_BASE) : ''}">취소표 예매하기</a></p>
-            <p>— QUEUING 팀</p>`,
-          );
-        }
-      }
-    }
-
-    await redis.hset(`simulation:${eventId}`, {
-      stage: 'links_issued',
-      linksIssuedAt: new Date().toISOString(),
-      allocationsCount: allocations.length.toString(),
-    });
-
-    console.log(`[Simulation] 시크릿 링크 ${allocations.length}건 발급 완료`);
-    return reply.send({
-      success: true,
-      allocations,
-      totalAvailable: availableSeats.length,
-      allocated: allocations.length,
-      message: `${allocations.length}명에게 시크릿 링크가 발급되었습니다.`,
+    return reply.status(410).send({
+      success: false,
+      code: 'allocation_delegated',
+      message: '시크릿 링크 발급은 B파트 Step Functions 파이프라인이 SQS 취소 이벤트를 처리합니다.',
     });
   });
 

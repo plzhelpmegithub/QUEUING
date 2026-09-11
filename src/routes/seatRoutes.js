@@ -85,7 +85,7 @@ async function seatRoutes(fastify) {
 
   fastify.post('/seats/confirm', userAuth, async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'seat_confirm')) return;
-    const { userId, seatId, eventId, sessionDate, sessionTime } = request.body || {};
+    const { userId, seatId, eventId, sessionDate, sessionTime, paymentMethod } = request.body || {};
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
     }
@@ -97,7 +97,31 @@ async function seatRoutes(fastify) {
         const ctx = await getEmailContext(seatId, userId, eventId, sessionDate, sessionTime);
         if (ctx) {
           const timeStr = ctx.displayTime ? ` ${ctx.displayTime}` : '';
-          sendEmail(ctx.user.email, `[QUEUING] 예매 완료 안내 — ${ctx.eventName || ctx.resolvedEventId}`, `
+          const isBankTransfer = ['vbank', 'bank', 'bank_transfer', 'bank-transfer'].includes(
+            String(paymentMethod || '').toLowerCase()
+          );
+          const subject = isBankTransfer
+            ? `[QUEUING] 무통장 입금 예매 접수 안내 — ${ctx.eventName || ctx.resolvedEventId}`
+            : `[QUEUING] 예매 완료 안내 — ${ctx.eventName || ctx.resolvedEventId}`;
+          const body = isBankTransfer
+            ? `
+            <h2>무통장 입금 예매가 접수되었습니다</h2>
+            <p>안녕하세요, ${ctx.user.name || userId}님.</p>
+            <p>아래 공연의 무통장 입금 예매가 접수되었습니다.</p>
+            <p><strong>24시간 이내에 입금이 확인되어야 좌석이 최종 확정됩니다.</strong></p>
+            <p>입금 기한 내 입금이 확인되지 않으면 예매가 자동 취소되고 좌석이 다시 예매 가능한 상태로 변경될 수 있습니다.</p>
+            <hr>
+            <p><strong>공연명:</strong> ${ctx.eventName || ctx.resolvedEventId}</p>
+            <p><strong>일시:</strong> ${ctx.displayDate}${timeStr}</p>
+            <p><strong>장소:</strong> ${ctx.venue || '미정'}</p>
+            <p><strong>좌석:</strong> ${ctx.seatLabel}</p>
+            <p><strong>예매자:</strong> ${ctx.user.name || userId}</p>
+            <p><strong>입금 기한:</strong> 예매 접수 시각부터 24시간 이내</p>
+            <hr>
+            <p>가상계좌와 입금 금액은 QUEUING 마이페이지의 예매내역에서 확인해주세요.</p>
+            <p>— QUEUING 팀</p>
+          `
+            : `
             <h2>예매가 완료되었습니다!</h2>
             <p>안녕하세요, ${ctx.user.name || userId}님.</p>
             <p>아래 공연의 예매가 성공적으로 확정되었습니다.</p>
@@ -111,7 +135,8 @@ async function seatRoutes(fastify) {
             <hr>
             <p>공연 당일 즐거운 시간 보내세요!</p>
             <p>— QUEUING 팀</p>
-          `);
+          `;
+          sendEmail(ctx.user.email, subject, body);
         }
       } catch (emailErr) {
         console.error('[Email] 예매 완료 메일 발송 실패:', emailErr.message);

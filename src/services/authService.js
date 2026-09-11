@@ -36,13 +36,6 @@ async function initUsersTable() {
       userEnv: 'ADMIN_BOOTSTRAP_USER',
       label: '관리자',
     });
-    await ensureBootstrapAccount({
-      role: 'monitor',
-      defaultUserId: 'monitor@queuing.kr',
-      passwordEnv: 'MONITOR_BOOTSTRAP_PASSWORD',
-      userEnv: 'MONITOR_BOOTSTRAP_USER',
-      label: '모니터링',
-    });
   } catch (err) {
     console.error('[Auth] 관리자 계정 생성 실패:', err.message);
   }
@@ -107,6 +100,11 @@ async function login(userId, password) {
 
     if (!user) {
       return { success: false, message: '존재하지 않는 아이디입니다.' };
+    }
+
+    // 기존 DB에 남아 있는 레거시 monitor 계정도 더 이상 사용할 수 없게 한다.
+    if (String(user.role || '').toLowerCase() === 'monitor') {
+      return { success: false, message: '모니터링 계정은 더 이상 사용할 수 없습니다.' };
     }
 
     const isMatch = await verifyPassword(password, user.password);

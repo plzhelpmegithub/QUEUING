@@ -1,21 +1,5 @@
 const pool = require('../config/mariadb');
 
-async function addColumns(table, columns) {
-  for (const col of columns) {
-    try {
-      await pool.query(`ALTER TABLE ${table} ADD COLUMN ${col}`);
-    } catch (_) {}
-  }
-}
-
-async function modifyColumns(table, columns) {
-  for (const col of columns) {
-    try {
-      await pool.query(`ALTER TABLE ${table} MODIFY COLUMN ${col}`);
-    } catch (_) {}
-  }
-}
-
 async function initTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -30,21 +14,6 @@ async function initTable() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  await modifyColumns('users', [
-    "user_id VARCHAR(50) NOT NULL",
-    "email VARCHAR(255) DEFAULT ''",
-  ]);
-  await addColumns('users', [
-    "password VARCHAR(255) NOT NULL DEFAULT ''",
-    "role VARCHAR(20) NOT NULL DEFAULT 'user'",
-    "email VARCHAR(255) DEFAULT ''",
-    "name VARCHAR(50) DEFAULT ''",
-    "phone VARCHAR(20) DEFAULT ''",
-    "birth_date DATE NULL",
-    "marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS memberships (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -57,19 +26,6 @@ async function initTable() {
       INDEX idx_user (user_id)
     )
   `);
-  await modifyColumns('memberships', [
-    "user_id VARCHAR(50) NOT NULL",
-    "expires_at DATETIME NULL",
-  ]);
-  await addColumns('memberships', [
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "is_membership BOOLEAN NOT NULL DEFAULT TRUE",
-    "plan VARCHAR(20) NOT NULL DEFAULT 'monthly'",
-    "expires_at DATETIME NULL",
-    "priority_level INT NOT NULL DEFAULT 1",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (
       event_id VARCHAR(50) PRIMARY KEY,
@@ -91,31 +47,6 @@ async function initTable() {
       updated_at DATETIME NULL
     )
   `);
-  await modifyColumns('events', [
-    "event_id VARCHAR(50) NOT NULL",
-    "event_name VARCHAR(200) NOT NULL DEFAULT ''",
-    "event_date VARCHAR(50) DEFAULT ''",
-  ]);
-  await addColumns('events', [
-    "title VARCHAR(200) NOT NULL DEFAULT ''",
-    "event_name VARCHAR(200) NOT NULL DEFAULT ''",
-    "event_date VARCHAR(50) DEFAULT ''",
-    "venue VARCHAR(200) DEFAULT ''",
-    "total_seats INT NOT NULL DEFAULT 0",
-    "seating_type VARCHAR(20) DEFAULT 'arena'",
-    "sessions JSON NULL",
-    "sections JSON NULL",
-    "status VARCHAR(20) NOT NULL DEFAULT 'open'",
-    "ticket_open_at DATETIME NULL",
-    "ticket_close_at DATETIME NULL",
-    "emoji VARCHAR(10) DEFAULT ''",
-    "color VARCHAR(50) DEFAULT ''",
-    "cancel_reason TEXT NULL",
-    "cancelled_at DATETIME NULL",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-    "updated_at DATETIME NULL",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS seats (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -134,25 +65,6 @@ async function initTable() {
       INDEX idx_status (status)
     )
   `);
-  await modifyColumns('seats', [
-    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "section VARCHAR(20) DEFAULT ''",
-    "status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'",
-  ]);
-  await addColumns('seats', [
-    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "session_date VARCHAR(50) DEFAULT ''",
-    "session_time VARCHAR(10) DEFAULT ''",
-    "section VARCHAR(20) DEFAULT ''",
-    "price INT NOT NULL DEFAULT 0",
-    "status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'",
-    "held_by VARCHAR(50) DEFAULT ''",
-    "held_at DATETIME NULL",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS waiting_queue (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -170,24 +82,6 @@ async function initTable() {
       INDEX idx_status (status)
     )
   `);
-  await modifyColumns('waiting_queue', [
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "status VARCHAR(20) NOT NULL DEFAULT 'WAITING'",
-  ]);
-  await addColumns('waiting_queue', [
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "session_date VARCHAR(50) DEFAULT ''",
-    "session_time VARCHAR(10) DEFAULT ''",
-    "queue_type VARCHAR(20) NOT NULL DEFAULT 'eligible'",
-    "queue_index INT NOT NULL DEFAULT 0",
-    "status VARCHAR(20) NOT NULL DEFAULT 'WAITING'",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-    "updated_at DATETIME NULL",
-    "membership_at_join TINYINT(1) NOT NULL DEFAULT 0",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cancel_allocations (
       allocation_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -205,26 +99,6 @@ async function initTable() {
       INDEX idx_expires (expires_at)
     )
   `);
-  await modifyColumns('cancel_allocations', [
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "session_date VARCHAR(50) DEFAULT ''",
-    "session_time VARCHAR(10) DEFAULT ''",
-    "status VARCHAR(20) NOT NULL DEFAULT 'LINK_SENT'",
-  ]);
-  await addColumns('cancel_allocations', [
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "session_date VARCHAR(50) DEFAULT ''",
-    "session_time VARCHAR(10) DEFAULT ''",
-    "status VARCHAR(20) NOT NULL DEFAULT 'LINK_SENT'",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-    "expires_at DATETIME NULL",
-    "responded_at DATETIME NULL",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wishlists (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -236,16 +110,6 @@ async function initTable() {
       INDEX idx_event (event_id)
     )
   `);
-  await modifyColumns('wishlists', [
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-  ]);
-  await addColumns('wishlists', [
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS backups (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -257,13 +121,6 @@ async function initTable() {
       INDEX idx_event (event_id)
     )
   `);
-  await addColumns('backups', [
-    "backup_type VARCHAR(50) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) DEFAULT ''",
-    "data JSON NULL",
-    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-  ]);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reservations (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -280,23 +137,6 @@ async function initTable() {
       INDEX idx_event (event_id)
     )
   `);
-  await modifyColumns('reservations', [
-    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED'",
-  ]);
-  await addColumns('reservations', [
-    "seat_id VARCHAR(100) NOT NULL DEFAULT ''",
-    "user_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "event_id VARCHAR(50) NOT NULL DEFAULT ''",
-    "session_date VARCHAR(50) DEFAULT ''",
-    "session_time VARCHAR(10) DEFAULT ''",
-    "status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED'",
-    "reserved_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-    "cancelled_at DATETIME NULL",
-  ]);
-
   console.log('[MariaDB] 전체 테이블 (9개) 준비 완료');
 }
 
