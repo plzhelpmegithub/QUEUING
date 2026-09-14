@@ -329,5 +329,6 @@ metrics:
     interval: "15s"
     scrapeTimeout: "10s"
     # Prometheus Operator의 serviceMonitorSelector에 매칭되어야 하는 추가 라벨.
-    # 예: labels: { release: "kube-prometheus-stack" }
-    labels: {}
+    # 클러스터의 Prometheus 릴리즈 이름과 일치해야 수집됨.
+    labels:
+      release: monitoring
