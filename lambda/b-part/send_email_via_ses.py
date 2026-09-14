@@ -74,6 +74,10 @@ def _store_task_token(token: str, task_token: str):
             "UPDATE cancellation_link SET task_token = %s WHERE token = %s",
             (task_token, token),
         )
+        if cur.rowcount == 0:
+            raise RuntimeError(
+                "cancellation_link row not found for token — task_token 저장 실패"
+            )
 
 
 def _build_email(user_id: str, token: str, expires_at: str, hold_duration_seconds: int):
@@ -92,11 +96,23 @@ def _build_email(user_id: str, token: str, expires_at: str, hold_duration_second
     )
     return subject, body_text, link
 
-
 def send_email_via_ses(payload: dict) -> dict:
-    user_id = payload["user_id"]  # 이 프로젝트에서는 user_id가 곧 이메일 주소
+    user_id = payload["user_id"]
+    token = payload["token"]
+
+    task_token = payload.get("TaskToken")
+    if not task_token:
+        # ASL Parameters에 TaskToken.$ 주입이 빠졌거나, waitForTaskToken 밖에서
+        # 잘못 호출된 경우 — 조용히 넘어가면 이메일만 나가고 아무도 이후
+        # SendTaskSuccess/Failure를 못 부르는 상태가 되므로 여기서 막는다.
+        raise RuntimeError("TaskToken missing in input — check ASL Parameters ($$.Task.Token)")
+
+    # 이메일 발송보다 먼저 저장한다 — 저장 실패 시 이메일을 아예 보내지 않아서
+    # "이메일은 나갔는데 저장 실패로 재시도 → 중복 발송" 상황을 막는다.
+    _store_task_token(token, task_token)
+
     subject, body_text, link = _build_email(
-        user_id, payload["token"], payload["expires_at"], payload["hold_duration_seconds"]
+        user_id, token, payload["expires_at"], payload["hold_duration_seconds"]
     )
 
     response = _ses.send_email(
@@ -108,11 +124,8 @@ def send_email_via_ses(payload: dict) -> dict:
         },
     )
 
-    task_token = payload.get("TaskToken")
-    if task_token:
-        _store_task_token(payload["token"], task_token)
-
     return {**payload, "ses_message_id": response["MessageId"], "link": link}
+
 
 
 def lambda_handler(event, context):

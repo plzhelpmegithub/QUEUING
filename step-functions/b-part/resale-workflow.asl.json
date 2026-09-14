@@ -75,7 +75,7 @@
     },
 
     "SendEmailAndWait": {
-      "Comment": "waitForTaskToken: 이 Lambda가 이메일을 보내고 리턴해도 상태는 끝나지 않는다. /verify-link API가 SendTaskSuccess를 부르거나, TimeoutSecondsPath만큼 지나면 States.Timeout으로 자동 종료된다.",
+      "Comment": "waitForTaskToken: 이 Lambda가 이메일을 보내고 리턴해도 상태는 끝나지 않는다. /verify-link API가 SendTaskSuccess를 부르거나, TimeoutSecondsPath만큼 지나면 States.Timeout으로 자동 종료된다. /verify-link/expire API가 SendTaskFailure(error='UserExpired')를 부르면 조기 만료로 처리된다.",
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
       "TimeoutSecondsPath": "$.hold_duration_seconds",
@@ -102,6 +102,11 @@
       "Catch": [
         {
           "ErrorEquals": ["States.Timeout"],
+          "ResultPath": "$.error",
+          "Next": "MarkExpired"
+        },
+        {
+          "ErrorEquals": ["UserExpired"],
           "ResultPath": "$.error",
           "Next": "MarkExpired"
         },
