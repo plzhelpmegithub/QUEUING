@@ -8,7 +8,7 @@ resource "aws_lb" "main" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets = aws_subnet.public[*].id
+  subnets            = aws_subnet.public[*].id
 
   # 헤더 형식이 잘못된 요청을 ALB 단에서 버린다.
   #
@@ -199,5 +199,52 @@ resource "aws_lb_listener_rule" "block_internal" {
       message_body = "Forbidden"
       status_code  = "403"
     }
+  }
+}
+
+# ── D파트(예지) backend-counter — 부하테스트용 (2026-09-14 예지님 요청) ──
+# 서비스가 NodePort 30083 으로 열려 있어야 한다.
+# 노드 보안그룹은 ALB 에서 30000-32767 을 이미 받으므로 보안그룹은 건드리지 않는다.
+resource "aws_lb_target_group" "counter" {
+  name        = "${var.project}-tg-counter"
+  port        = 30083
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  # /actuator/health 는 DB·Redis 까지 확인해서 부하 중 503 이 나면 ALB 가 대상을 뺀다.
+  # 앱이 살아 있는지만 보는 liveness 를 쓴다 (차트 livenessProbe 와 같은 경로).
+  health_check {
+    path                = "/actuator/health/liveness"
+    port                = "traffic-port"
+    interval            = 30 # 부하 중 JVM 응답이 늦어질 수 있어 여유 있게 (예지님 요청)
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    matcher             = "200"
+  }
+
+  tags = { Name = "${var.project}-tg-counter" }
+}
+
+# 노드그룹 ASG 에 붙인다. Cluster Autoscaler 가 늘린 노드도 자동으로 대상이 된다.
+resource "aws_autoscaling_attachment" "counter_nodes" {
+  autoscaling_group_name = tolist(aws_eks_node_group.main.resources[0].autoscaling_groups)[0].name
+  lb_target_group_arn    = aws_lb_target_group.counter.arn
+}
+
+resource "aws_lb_listener_rule" "counter" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 30
+
+  condition {
+    path_pattern {
+      values = ["/api/like*", "/api/traffic*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.counter.arn
   }
 }

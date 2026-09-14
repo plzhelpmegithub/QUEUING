@@ -53,6 +53,11 @@
 #     (한국어 윈도우 콘솔 기본 cp949 에서만 난다. UTF-8 콘솔에서는 재현되지 않아 dry-run 이 놓쳤다)
 #   예지님 Grafana(EC2) B안                          -> 클러스터 안 Grafana 를 내리고 Prometheus 를
 #                                                       NodePort 로 열어 NLB 대상 상태를 본다
+#
+# ■ 2026-09-12 노드 자동 증설 (Cluster Autoscaler)
+#   노드 2대 x 파드 17 = 34자리 중 평소 27개 사용   -> HPA 가 7개 넘게 늘리면 Pending 이었다.
+#                                                       7단계에서 Cluster Autoscaler 를 설치한다.
+#                                                       IAM 역할·대상 ASG 는 terraform-final/cluster_autoscaler.tf 출력에서 읽는다
 # ──────────────────────────────────────────────
 
 [CmdletBinding()]
@@ -88,6 +93,7 @@ $Versions = @{
     Keda          = "2.20.2"
     Monitoring    = "88.6.0"   # 릴리즈 이름 monitoring 과 함께 고정 (ServiceMonitor 선택 라벨)
     MetricsServer = "v0.9.0"
+    ClusterAutoscaler = "9.53.0"   # 차트 9.53.0 = 앱 v1.34.2. 쿠버네티스 마이너 버전(1.34)과 맞춘다. EKS 를 올리면 같이 올린다
 }
 $Namespaces = @("queuing-a", "queuing-b", "queuing-c", "queuing-d", "realtime", "redis", "monitoring", "keda", "argocd")
 $FlowLogGroup = "/aws/vpc-flow-logs/queuing"
@@ -510,8 +516,19 @@ function Show-Health([int]$WaitSeconds = 0) {
         if ($free -le 0) { Warn "$msg - 새 파드가 Pending 이 된다. 노드를 늘린다" } else { Info $msg }
     }
 
+    # 노드 자동 증설. 설치돼 있으면 준비 상태와 CA 가 기록한 상태(cluster-autoscaler-status)를 본다.
+    $caReady = "$(Read-Native "kubectl" @("-n", "kube-system", "get", "deploy", "cluster-autoscaler", "-o", "jsonpath={.status.readyReplicas}"))".Trim()
+    if ($script:ReadExit -ne 0) { Info "Cluster Autoscaler 없음 (cluster_autoscaler_enabled = false 이거나 설치 전) - 노드는 수동으로만 늘어난다" }
+    elseif ($caReady -ne "1") { Warn "Cluster Autoscaler 가 준비되지 않았다 (ready=$caReady) - kubectl -n kube-system logs deploy/cluster-autoscaler 확인" }
+    else {
+        $caStatus = "$(Read-Native "kubectl" @("-n", "kube-system", "get", "configmap", "cluster-autoscaler-status", "-o", "jsonpath={.data.status}"))"
+        # 상태 문구 형식은 CA 버전마다 조금씩 달라서 "Healthy" 가 있는지만 본다
+        if ($caStatus -match "Healthy") { Ok "Cluster Autoscaler Healthy" }
+        else { Info "Cluster Autoscaler 실행 중 (상태 기록 전이거나 형식이 다르다 - kubectl -n kube-system get cm cluster-autoscaler-status -o yaml)" }
+    }
+
     # 예지님 Grafana EC2 → Prometheus 연결
-    $svc = Read-Native "kubectl" @("-n", "monitoring", "get", "svc", "monitoring-kube-prometheus-prometheus", "-o", "jsonpath={.spec.type}/{.spec.ports[?(@.port==9090)].nodePort}")
+    $svc =Read-Native "kubectl" @("-n", "monitoring", "get", "svc", "monitoring-kube-prometheus-prometheus", "-o", "jsonpath={.spec.type}/{.spec.ports[?(@.port==9090)].nodePort}")
     if ("$svc" -eq "NodePort/$PrometheusNodePort") { Ok "Prometheus NodePort $PrometheusNodePort" }
     else { Warn "Prometheus 서비스가 NodePort/$PrometheusNodePort 가 아니다 ($svc) - 예지님 Grafana 가 못 붙는다" }
     $tg = Read-Native "aws" @("elbv2", "describe-target-groups", "--region", $Region, "--names", $PrometheusLinkTg, "--query", "TargetGroups[0].TargetGroupArn", "--output", "text")
@@ -737,6 +754,27 @@ data:
     [IO.File]::WriteAllText($mv, $MonitoringValues, (New-Object System.Text.UTF8Encoding $false))
     if (Helm-Release "모니터링" "monitoring" "monitoring" "prometheus-community/kube-prometheus-stack" @("--version", $Versions.Monitoring, "-f", $mv)) { Ok "kube-prometheus-stack $($Versions.Monitoring)" }
 
+    # 노드 자동 증설. Pending 파드가 생기면 노드그룹 ASG 의 desired 를 올리고, 10분 넘게 한가한 노드는 내린다.
+    #   대상 ASG 를 이름으로 직접 준다 (--nodes=최소:최대:ASG). 태그 자동 탐색에 기대지 않는다.
+    #   ASG 이름은 매일 바뀌어서 terraform 출력에서 읽는다. IAM 권한도 그 ASG 하나로만 묶여 있다.
+    #   ServiceAccount 이름은 cluster_autoscaler.tf 의 신뢰 정책(kube-system:cluster-autoscaler)과 같아야 한다.
+    $ca = $tf.cluster_autoscaler.value
+    if (-not $ca) { Info "Cluster Autoscaler 건너뜀 (terraform 의 cluster_autoscaler_enabled = false)" }
+    else {
+        [void](Invoke-Native "helm repo add autoscaler" "helm" @("repo", "add", "autoscaler", "https://kubernetes.github.io/autoscaler", "--force-update"))
+        if (Helm-Release "Cluster Autoscaler" "kube-system" "cluster-autoscaler" "autoscaler/cluster-autoscaler" @("--version", $Versions.ClusterAutoscaler,
+                "--set", "cloudProvider=aws", "--set", "awsRegion=$Region",
+                "--set", "autoscalingGroups[0].name=$($ca.asg_name)",
+                "--set", "autoscalingGroups[0].minSize=$($ca.min_size)",
+                "--set", "autoscalingGroups[0].maxSize=$($ca.max_size)",
+                "--set", "fullnameOverride=cluster-autoscaler",
+                "--set", "rbac.serviceAccount.name=cluster-autoscaler",
+                "--set-string", "rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$($ca.role_arn)",
+                "--set", "resources.requests.cpu=50m", "--set", "resources.requests.memory=128Mi", "--set", "resources.limits.memory=384Mi") -Wait) {
+            Ok "Cluster Autoscaler $($Versions.ClusterAutoscaler) (노드 $($ca.min_size)~$($ca.max_size)대, $($ca.asg_name))"
+        }
+    }
+
     # ── 8. 앱 차트 가져오기 ──
     Step 8 "앱 차트"
     [void](Invoke-Native "git fetch" "git" @("-C", $RepoDir, "fetch", "origin", "--quiet"))
@@ -755,8 +793,8 @@ data:
 
     # D (예지) — C파트 통계 채널이 이 Redis 를 구독하므로 C 보다 먼저.
     #   service.type=ClusterIP: 기본값 LoadBalancer 면 Classic LB 가 따로 생긴다 (월 $18, 인증 없는 공개).
-    if ($charts.d -and (Helm-Release "D파트 counter" "queuing-d" "counter" $charts.d @(
-            "--set", "service.type=ClusterIP", "--set", "env.redisHost=$redisCounter"))) { Ok "D counter" }
+   if ($charts.d -and (Helm-Release "D파트 counter" "queuing-d" "counter" $charts.d @(
+            "--set", "service.type=NodePort", "--set", "service.nodePort=30083", "--set", "env.redisHost=$redisCounter"))) { Ok "D counter" }
 
     # C (지예) — 키 경로는 env.redisHost 다 (config.redisHost 로 주면 조용히 무시된다).
     if ($ChartC -and (Helm-Release "C파트 realtime-ws" "realtime" "realtime-ws" $ChartC @(
