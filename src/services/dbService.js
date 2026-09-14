@@ -137,7 +137,32 @@ async function initTable() {
       INDEX idx_event (event_id)
     )
   `);
-  console.log('[MariaDB] 전체 테이블 (9개) 준비 완료');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cancellation_outbox (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      event_payload JSON NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+      attempts INT NOT NULL DEFAULT 0,
+      last_error TEXT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      sent_at DATETIME NULL,
+      INDEX idx_status (status)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS callback_outbox (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      action VARCHAR(50) NOT NULL,
+      payload JSON NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+      attempts INT NOT NULL DEFAULT 0,
+      last_error TEXT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      sent_at DATETIME NULL,
+      INDEX idx_status (status)
+    )
+  `);
+  console.log('[MariaDB] 전체 테이블 (11개) 준비 완료');
 }
 
 function toItem(row) {
@@ -185,14 +210,21 @@ async function getReservationsByUser(userId) {
 }
 
 async function cancelReservation(seatId, userId) {
-  const result = await pool.query(
-    `UPDATE reservations SET status = 'CANCELLED', cancelled_at = NOW()
+  const rows = await pool.query(
+    `SELECT id FROM reservations
      WHERE seat_id = ? AND user_id = ? AND status != 'CANCELLED'
      ORDER BY reserved_at DESC LIMIT 1`,
     [seatId, userId],
   );
-  console.log(`[MariaDB] 예약 취소: ${seatId} (${userId})`);
-  return { affected: result.affectedRows || 0 };
+  const reservationId = rows.length > 0 ? rows[0].id : null;
+  if (reservationId) {
+    await pool.query(
+      `UPDATE reservations SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = ?`,
+      [reservationId],
+    );
+  }
+  console.log(`[MariaDB] 예약 취소: ${seatId} (${userId}) reservation_id=${reservationId}`);
+  return { affected: reservationId ? 1 : 0, reservationId };
 }
 
 module.exports = {

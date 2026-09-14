@@ -75,6 +75,8 @@ const { initExpiryListener, stopExpiryListener } = require('./services/timerServ
 const { initTable } = require('./services/dbService');
 const { startRetryWorker, stopRetryWorker } = require('./services/syncRetryService');
 const { startAdmissionWorker, stopAdmissionWorker } = require('./services/admissionWorker');
+const { relayCancellationOutbox } = require('./services/cancellationEventPublisher');
+const { relayCallbackOutbox } = require('./services/bPartCallbackService');
 const {
   recoverWithRetry,
   startAutoRecovery,
@@ -102,6 +104,9 @@ const start = async () => {
     startAutoRecovery();
     startRetryWorker();
     startAdmissionWorker();
+    const outboxRelayId = setInterval(() => relayCancellationOutbox().catch(e => console.error('[Outbox] relay error:', e.message)), 30000);
+    const callbackRelayId = setInterval(() => relayCallbackOutbox().catch(e => console.error('[CallbackOutbox] relay error:', e.message)), 30000);
+    process.once('beforeExit', () => { clearInterval(outboxRelayId); clearInterval(callbackRelayId); });
     const port = process.env.PORT || 3000;
     await fastify.listen({ port, host: '0.0.0.0' });
     console.log(`[Server] Running on port ${port}`);

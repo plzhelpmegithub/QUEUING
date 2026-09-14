@@ -379,7 +379,7 @@ async function cancelSeat(userId, seatId) {
   await redis.del(getScopedKey(SOLD_OUT_KEY, sessionContext));
   await redis.del(getScopedKey('event:ticketing-status', sessionContext));
   await publishSeatEvent(EVENT_TYPE.CANCELLED, { seatId, userId });
-  await cancelReservation(seatId, userId);
+  const cancelResult = await cancelReservation(seatId, userId);
 
   await syncToMariaDB(
     `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id = ?`,
@@ -393,14 +393,13 @@ async function cancelSeat(userId, seatId) {
       eventId: sessionContext.eventId,
       seatId,
       userId,
+      reservationId: cancelResult.reservationId || null,
       status: 'CANCELLED',
       sessionDate: sessionContext.sessionDate,
       sessionTime: sessionContext.sessionTime,
       reason: 'reservation_cancelled',
     });
   } catch (err) {
-    // 좌석 취소와 B파트 재판매 파이프라인은 분리한다.
-    // SQS 장애가 취소 자체를 실패시키지는 않지만, 운영자는 반드시 로그를 확인해야 한다.
     console.error('[CancellationEvent] 취소 이벤트 SQS 발행 실패:', err.message);
   }
 

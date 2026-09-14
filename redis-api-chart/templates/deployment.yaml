@@ -179,6 +179,21 @@ spec:
             - name: SITE_URL
               value: {{ .Values.env.siteUrl | quote }}
             {{- end }}
+            {{- if .Values.env.cancellationEventsQueueUrl }}
+            - name: CANCELLATION_EVENTS_QUEUE_URL
+              value: {{ .Values.env.cancellationEventsQueueUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.bCallbackBaseUrl }}
+            - name: B_CALLBACK_BASE_URL
+              value: {{ .Values.env.bCallbackBaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.bCallbackAuth }}
+            - name: B_CALLBACK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "bCallbackAuth.secret.name must be set" .Values.bCallbackAuth.secret.name }}
+                  key: {{ required "bCallbackAuth.secret.key must be set" .Values.bCallbackAuth.secret.key }}
+            {{- end }}
           # Liveness Probe: 실패 시 컨테이너 재시작 (죽은 프로세스 복구)
           {{- with .Values.livenessProbe }}
           livenessProbe:

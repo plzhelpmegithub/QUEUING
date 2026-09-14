@@ -30,6 +30,19 @@ function issueRefreshToken(userId, role) {
   return jwt.sign({ userId, role, type: 'refresh' }, secret, { expiresIn: REFRESH_TTL });
 }
 
+function issueScopedCancelToken(userId, eventId, allocationId, expiresInSeconds) {
+  const secret = getSecret();
+  if (secret.length < MIN_SECRET_LENGTH) return null;
+  return jwt.sign({
+    userId,
+    role: 'USER',
+    type: 'cancel_link_session',
+    scope: 'cancel_queue',
+    eventId,
+    allocationId: String(allocationId),
+  }, secret, { expiresIn: Math.max(1, expiresInSeconds) });
+}
+
 function verifyAccessToken(token) {
   const secret = getSecret();
   if (secret.length < MIN_SECRET_LENGTH) return { valid: false, reason: 'not_configured' };
@@ -37,8 +50,20 @@ function verifyAccessToken(token) {
 
   try {
     const decoded = jwt.verify(token, secret);
-    if (decoded.type !== 'access') return { valid: false, reason: 'wrong_type' };
-    return { valid: true, userId: decoded.userId, role: decoded.role };
+    if (decoded.type === 'access') {
+      return { valid: true, userId: decoded.userId, role: decoded.role };
+    }
+    if (decoded.type === 'cancel_link_session') {
+      return {
+        valid: true,
+        userId: decoded.userId,
+        role: decoded.role || 'USER',
+        scope: decoded.scope || 'cancel_queue',
+        eventId: decoded.eventId,
+        allocationId: decoded.allocationId,
+      };
+    }
+    return { valid: false, reason: 'wrong_type' };
   } catch (err) {
     if (err.name === 'TokenExpiredError') return { valid: false, reason: 'expired' };
     return { valid: false, reason: 'invalid' };
@@ -75,4 +100,5 @@ module.exports = {
   verifyRefreshToken,
   issueAccessToken,
   issueRefreshToken,
+  issueScopedCancelToken,
 };

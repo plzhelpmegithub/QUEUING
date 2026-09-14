@@ -39,7 +39,8 @@ api/
         ├── queueService.js             # 대기열 핵심 로직
         ├── seatService.js              # 좌석 상태 머신
         ├── eventService.js             # Redis Pub/Sub 이벤트 발행
-        ├── cancellationEventPublisher.js # 취소표 SQS 이벤트 발행(B파트 연동)
+        ├── cancellationEventPublisher.js # 취소표 SQS 이벤트 발행 + outbox 패턴(B파트 연동)
+        ├── bPartCallbackService.js     # B파트 콜백 API 클라이언트
         ├── lockService.js              # 분산 락 (Redis)
         ├── timerService.js             # 결제 타이머 (Redis TTL)
         ├── tokenService.js             # Admission Token (JWT)
@@ -261,9 +262,10 @@ BATCH_SIZE=100
 | `GET /cancel-queue/status/:eventId/:userId` | 로그인 사용자 JWT 또는 유효한 본인용 linkToken으로 사용자 취소표 대기 종합 상태 조회 (대기 순번 + 멤버십 + Secret Link) |
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
-| `POST /cancel-queue/hold` | 로그인 사용자 JWT 또는 유효한 Secret Link 보유자가 본인에게 배정된 좌석을 Admission Token으로 선점 |
-| `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. 다음 배정은 B파트 파이프라인이 담당 |
-| `POST /cancel-queue/respond` | 취소표 링크 사용자가 배정된 좌석 처리 완료 상태를 기록 |
+| `POST /cancel-queue/hold` | 배정된 좌석을 Admission Token으로 선점. B파트 NULL seat_id 할당 시 사용자가 선택한 좌석을 허용 |
+| `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/expire`로 포워드 |
+| `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/complete`로 포워드 |
+| `POST /verify-link` | 이메일 Secret Link 랜딩 — linkToken JWT를 검증하고 할당 정보 + 선택 가능 좌석 목록 반환. 인증 불필요 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
 | `GET /cancel-queue/history/:eventId` | 이벤트별 할당 내역 조회 |
@@ -422,14 +424,26 @@ Redis Pub/Sub + SSE + Prometheus 연동.
 
 ---
 
-### src/services/cancellationEventPublisher.js — 취소표 SQS 이벤트 발행
+### src/services/cancellationEventPublisher.js — 취소표 SQS 이벤트 발행 + Outbox
 
-B파트의 Step Functions + Lambda 재판매 파이프라인에 좌석 반환 이벤트를 전달한다.
+B파트의 Step Functions + Lambda 재판매 파이프라인에 좌석 반환 이벤트를 전달한다. SQS 발행 실패 시 `cancellation_outbox` 테이블에 저장하고 30초 주기로 재시도하는 outbox 패턴을 사용한다.
 
-- `publishCancellationEvent()`: `CANCELLATION_EVENTS_QUEUE_URL`로 `event_id`, `seat_id`, `status`, `timestamp`, `user_id`를 JSON 메시지로 발행
-- 실제 예약 취소(`cancelSeat()`)와 취소표 시뮬레이션 취소는 `status: CANCELLED`로 발행
-- 큐 URL이 없으면 A파트의 좌석 취소는 유지하고 경고 로그와 `published: false` 결과를 남김
-- SQS 발행 실패도 좌석 취소 자체를 롤백하지 않으므로 운영 환경에서는 큐 URL과 IAM `sqs:SendMessage` 권한을 반드시 설정
+- `publishCancellationEvent()`: `event_id`, `seat_id`, `reservation_id`, `dedup_key`를 포함한 JSON 메시지를 SQS로 발행. `dedup_key`는 `{event_id}#{seat_id}#{reservation_id}` 형식으로 B파트 Step Functions 실행 이름(멱등성 키)으로 사용된다
+- SQS 발행 실패 시 `cancellation_outbox` 테이블에 PENDING 상태로 저장 (fire-and-forget 방지)
+- 큐 URL 미설정 시에도 outbox에 저장하여 나중에 큐가 구성되면 재발행 가능
+- `relayCancellationOutbox()`: PENDING 상태 outbox 항목을 최대 50건 조회 → SQS 재발행 시도 → 성공 시 SENT, 3회 실패 시 FAILED로 마킹. `app.js`에서 30초 `setInterval`로 실행
+
+---
+
+### src/services/bPartCallbackService.js — B파트 콜백 API 클라이언트
+
+`B_CALLBACK_BASE_URL` 환경변수가 설정되면 취소표 할당 상태 전환을 B파트 Lambda에 위임한다. 미설정 시 A파트가 로컬 DB를 직접 업데이트한다 (개발 모드).
+
+- `isConfigured()`: `B_CALLBACK_BASE_URL` 설정 여부 반환
+- `callbackComplete({ userId, eventId, seatId, allocationId })`: B파트 `/verify-link/complete`에 POST — 사용자가 좌석 선택을 완료했음을 B파트 Step Functions에 알림
+- `callbackExpire({ userId, eventId, seatId, allocationId })`: B파트 `/verify-link/expire`에 POST — Secret Link 만료를 B파트에 알려 다음 대기자 배정을 트리거
+
+`cancelQueueRoutes.js`의 `/respond`와 `/expire` 엔드포인트가 이 서비스를 사용한다. B파트 콜백 실패 시 로컬 DB 업데이트로 폴백한다.
 
 ---
 
@@ -576,15 +590,17 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 
 ### src/services/cancelAllocationService.js — 취소표 할당 서비스
 
-취소표 할당 기록을 조회·만료 처리한다. 다음 대기자 선택과 Secret Link 발급은 B파트 파이프라인이 담당한다.
+취소표 할당 기록을 조회·만료 처리한다. 다음 대기자 선택과 Secret Link 발급은 B파트 파이프라인이 담당한다. B파트는 `seat_id = NULL`로 할당을 생성하므로, 모든 UPDATE 쿼리는 `allocation_id` 기반으로 수행한다 (SQL `WHERE seat_id = NULL`은 항상 0건 매칭되는 버그 방지).
 
-- `createAllocation()`: 호환 호출을 위한 할당 생성 (LINK_SENT 상태, TTL 기본 600초). A파트 취소 처리에서는 호출하지 않음
-- `markResponded()`: 사용자가 링크를 통해 응답 시 RESPONDED로 상태 변경
-- `markExpired()`: 시간 초과 시 EXPIRED로 상태 변경
-- `expireAllOverdue()`: 만료 시간 지난 할당 일괄 EXPIRED 처리. 다음 사용자 배정은 수행하지 않음
+- `markRespondedById(allocationId, seatId)`: allocation_id로 직접 RESPONDED 상태 변경. seatId가 있으면 함께 업데이트
+- `markResponded(userId, seatId, eventId)`: 사용자 활성 할당을 조회한 뒤 `markRespondedById()`로 위임
+- `markExpiredById(allocationId)`: allocation_id로 직접 EXPIRED 상태 변경
+- `markExpired(userId, seatId, eventId)`: 사용자 할당을 조회한 뒤 `markExpiredById()`로 위임
+- `expireAllOverdue()`: 단일 `UPDATE ... WHERE status='LINK_SENT' AND expires_at < UTC_TIMESTAMP()` 쿼리로 만료 할당 일괄 처리
 - `getActiveAllocation()`: 사용자의 활성 할당 조회
+- `getAllocation()`: 사용자·이벤트별 할당 조회 (만료 포함 여부 선택)
 - `getAllocationHistory()`: 이벤트별 전체 할당 내역
-- `expireAllocation()`: 활성 할당을 만료시키고 선점 중인 좌석을 해제. 다음 사용자 배정은 B파트가 담당
+- `expireAllocation()`: 활성 할당을 만료시키고 선점 중인 좌석을 해제. `seat_id`가 NULL인 할당은 좌석 해제를 건너뜀
 
 할당에는 `event_id`, `session_date`, `session_time`을 함께 저장해 회차별 Admission Token과 좌석을 분리한다. 판매 좌석 취소(`POST /seats/cancel`)가 성공하면 A파트는 SQS 취소 이벤트만 발행하고, 다음 멤버십 사용자 선택·Secret Link 발급은 B파트가 수행한다. 취소표 예매 확정(`POST /seats/confirm`) 시 할당을 `RESPONDED`로 변경한다.
 
@@ -594,7 +610,7 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 
 MariaDB 테이블 생성 및 reservations CRUD.
 
-**생성하는 테이블 (9개):**
+**생성하는 테이블 (10개):**
 | 테이블 | 설명 |
 |---|---|
 | `users` | 사용자 계정 |
@@ -603,6 +619,7 @@ MariaDB 테이블 생성 및 reservations CRUD.
 | `seats` | 좌석 |
 | `waiting_queue` | 대기열 (MariaDB 측 동기화용) |
 | `cancel_allocations` | 취소표 할당 |
+| `cancellation_outbox` | SQS 발행 실패 이벤트 보관 (outbox 패턴) |
 | `wishlists` | 위시리스트 |
 | `backups` | 스냅샷 백업 |
 | `reservations` | 예약 확정 기록 |
@@ -673,7 +690,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | 대상 | 용도 | 주소 |
 |---|---|---|
 | C팀 WebSocket 서버 | 좌석 실시간 현황 | `ws://192.168.0.220` |
-| B팀 Step Functions + Lambda | SQS 취소 이벤트 기반 순차 재판매·Secret Link 발급 | `queuing-cancellation-events` |
+| B팀 Step Functions + Lambda | SQS 취소 이벤트 기반 순차 재판매·Secret Link 발급. 콜백: `/verify-link/complete`, `/verify-link/expire` | `queuing-cancellation-events` SQS + `B_CALLBACK_BASE_URL` |
 | LocalStack | AWS SES/SNS 로컬 에뮬레이션 | `http://192.168.0.191:4566` |
 
 ---
@@ -704,8 +721,9 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `RECAPTCHA_REQUIRED` | *(설정값에 따름)* | `false`로 설정하면 비상 시 reCAPTCHA 검증을 일시 비활성화 |
 | `RECAPTCHA_SCORE_THRESHOLD` | `0.5` | reCAPTCHA v3 최소 허용 점수 |
 | `RECAPTCHA_ALLOWED_HOSTNAMES` | *(없음)* | 검증 응답 hostname 허용 목록. 개발 환경은 `localhost` 권장 |
-| `CANCELLATION_EVENTS_QUEUE_URL` | *(없음; AWS 운영 필수)* | B파트 재판매 파이프라인 `queuing-cancellation-events` SQS 큐 URL |
+| `CANCELLATION_EVENTS_QUEUE_URL` | *(없음; AWS 운영 필수)* | B파트 재판매 파이프라인 `queuing-cancellation-events` SQS 큐 URL. 미설정 시 outbox에 저장 |
 | `SQS_CANCELLATION_EVENTS_QUEUE_URL` | *(없음)* | 위 변수의 호환용 별칭 |
+| `B_CALLBACK_BASE_URL` | *(없음)* | B파트 Step Functions Lambda Function URL. 설정 시 `/respond`·`/expire`가 B파트에 포워드 |
 
 ---
 
@@ -801,6 +819,19 @@ metrics:
 ```
 
 수집되는 주요 커스텀 메트릭: `queuing_queue_eligible`, `queuing_queue_standby`, `queuing_queue_admitted`, `queuing_seats_available`, `queuing_seats_held`, `queuing_seats_sold`, `queuing_lock_attempts_total`, `queuing_seat_events_total`, `queuing_timer_expirations_total`, `queuing_http_request_duration_seconds`.
+
+### Kubernetes Helm 차트의 B파트 재판매 파이프라인 연동 설정
+
+`redis-api-chart`는 B파트 SQS 큐 URL과 콜백 API 주소를 `values.yaml`의 `env` 섹션에서 관리한다. 두 값 모두 선택사항이며, 미설정 시 A파트가 로컬 DB를 직접 업데이트한다.
+
+```yaml
+# redis-api-chart 배포 override 예시
+env:
+  cancellationEventsQueueUrl: "https://sqs.ap-northeast-2.amazonaws.com/123456789/queuing-cancellation-events"
+  bCallbackBaseUrl: "https://xxxxxxxxxx.lambda-url.ap-northeast-2.on.aws"
+```
+
+SQS 권한: 워커 노드 IAM Role 또는 IRSA에 `sqs:SendMessage` 권한을 추가한다. B파트 콜백 URL은 Lambda Function URL 또는 API Gateway 주소를 사용한다.
 
 ### Kubernetes Helm 차트의 네임스페이스 설정
 

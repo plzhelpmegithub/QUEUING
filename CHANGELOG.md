@@ -1,3 +1,68 @@
+## [2026-09-14 17:18] 업데이트 로그 — B파트 피드백 반영 (콜백 재시도 큐, 인증 헤더, 스코프 제한 세션)
+
+### 🔄 변경 및 수정 사항
+- **[src/services/bPartCallbackService.js]**: `B_CALLBACK_SECRET` 환경변수로 `X-Callback-Secret` 인증 헤더 추가. B파트와 공유 시크릿으로 요청 출처 검증
+- **[src/services/bPartCallbackService.js]**: `saveCallbackToOutbox(action, payload)` 및 `relayCallbackOutbox()` 함수 추가 — 콜백 실패 시 로컬 DB 폴백 대신 `callback_outbox` 테이블에 저장 후 30초 주기 재시도
+- **[src/routes/cancelQueueRoutes.js]**: `/respond`, `/expire` 콜백 실패 시 로컬 `markResponded`/`expireAllocation` 폴백을 제거하고, `saveCallbackToOutbox()`로 재시도 큐 저장 + 202 Accepted 반환
+- **[src/services/authTokenService.js]**: `issueScopedCancelToken()` 함수 추가 — `cancel_link_session` 타입 JWT 발급. 만료는 allocation.expiresAt과 동기화
+- **[src/services/authTokenService.js]**: `verifyAccessToken()`이 `cancel_link_session` 타입도 수용하도록 확장. scope/eventId/allocationId 정보를 반환
+- **[src/middleware/auth.js]**: 스코프 제한 세션(`scope: cancel_queue`) 감지 시 `/cancel-queue/*`, `/verify-link`, `/seats/*` 경로만 허용하고 나머지 403 차단
+- **[src/routes/cancelQueueRoutes.js]**: `/verify-link` 엔드포인트가 `accessToken` (스코프 제한 JWT)을 응답에 포함. 프론트엔드가 이 토큰으로 인증
+- **[src/services/dbService.js]**: `callback_outbox` 테이블 추가 (action, payload, status, attempts, last_error, created_at, sent_at). 전체 테이블 수 10→11
+- **[src/app.js]**: `relayCallbackOutbox` 30초 인터벌 워커 등록
+- **[nginx/src/pages/verifyLink.js]**: 서버가 발급한 `data.accessToken`을 `login()` 세션에 저장 — 기존 빈 토큰 대신 스코프 제한 JWT 사용
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트 콜백 실패 시 A파트가 로컬 DB를 직접 업데이트하면 Step Functions 상태와 DB 상태가 불일치(SFN은 대기 중인데 DB만 RESPONDED) → 다음 순번 미배정 또는 좌석 중복 배정 가능
+- **원인(Cause):** 콜백 실패 폴백이 "로컬 DB 직접 UPDATE"로 구현되어 있어 B파트 파이프라인이 상태 변화를 감지 못함
+- **해결(Solution):** 폴백을 `callback_outbox` 테이블 저장으로 변경. 30초 주기 릴레이 워커가 최대 5회 재시도 후 FAILED 마킹. 클라이언트에는 202 Accepted 반환
+
+- **증상(Issue):** B_CALLBACK_BASE_URL만 알면 인증 없이 타인의 할당을 complete/expire 처리 가능
+- **원인(Cause):** 콜백 API에 인증 메커니즘 부재
+- **해결(Solution):** `B_CALLBACK_SECRET` 공유 시크릿을 `X-Callback-Secret` 헤더로 전송. B파트에서 수신 시 검증 로직 추가 필요
+
+- **증상(Issue):** /verify-link 간이 로그인으로 전체 계정 세션이 생성되어 링크 유출 시 계정 전체 접근 가능
+- **원인(Cause):** 기존 `login()` 호출이 일반 로그인과 동일한 세션을 생성
+- **해결(Solution):** `cancel_link_session` 타입의 스코프 제한 JWT 발급 (allocation 만료와 동기화). `authenticate` 미들웨어가 이 토큰의 접근 경로를 `/cancel-queue/*`, `/verify-link`, `/seats/*`로 제한
+
+---
+
+## [2026-09-14 16:36] 업데이트 로그 — B파트 재판매 파이프라인 연동 수정
+
+### 🔄 변경 및 수정 사항
+- **[src/services/cancelAllocationService.js]**: `createAllocation` 함수 및 `issueCancelLinkToken` import 제거 — 링크 발급 경로를 B파트 단일화
+- **[src/services/cancelAllocationService.js]**: `markResponded`, `markExpired`를 `allocation_id` 기준 UPDATE로 변경 — `seat_id`가 NULL인 B파트 할당을 정상 처리
+- **[src/services/cancelAllocationService.js]**: `expireAllOverdue`를 단일 UPDATE 쿼리로 변경 — 만료 대상이 아닌 최신 할당을 잘못 만료시키는 쿼리 버그 수정
+- **[src/services/cancelAllocationService.js]**: `expireAllocation`에서 `seatId`가 null인 할당의 좌석 해제 분기 추가
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/hold`에서 `allocation.seatId`가 없는 경우(B파트가 좌석 미지정으로 발급) 사용자 좌석 선택 허용
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/respond`, `/cancel-queue/expire` — `B_CALLBACK_BASE_URL` 설정 시 B파트 콜백 API로 포워딩, 실패 시 로컬 폴백
+- **[src/routes/cancelQueueRoutes.js]**: `POST /verify-link` 엔드포인트 신설 — cancelLinkToken JWT를 검증하고 할당 정보 + 선택 가능 좌석 반환
+- **[src/services/cancellationEventPublisher.js]**: SQS 페이로드에 `reservation_id`, `dedup_key` 필드 추가
+- **[src/services/cancellationEventPublisher.js]**: SQS 발행 실패 시 `cancellation_outbox` 테이블에 저장하는 outbox 패턴 구현 + 30초 주기 릴레이
+- **[src/services/dbService.js]**: `cancellation_outbox` 테이블 신규 생성 (event_payload JSON, attempts, last_error)
+- **[src/services/dbService.js]**: `cancelReservation`이 취소된 예약의 `reservation_id`를 반환하도록 변경
+- **[src/services/seatService.js]**: `publishCancellationEvent` 호출 시 `reservationId` 전달
+- **[src/services/bPartCallbackService.js]**: B파트 Step Functions 콜백 서비스 신규 생성 (`callbackComplete`, `callbackExpire`)
+- **[src/config/mariadb.js]**: 커넥션 타임존을 `'+00:00'`으로 변경 + `initSql`로 세션 `time_zone` 명시. B파트 PyMySQL과 UTC 통일
+- **[src/app.js]**: outbox 릴레이 워커 30초 주기 등록
+- **[redis-api-chart/values.yaml]**: `env.cancellationEventsQueueUrl`, `env.bCallbackBaseUrl` 추가
+- **[redis-api-chart/templates/deployment.yaml]**: `CANCELLATION_EVENTS_QUEUE_URL`, `B_CALLBACK_BASE_URL` 환경변수 조건부 주입
+- **[.env / .env.example]**: `B_CALLBACK_BASE_URL`, `CANCELLATION_EVENTS_QUEUE_URL` 환경변수 추가
+
+### 프론트엔드 변경
+- **[nginx/src/pages/verifyLink.js]**: 이메일 Secret Link 착지 페이지 신규 생성 — 토큰 기반 비로그인 진입 허용
+- **[nginx/src/pages/privateLink.js]**: 비로그인 접근 허용, 타이머 바를 서버 응답 `remainingSeconds` 기준으로 변경 (5분 하드코딩 제거), `seatId` null일 때 "선택 가능" 표시
+- **[nginx/src/main.js]**: `/verify-link` 라우트 등록
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트가 `seat_id = NULL`로 만든 할당 행에 대해 `/cancel-queue/hold`가 무조건 409 반환, `markResponded`/`markExpired`도 SQL `NULL = ?` 불일치로 매칭 실패
+- **원인(Cause):** 모든 쿼리가 `WHERE seat_id = ?` 조건을 사용하여 NULL과 비교 시 false. `ORDER BY created_at DESC LIMIT 1`이 만료 대상이 아닌 최신 행을 잡을 수 있었음
+- **해결(Solution):** `allocation_id` 기반 UPDATE로 전환. `/hold`에서 `allocation.seatId`가 없으면 사용자 선택 좌석 허용
+
+- **증상(Issue):** SQS 발행 실패 시 취소 이벤트가 영구 유실되어 B파트가 해당 좌석 재판매를 인지하지 못함
+- **원인(Cause):** `publishCancellationEvent`가 fire-and-forget 구조로, 예외 발생 시 catch에서 로그만 남기고 이벤트 소실
+- **해결(Solution):** outbox 패턴 도입 — 발행 실패 시 `cancellation_outbox` 테이블에 저장, 30초 주기 릴레이 워커가 최대 3회 재시도
+
 ## [2026-09-14 12:53] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

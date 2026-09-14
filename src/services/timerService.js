@@ -5,7 +5,7 @@ const { timerExpirations } = require('./metricsService');
 const TIMER_PREFIX = 'timer:seat:';
 const SEAT_PREFIX = 'seat:';
 const HOLD_DURATION_KEY = 'event:hold-duration';
-const DEFAULT_HOLD_DURATION = parseInt(process.env.HOLD_DURATION, 10) || 600;
+const DEFAULT_HOLD_DURATION = parseInt(process.env.HOLD_DURATION, 10) || 60;
 
 // subscribe 모드에 들어가면 다른 명령을 실행할 수 없어서 별도 연결 필요
 let subscriber = null;

@@ -4,6 +4,9 @@ const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
 const { getRawToken } = require('../services/tokenService');
 const { guardRecaptcha } = require('../services/recaptchaService');
+const bCallback = require('../services/bPartCallbackService');
+const { verifyCancelLinkToken } = require('../services/cancelLinkTokenService');
+const { issueScopedCancelToken } = require('../services/authTokenService');
 const {
   authenticate,
   requireRole,
@@ -88,8 +91,11 @@ async function cancelQueueRoutes(fastify) {
     }
 
     const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
-    if (!allocation || allocation.seatId !== seatId) {
-      return reply.status(409).send({ success: false, reason: 'allocation_required', message: '본인에게 배정된 취소표 좌석이 아닙니다.' });
+    if (!allocation) {
+      return reply.status(409).send({ success: false, reason: 'allocation_required', message: '본인에게 배정된 취소표 할당이 없습니다.' });
+    }
+    if (allocation.seatId && allocation.seatId !== seatId) {
+      return reply.status(409).send({ success: false, reason: 'seat_mismatch', message: '배정된 좌석과 요청한 좌석이 다릅니다.' });
     }
 
     const context = {
@@ -114,6 +120,23 @@ async function cancelQueueRoutes(fastify) {
     if (!userId || !eventId) {
       return reply.status(400).send({ error: 'userId와 eventId는 필수입니다.' });
     }
+
+    if (bCallback.isConfigured()) {
+      const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
+      if (!allocation) {
+        return reply.status(409).send({ success: false, message: '활성화된 취소표 할당이 없습니다.' });
+      }
+      const payload = { userId, eventId, seatId: seatId || allocation.seatId, allocationId: allocation.id };
+      try {
+        await bCallback.callbackExpire(payload);
+        return reply.send({ success: true, message: '취소표 만료가 B파트 파이프라인으로 전달되었습니다.' });
+      } catch (err) {
+        console.error('[CancelQueue] B callback /expire 실패 → 재시도 큐 저장:', err.message);
+        await bCallback.saveCallbackToOutbox('expire', payload, err.message);
+        return reply.status(202).send({ success: true, queued: true, message: '콜백 전달에 실패하여 재시도 큐에 저장되었습니다.' });
+      }
+    }
+
     const result = await cancelAllocationService.expireAllocation(userId, eventId, seatId, getQueueContext(request, eventId));
     return reply.status(result.success ? 200 : 409).send(result);
   });
@@ -123,6 +146,23 @@ async function cancelQueueRoutes(fastify) {
     if (!userId || !eventId || !seatId) {
       return reply.status(400).send({ error: 'userId, eventId, seatId는 필수입니다.' });
     }
+
+    if (bCallback.isConfigured()) {
+      const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
+      if (!allocation) {
+        return reply.status(409).send({ success: false, message: '활성화된 취소표 할당이 없습니다.' });
+      }
+      const payload = { userId, eventId, seatId, allocationId: allocation.id };
+      try {
+        await bCallback.callbackComplete(payload);
+        return reply.send({ success: true, message: '좌석 확정이 B파트 파이프라인으로 전달되었습니다.' });
+      } catch (err) {
+        console.error('[CancelQueue] B callback /complete 실패 → 재시도 큐 저장:', err.message);
+        await bCallback.saveCallbackToOutbox('complete', payload, err.message);
+        return reply.status(202).send({ success: true, queued: true, message: '콜백 전달에 실패하여 재시도 큐에 저장되었습니다.' });
+      }
+    }
+
     const result = await cancelAllocationService.markResponded(userId, seatId, eventId);
     return reply.send({ success: result.affected > 0, ...result });
   });
@@ -158,6 +198,54 @@ async function cancelQueueRoutes(fastify) {
     const { eventId } = request.params;
     const history = await cancelAllocationService.getAllocationHistory(eventId);
     return reply.send({ allocations: history, count: history.length });
+  });
+
+  fastify.post('/verify-link', async (request, reply) => {
+    const { token } = request.body || {};
+    if (!token) {
+      return reply.status(400).send({ valid: false, reason: 'missing', message: 'token은 필수입니다.' });
+    }
+
+    const result = verifyCancelLinkToken(token);
+    if (!result.valid) {
+      return reply.status(401).send(result);
+    }
+
+    const allocation = await cancelAllocationService.getActiveAllocation(result.userId, result.eventId);
+    if (!allocation) {
+      return reply.status(410).send({ valid: false, reason: 'expired', message: '할당이 만료되었거나 존재하지 않습니다.' });
+    }
+
+    const remainingSeconds = Math.max(0, Math.floor((new Date(allocation.expiresAt).getTime() - Date.now()) / 1000));
+
+    const availableSeats = allocation.seatId
+      ? [allocation.seatId]
+      : (await seatService.getAllSeats(result.eventId, {
+          eventId: result.eventId,
+          sessionDate: allocation.sessionDate,
+          sessionTime: allocation.sessionTime,
+        })).filter(s => s.status === 'AVAILABLE').map(s => s.seatId);
+
+    const scopedToken = issueScopedCancelToken(
+      allocation.userId,
+      allocation.eventId,
+      allocation.id,
+      remainingSeconds,
+    );
+
+    return reply.send({
+      valid: true,
+      userId: allocation.userId,
+      eventId: allocation.eventId,
+      allocationId: allocation.id,
+      seatId: allocation.seatId || null,
+      availableSeats,
+      sessionDate: allocation.sessionDate,
+      sessionTime: allocation.sessionTime,
+      expiresAt: allocation.expiresAt,
+      remainingSeconds,
+      accessToken: scopedToken,
+    });
   });
 }
 

@@ -33,6 +33,25 @@ function authenticate(request, reply, done) {
   }
 
   request.authUser = { userId: result.userId, role: result.role };
+
+  if (result.scope === 'cancel_queue') {
+    request.authUser.scope = 'cancel_queue';
+    request.authUser.eventId = result.eventId;
+    request.authUser.allocationId = result.allocationId;
+    const urlPath = request.url.split('?')[0];
+    const allowed = urlPath.startsWith('/cancel-queue')
+      || urlPath.startsWith('/verify-link')
+      || urlPath.startsWith('/seats');
+    if (!allowed) {
+      reply.status(403).send({
+        success: false,
+        code: 'scope_restricted',
+        message: '취소표 링크 세션으로는 해당 기능에 접근할 수 없습니다.',
+      });
+      return;
+    }
+  }
+
   done();
 }
 

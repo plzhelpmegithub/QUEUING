@@ -8,7 +8,8 @@ const pool = mariadb.createPool({
   database: process.env.DB_NAME || 'queuing_db',
   connectionLimit: 10,
   allowPublicKeyRetrieval: true,
-  timezone: 'Etc/UTC',
+  timezone: '+00:00',
+  initSql: "SET time_zone = '+00:00'",
 });
 
 pool.getConnection()
