@@ -59,7 +59,7 @@ resource "aws_db_instance" "mariadb" {
       error_message = "use_rds = true 이면 db_password 를 채워야 한다. export TF_VAR_db_password='...' 또는 terraform.tfvars 에 넣을 것."
     }
   }
-  port     = 3306
+  port = 3306
 
   db_subnet_group_name   = aws_db_subnet_group.main[0].name
   vpc_security_group_ids = [aws_security_group.rds[0].id]

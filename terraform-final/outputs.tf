@@ -9,10 +9,10 @@ output "route53_nameservers" {
 output "service_urls" {
   description = "실제 서비스 주소"
   value = {
-    프론트엔드   = "https://${local.frontend_domain}"
-    API         = "https://${local.api_domain}"
-    WebSocket   = "wss://${local.api_domain}/ws?token=<JWT>"
-    헬스체크_C   = "https://${local.api_domain}/healthz"
+    프론트엔드     = "https://${local.frontend_domain}"
+    API       = "https://${local.api_domain}"
+    WebSocket = "wss://${local.api_domain}/ws?token=<JWT>"
+    헬스체크_C    = "https://${local.api_domain}/healthz"
   }
 }
 
@@ -147,7 +147,7 @@ output "dcloud_connection" {
     sftp_host = var.dcloud_host
     sftp_port = var.dcloud_sftp_port
     user      = var.dcloud_db_user
-    비고      = "온프레미스에서 쓰던 값과 동일하다. NAT 게이트웨이를 거쳐 공인망으로 나간다."
+    비고        = "온프레미스에서 쓰던 값과 동일하다. NAT 게이트웨이를 거쳐 공인망으로 나간다."
   }
 }
 
@@ -199,28 +199,28 @@ output "monthly_cost_estimate" {
   DESC
 
   value = {
-    "EKS 컨트롤플레인"          = "~$73   (1.34 표준지원 $0.10/h — 1.33 이하면 $438)"
-    "EKS 워커노드"              = "~$61   (${var.eks_node_instance_type} × ${var.eks_node_desired_size}, 최대 ${var.eks_node_max_size}대까지 증가)"
-    "NAT 게이트웨이"            = "~$33   + 데이터 처리 $0.045/GB"
-    "ElastiCache"               = "~$25   (${var.redis_node_type} × ${var.redis_num_replicas + 1})"
-    "ALB"                       = "~$20   + LCU"
-    "Jenkins EC2"               = var.jenkins_enabled ? "~$22   (${var.jenkins_instance_type} + EBS ${var.jenkins_volume_size}GB)" : "$0   (jenkins_enabled = false)"
-    "WAF"                       = var.waf_enabled ? "~$10   (Web ACL $5 + 규칙 4개 $4)" : "$0   (waf_enabled = false)"
-    "VPC Flow Logs"             = var.flow_logs_enabled ? "~$3    (수집 $0.50/GB, 보관 ${var.flow_logs_retention_days}일, 대상 ${var.flow_logs_traffic_type})" : "$0   (flow_logs_enabled = false)"
-    "CloudWatch 로그"           = "~$3    (EKS 컨트롤플레인 audit 이 대부분)"
-    "RDS"                       = var.use_rds ? "~$15   (${var.db_instance_class})" : "$0   (use_rds = false — 외부 D-Cloud 사용)"
-    "Route 53"                  = "~$0.50 (ACM 인증서는 무료)"
-    "기타"                      = "~$6    (ECR, S3, SQS, DynamoDB, SES, Secrets Manager)"
-    "합계"                      = "약 $256/월  (기본 설정 기준, 데이터 전송료 별도)"
+    "EKS 컨트롤플레인"    = "~$73   (1.34 표준지원 $0.10/h — 1.33 이하면 $438)"
+    "EKS 워커노드"      = "~$61   (${var.eks_node_instance_type} × ${var.eks_node_desired_size}, 최대 ${var.eks_node_max_size}대까지 증가)"
+    "NAT 게이트웨이"     = "~$33   + 데이터 처리 $0.045/GB"
+    "ElastiCache"   = "~$25   (${var.redis_node_type} × ${var.redis_num_replicas + 1})"
+    "ALB"           = "~$20   + LCU"
+    "Jenkins EC2"   = var.jenkins_enabled ? "~$22   (${var.jenkins_instance_type} + EBS ${var.jenkins_volume_size}GB)" : "$0   (jenkins_enabled = false)"
+    "WAF"           = var.waf_enabled ? "~$10   (Web ACL $5 + 규칙 4개 $4)" : "$0   (waf_enabled = false)"
+    "VPC Flow Logs" = var.flow_logs_enabled ? "~$3    (수집 $0.50/GB, 보관 ${var.flow_logs_retention_days}일, 대상 ${var.flow_logs_traffic_type})" : "$0   (flow_logs_enabled = false)"
+    "CloudWatch 로그" = "~$3    (EKS 컨트롤플레인 audit 이 대부분)"
+    "RDS"           = var.use_rds ? "~$15   (${var.db_instance_class})" : "$0   (use_rds = false — 외부 D-Cloud 사용)"
+    "Route 53"      = "~$0.50 (ACM 인증서는 무료)"
+    "기타"            = "~$6    (ECR, S3, SQS, DynamoDB, SES, Secrets Manager)"
+    "합계"            = "약 $256/월  (기본 설정 기준, 데이터 전송료 별도)"
 
-    "비용을_줄이려면"           = join(" / ", [
+    "비용을_줄이려면" = join(" / ", [
       "waf_enabled = false (-$10)",
       "flow_logs_enabled = false (-$3)",
       "jenkins_enabled = false (-$22)",
       "redis_num_replicas = 0 (-$12, 페일오버 없어짐)",
     ])
 
-    "⚠️ 가장_큰_함정"           = "eks_cluster_version 을 1.33 이하로 되돌리면 확장 지원 요금($0.60/h)이 적용되어 컨트롤플레인만 월 $438 이 된다 (+$365)"
+    "⚠️ 가장_큰_함정" = "eks_cluster_version 을 1.33 이하로 되돌리면 확장 지원 요금($0.60/h)이 적용되어 컨트롤플레인만 월 $438 이 된다 (+$365)"
   }
 }
 
@@ -260,7 +260,7 @@ output "ses_smtp_username" {
 
 output "ses_smtp_password" {
   description = "SES SMTP 비밀번호 — terraform output -raw ses_smtp_password 로 확인"
-  value = join("", aws_iam_access_key.ses_smtp[*].ses_smtp_password_v4)
+  value       = join("", aws_iam_access_key.ses_smtp[*].ses_smtp_password_v4)
   sensitive   = true
 }
 

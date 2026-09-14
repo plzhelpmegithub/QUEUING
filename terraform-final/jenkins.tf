@@ -231,9 +231,9 @@ resource "aws_instance" "jenkins" {
   }
 
   root_block_device {
-    volume_size           = var.jenkins_volume_size
-    volume_type           = "gp3"
-    encrypted             = true
+    volume_size = var.jenkins_volume_size
+    volume_type = "gp3"
+    encrypted   = true
     # ⚠️ true 로 바꿨다 (2026-09-09).
     # false 로 두면 destroy 후에도 볼륨이 남는데, 다시 apply 해도 테라폼이
     # 그 볼륨을 새 인스턴스에 다시 붙여주지 않는다. 결과적으로 젠킨스 설정은

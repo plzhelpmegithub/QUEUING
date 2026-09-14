@@ -44,7 +44,7 @@ resource "aws_elasticache_parameter_group" "redis" {
 }
 
 resource "aws_elasticache_subnet_group" "redis" {
-  name = "${var.project}-redis-subnet"
+  name       = "${var.project}-redis-subnet"
   subnet_ids = aws_subnet.private[*].id
 
   tags = { Name = "${var.project}-redis-subnet" }
@@ -58,7 +58,7 @@ resource "aws_elasticache_replication_group" "redis" {
   # 찬규 안의 변수화 방식을 가져왔다. 0 으로 두면 단일 노드가 되고,
   # 그때는 자동 페일오버/Multi-AZ 를 켤 수 없다(AWS 가 거부한다).
   num_cache_clusters = var.redis_num_replicas + 1
-  engine               = "redis"
+  engine             = "redis"
   # ⚠️ 온프레미스는 Redis 8.10.1 인데 여기는 7.1 이다 — 오타가 아니다.
   #
   # ElastiCache 의 engine = "redis" 는 Redis OSS 7.1 이 최대 버전이다. Redis 8 은
@@ -79,7 +79,7 @@ resource "aws_elasticache_replication_group" "redis" {
   # 그대로 쓴다. 다만 팀이 한 번도 Valkey 로 테스트한 적이 없고, 발표에서
   # "왜 Redis 가 아니라 Valkey 인가"를 설명해야 한다. 지금은 온프레미스와
   # 같은 계열(Redis)을 유지한다 — 바꾸기로 하면 한 줄이다.
-  engine_version = "7.1"
+  engine_version       = "7.1"
   port                 = 6379
   parameter_group_name = aws_elasticache_parameter_group.redis.name
 

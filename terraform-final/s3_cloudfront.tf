@@ -3,7 +3,7 @@
 # ──────────────────────────────────────────────
 
 resource "aws_s3_bucket" "frontend" {
-  bucket        = "${var.project}-frontend-${data.aws_caller_identity.current.account_id}"
+  bucket = "${var.project}-frontend-${data.aws_caller_identity.current.account_id}"
   # 찬규 안에서 가져옴 — 내 쪽은 무조건 true 였다.
   # true 면 버킷에 파일이 있어도 terraform destroy 가 통째로 지운다. 개발 중에는
   # 편하지만 prod 에서 실수 한 번이면 프론트엔드가 사라진다.
@@ -112,7 +112,7 @@ resource "aws_cloudfront_distribution" "frontend" {
         #
         # 같은 이유로 Connection, Transfer-Encoding, Cache-Control 등도 금지다.
         # Sec-WebSocket-* 는 "Other-defined headers" 라 허용된다.
-        headers      = ["Host", "Origin", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol"]
+        headers = ["Host", "Origin", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol"]
         cookies { forward = "all" }
       }
 

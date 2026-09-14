@@ -104,7 +104,7 @@ resource "aws_iam_role_policy" "ses_send" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
+      Effect = "Allow"
       # ⚠️ SNS 를 추가했다 (2026-09-09).
       #
       # A파트 src/services/notificationService.js 가 SES 뿐 아니라 SNS 도 쓴다.
