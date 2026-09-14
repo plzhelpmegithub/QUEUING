@@ -1,3 +1,11 @@
+## [2026-09-14 11:00] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[redis-api-chart/templates/servicemonitor.yaml]**: Prometheus Operator ServiceMonitor CRD 템플릿 신규 생성. `metrics.serviceMonitor.enabled: true`일 때 Prometheus가 자동으로 API 서비스를 스크래핑 대상으로 등록
+- **[redis-api-chart/values.yaml]**: `metrics` 섹션 추가 — `/metrics` 경로, ServiceMonitor interval/scrapeTimeout/labels 설정 가능. `metrics.enabled: true`이면 Pod/Service에 Prometheus 어노테이션 자동 주입
+- **[redis-api-chart/templates/deployment.yaml]**: `metrics.enabled` 조건부로 Pod에 `prometheus.io/scrape`, `prometheus.io/port`, `prometheus.io/path` 어노테이션 자동 추가
+- **[redis-api-chart/templates/service.yaml]**: Service metadata에 동일한 Prometheus 어노테이션 추가 (annotation 기반 디스커버리 지원)
+
 ## [2026-09-11 17:54] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

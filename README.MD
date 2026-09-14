@@ -766,6 +766,40 @@ kubectl -n queuing-a create secret generic auth-credentials \
 
 초기 관리자 계정을 새로 만들 때만 별도 bootstrap Secret을 사용한다. 기존 계정의 비밀번호는 덮어쓰지 않으며, 레거시 모니터링 계정은 더 이상 로그인할 수 없으므로 DB에서 별도로 삭제해야 한다. Secret 생성과 Helm 배포는 인프라 담당자가 수행한다.
 
+### Kubernetes Helm 차트의 Prometheus 메트릭 수집 설정
+
+API 서버는 `prom-client`로 `/metrics` 엔드포인트를 노출한다. Helm 차트는 두 가지 방식으로 Prometheus 수집을 지원한다.
+
+**1) Annotation 기반 디스커버리** — `metrics.enabled: true` (기본값)
+
+Pod와 Service에 `prometheus.io/*` 어노테이션이 자동 추가된다. 독립 Prometheus EC2든 클러스터 내 Prometheus든, `kubernetes_sd_configs`의 `__meta_kubernetes_pod_annotation_prometheus_io_scrape` relabel로 자동 타겟 등록 가능.
+
+```yaml
+# values.yaml
+metrics:
+  enabled: true
+  path: "/metrics"
+```
+
+**2) ServiceMonitor CRD** — `metrics.serviceMonitor.enabled: true`
+
+`kube-prometheus-stack`(Prometheus Operator)이 설치된 클러스터에서 사용. ServiceMonitor 리소스가 생성되어 Prometheus가 자동으로 타겟을 등록하고, Grafana 통합 대시보드에 `queuing_*` 메트릭이 바로 표시된다.
+
+```yaml
+# values.yaml
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: "15s"
+    scrapeTimeout: "10s"
+    # Prometheus Operator의 serviceMonitorSelector 라벨과 일치해야 함
+    labels:
+      release: "kube-prometheus-stack"
+```
+
+수집되는 주요 커스텀 메트릭: `queuing_queue_eligible`, `queuing_queue_standby`, `queuing_queue_admitted`, `queuing_seats_available`, `queuing_seats_held`, `queuing_seats_sold`, `queuing_lock_attempts_total`, `queuing_seat_events_total`, `queuing_timer_expirations_total`, `queuing_http_request_duration_seconds`.
+
 ### Kubernetes Helm 차트의 네임스페이스 설정
 
 현재 `redis-api-chart`의 Deployment, Service, HPA, ServiceAccount 템플릿은 `queuing-a`를 직접 사용한다. 따라서 인증·DB·reCAPTCHA·SMTP Secret도 `queuing-a`에 생성해야 한다. 릴리스 기록까지 같은 네임스페이스로 관리하려면 Helm 실행에도 `-n queuing-a`를 지정한다. 기본 MariaDB 접속 계정은 `root`이며, 비밀번호는 `mariadb-credentials` Secret에서 주입한다.

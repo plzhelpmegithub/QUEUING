@@ -13,6 +13,12 @@ metadata:
   namespace: queuing-a
   labels:
     {{- include "redis-api-chart.labels" . | nindent 4 }}
+  {{- if .Values.metrics.enabled }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.service.port | quote }}
+    prometheus.io/path: {{ .Values.metrics.path | default "/metrics" | quote }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   ports:

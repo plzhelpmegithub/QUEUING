@@ -304,3 +304,30 @@ volumeMounts: []
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# -----------------------------------------------------------------------------
+# [Prometheus 메트릭] prom-client가 노출하는 /metrics 엔드포인트 수집 설정.
+#
+# (1) Annotation 기반 디스커버리 (metrics.enabled: true)
+#     → Pod에 prometheus.io/* 어노테이션을 자동 추가.
+#     → 독립 Prometheus EC2든 클러스터 내 Prometheus든,
+#       kubernetes_sd_configs + relabel로 어노테이션 기반 자동 스크래핑 가능.
+#
+# (2) ServiceMonitor CRD (metrics.serviceMonitor.enabled: true)
+#     → kube-prometheus-stack(Prometheus Operator)이 설치된 클러스터에서 사용.
+#     → ServiceMonitor 리소스가 생성되어 Prometheus가 자동으로 타겟 등록.
+#     → Grafana 통합 대시보드에 queuing_* 메트릭이 바로 표시됨.
+#
+# 두 방식은 독립적으로 사용할 수도 있고, 동시에 켤 수도 있다.
+# -----------------------------------------------------------------------------
+metrics:
+  enabled: true
+  path: "/metrics"
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: "15s"
+    scrapeTimeout: "10s"
+    # Prometheus Operator의 serviceMonitorSelector에 매칭되어야 하는 추가 라벨.
+    # 예: labels: { release: "kube-prometheus-stack" }
+    labels: {}
