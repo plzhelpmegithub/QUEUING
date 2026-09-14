@@ -144,10 +144,10 @@ env:
 #   kubectl -n queuing-a create secret generic b-callback-credentials \
 #     --from-literal=B_CALLBACK_SECRET='<32자 이상 랜덤 값>'
 # -----------------------------------------------------------------------------
-# bCallbackAuth:
-#   secret:
-#     name: "b-callback-credentials"
-#     key: "B_CALLBACK_SECRET"
+bCallbackAuth:
+  secret:
+    name: "b-callback-credentials"
+    key: "B_CALLBACK_SECRET"
 
 # -----------------------------------------------------------------------------
 # [SMTP 이메일 발송] Gmail 등 외부 SMTP를 사용할 때의 비밀정보 주입 설정.

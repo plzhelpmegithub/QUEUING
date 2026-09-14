@@ -19,7 +19,7 @@ type: application
 # 차트 버전 (Semantic Versioning)
 # 차트 구조나 템플릿을 수정할 때마다 올려야 함.
 # 예: 템플릿 변경 → 0.1.0 → 0.2.0
-version: 1.1.6
+version: 1.1.7
 
 # 애플리케이션 버전 — 이 차트가 배포하는 앱(API 서버)의 버전.
 # image.tag의 기본 fallback으로도 사용됨.
