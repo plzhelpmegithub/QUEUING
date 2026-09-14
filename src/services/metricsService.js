@@ -1,6 +1,12 @@
 const client = require('prom-client'); // Prometheus 클라이언트 라이브러리
 const redis = require('../config/redis');
 
+// 좌석 상태 변경 시 seatService가 HINCRBY로 유지하는 전역 집계 해시.
+// /metrics 요청에서는 이 키만 읽고 좌석 개별 키를 조회하지 않는다.
+const SEAT_METRICS_KEY = 'seat:metrics:aggregate';
+const SEAT_METRICS_LOCK_KEY = 'lock:seat-metrics-migration';
+const SEAT_METRIC_FIELDS = ['total', 'available', 'held', 'sold'];
+
 // ===== 기본 메트릭 수집 (CPU, 메모리, 이벤트 루프 등) =====
 client.collectDefaultMetrics({ prefix: 'queuing_' });
 
@@ -65,8 +71,63 @@ const httpRequestDuration = new client.Histogram({
 });
 
 /**
- * Redis에서 현재 값을 읽어 Gauge 메트릭 갱신
- * - Prometheus가 /metrics를 scrape할 때마다 호출
+ * 기존 회차별 좌석 카운터를 전역 집계 해시로 한 번만 이관한다.
+ *
+ * 이 작업은 Prometheus scrape 경로에서 실행하지 않는다. 새 키가 없는
+ * 구버전 Redis에서만 서버 시작 시 수행되며, 이후 좌석 상태 변경은
+ * seatService가 전역 집계를 직접 갱신한다.
+ */
+async function initializeSeatMetricAggregate() {
+  const current = await redis.hlen(SEAT_METRICS_KEY);
+  if (current > 0) return { initialized: false, skipped: true, reason: 'already initialized' };
+
+  const token = `${process.pid}:${Date.now()}:${Math.random()}`;
+  const acquired = await redis.set(SEAT_METRICS_LOCK_KEY, token, 'EX', 60, 'NX');
+  if (acquired !== 'OK') return { initialized: false, skipped: true, reason: 'another migration is running' };
+
+  try {
+    // 여러 파드가 동시에 시작해도 첫 번째 파드만 이관한다.
+    if (await redis.hlen(SEAT_METRICS_KEY) > 0) {
+      return { initialized: false, skipped: true, reason: 'initialized by another pod' };
+    }
+
+    let cursor = '0';
+    const counterKeys = [];
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', 'seat:counter:*', 'COUNT', 100);
+      cursor = nextCursor;
+      counterKeys.push(...keys);
+    } while (cursor !== '0');
+
+    const counts = { total: 0, available: 0, held: 0, sold: 0 };
+    if (counterKeys.length > 0) {
+      const pipeline = redis.pipeline();
+      counterKeys.forEach((key) => pipeline.hgetall(key));
+      const results = await pipeline.exec();
+      results.forEach(([, value]) => {
+        SEAT_METRIC_FIELDS.forEach((field) => {
+          counts[field] += Number(value?.[field]) || 0;
+        });
+      });
+    }
+
+    await redis.hset(SEAT_METRICS_KEY, counts);
+    console.log(`[Metrics] 좌석 집계 초기화 완료 (${counterKeys.length}개 카운터, total=${counts.total})`);
+    return { initialized: true, counterKeys: counterKeys.length, counts };
+  } finally {
+    await redis.eval(
+      'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end',
+      1,
+      SEAT_METRICS_LOCK_KEY,
+      token,
+    );
+  }
+}
+
+/**
+ * Redis에 저장된 값을 읽어 Gauge 메트릭 갱신.
+ * - Prometheus가 /metrics를 scrape할 때마다 O(1) 조회만 수행
+ * - 좌석 개별 키 SCAN/HGET 및 집계 연산은 수행하지 않음
  */
 async function updateGauges() {
   try {
@@ -80,23 +141,10 @@ async function updateGauges() {
     queueStandby.set(standby);
     queueAdmitted.set(admitted);
 
-    // 좌석 수치 — SCAN으로 전체 좌석 상태 집계
-    let available = 0, held = 0, sold = 0;
-    let cursor = '0';
-    do {
-      const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', 'seat:*', 'COUNT', 200);
-      cursor = nextCursor;
-      for (const key of keys) {
-        const status = await redis.hget(key, 'status');
-        if (status === 'AVAILABLE') available++;
-        else if (status === 'HELD') held++;
-        else if (status === 'SOLD') sold++;
-      }
-    } while (cursor !== '0');
-
-    seatsAvailable.set(available);
-    seatsHeld.set(held);
-    seatsSold.set(sold);
+    const seatCounts = await redis.hgetall(SEAT_METRICS_KEY);
+    seatsAvailable.set(Math.max(0, Number(seatCounts.available) || 0));
+    seatsHeld.set(Math.max(0, Number(seatCounts.held) || 0));
+    seatsSold.set(Math.max(0, Number(seatCounts.sold) || 0));
   } catch (err) {
     console.error('[Metrics] Gauge 갱신 실패:', err.message);
   }
@@ -105,6 +153,8 @@ async function updateGauges() {
 module.exports = {
   client,
   updateGauges,
+  initializeSeatMetricAggregate,
+  SEAT_METRICS_KEY,
   lockAttempts,
   seatEvents,
   timerExpirations,

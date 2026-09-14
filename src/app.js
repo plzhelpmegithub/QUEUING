@@ -6,7 +6,12 @@ const queueRoutes = require('./routes/queueRoutes');
 const seatRoutes = require('./routes/seatRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 
-const { client, updateGauges, httpRequestDuration } = require('./services/metricsService');
+const {
+  client,
+  updateGauges,
+  initializeSeatMetricAggregate,
+  httpRequestDuration,
+} = require('./services/metricsService');
 
 fastify.get('/', async (request, reply) => {
   const htmlPath = path.join(__dirname, 'public', 'index.html');
@@ -88,6 +93,12 @@ const start = async () => {
     await initUsersTable();
     const recovery = await recoverWithRetry({ reason: 'startup' });
     console.log('[Server] Redis 시작 복구 결과:', JSON.stringify(recovery));
+    try {
+      await initializeSeatMetricAggregate();
+    } catch (err) {
+      // 메트릭 초기화 실패가 예매 API 자체의 기동을 막지 않도록 한다.
+      console.error('[Metrics] 좌석 집계 초기화 실패:', err.message);
+    }
     startAutoRecovery();
     startRetryWorker();
     startAdmissionWorker();

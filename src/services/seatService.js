@@ -4,6 +4,7 @@ const { acquireLock, releaseLock } = require('./lockService');
 const { startTimer, cancelTimer, getRemaining } = require('./timerService');
 const { publishSeatEvent, EVENT_TYPE } = require('./eventService');
 const { publishCancellationEvent } = require('./cancellationEventPublisher');
+const { SEAT_METRICS_KEY } = require('./metricsService');
 const { saveReservation, cancelReservation } = require('./dbService');
 const { syncToMariaDB } = require('./syncRetryService');
 const { normalizeSessionContext, getScopedKey, sessionFromSeat } = require('./sessionContext');
@@ -50,8 +51,14 @@ async function adjustSeatCounter(eventId, context, from, to) {
   const exists = await redis.exists(key);
   if (!exists) return;
   const pipe = redis.pipeline();
-  if (from) pipe.hincrby(key, from, -1);
-  if (to) pipe.hincrby(key, to, 1);
+  if (from) {
+    pipe.hincrby(key, from, -1);
+    pipe.hincrby(SEAT_METRICS_KEY, from, -1);
+  }
+  if (to) {
+    pipe.hincrby(key, to, 1);
+    pipe.hincrby(SEAT_METRICS_KEY, to, 1);
+  }
   await pipe.exec();
 }
 
@@ -75,8 +82,12 @@ async function initSeats(seatIds, section = '', price = 0, session = {}) {
   await pipeline.exec();
 
   const cKey = seatCounterKey(eventId, sessionContext);
-  await redis.hincrby(cKey, 'total', seatIds.length);
-  await redis.hincrby(cKey, 'available', seatIds.length);
+  const counterPipeline = redis.pipeline();
+  counterPipeline.hincrby(cKey, 'total', seatIds.length);
+  counterPipeline.hincrby(cKey, 'available', seatIds.length);
+  counterPipeline.hincrby(SEAT_METRICS_KEY, 'total', seatIds.length);
+  counterPipeline.hincrby(SEAT_METRICS_KEY, 'available', seatIds.length);
+  await counterPipeline.exec();
 
   const values = seatIds.map(id => [id, eventId, sessionContext.sessionDate, sessionContext.sessionTime, section, price, 'AVAILABLE', '', null]);
   const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
@@ -250,7 +261,22 @@ async function cleanupEventSeats(eventId) {
   do {
     const [nextCursor, cKeys] = await redis.scan(counterCursor, 'MATCH', `seat:counter:${eventId}:*`, 'COUNT', 100);
     counterCursor = nextCursor;
-    if (cKeys.length > 0) await redis.del(...cKeys);
+    if (cKeys.length > 0) {
+      const readPipeline = redis.pipeline();
+      cKeys.forEach((key) => readPipeline.hgetall(key));
+      const counterResults = await readPipeline.exec();
+
+      const deletePipeline = redis.pipeline();
+      cKeys.forEach((key, index) => {
+        const counts = counterResults[index]?.[1] || {};
+        for (const field of ['total', 'available', 'held', 'sold']) {
+          const value = Number(counts[field]) || 0;
+          if (value > 0) deletePipeline.hincrby(SEAT_METRICS_KEY, field, -value);
+        }
+        deletePipeline.del(key);
+      });
+      await deletePipeline.exec();
+    }
   } while (counterCursor !== '0');
 
   return { deleted };
@@ -409,7 +435,14 @@ async function reconcileSeatCounters(eventId, context = {}) {
   }
   if (eventId) {
     const key = seatCounterKey(eventId, context);
-    await redis.hset(key, counts);
+    const previous = await redis.hgetall(key);
+    const pipeline = redis.pipeline();
+    pipeline.hset(key, counts);
+    for (const field of ['total', 'available', 'held', 'sold']) {
+      const delta = counts[field] - (Number(previous[field]) || 0);
+      if (delta !== 0) pipeline.hincrby(SEAT_METRICS_KEY, field, delta);
+    }
+    await pipeline.exec();
   }
   console.log(`[SeatCounter] reconcile ${eventId}: total=${counts.total} avail=${counts.available} held=${counts.held} sold=${counts.sold}`);
   return counts;
@@ -488,7 +521,19 @@ async function recoverSeatsFromMariaDB(eventId, options = {}) {
 
   for (const stats of sessionStats.values()) {
     const cKey = seatCounterKey(eventId, { sessionDate: stats.date, sessionTime: stats.time });
-    await redis.hset(cKey, { total: stats.total, available: stats.available, held: stats.held, sold: stats.sold });
+    const previous = await redis.hgetall(cKey);
+    const counterPipeline = redis.pipeline();
+    counterPipeline.hset(cKey, {
+      total: stats.total,
+      available: stats.available,
+      held: stats.held,
+      sold: stats.sold,
+    });
+    for (const field of ['total', 'available', 'held', 'sold']) {
+      const delta = stats[field] - (Number(previous[field]) || 0);
+      if (delta !== 0) counterPipeline.hincrby(SEAT_METRICS_KEY, field, delta);
+    }
+    await counterPipeline.exec();
   }
 
   for (const stats of sessionStats.values()) {

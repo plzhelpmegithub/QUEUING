@@ -1,3 +1,17 @@
+## [2026-09-14 12:53] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/metricsService.js]**: `/metrics` 요청에서 `seat:*` 전체 `SCAN`과 좌석별 순차 `HGET`을 제거하고, `seat:metrics:aggregate` 해시를 읽어 좌석 Gauge를 갱신하도록 변경
+- **[src/services/metricsService.js]**: 구버전 Redis 호환을 위해 서버 시작 시 전역 집계 키가 없을 때만 기존 `seat:counter:*` 카운터를 pipeline으로 1회 이관하는 초기화 로직 추가
+- **[src/services/seatService.js]**: 좌석 생성·선점·해제·확정·취소·복구·이벤트 삭제 시 회차별 카운터와 전역 좌석 집계 카운터를 함께 `HINCRBY`로 갱신
+- **[src/app.js]**: 서버 기동 과정에서 좌석 전역 집계 초기화를 호출하되, 메트릭 초기화 실패가 API 기동을 막지 않도록 오류를 격리
+- **[README.MD]**: Prometheus 메트릭 집계 방식과 정합성 보정 방법 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `/metrics` 요청마다 약 8.3만 개의 좌석 키를 `SCAN`하고 각 키에 `HGET`을 순차 실행해 45~100초가 걸림. Prometheus scrape timeout으로 요청이 누적되고 API 파드와 공용 ElastiCache 부하가 증가함
+- **원인(Cause):** 좌석 상태 변경 시 저장하던 카운터를 사용하지 않고, Prometheus 요청 경로에서 좌석 전체를 다시 집계함
+- **해결(Solution):** 좌석 상태 변경 지점에서 전역 `seat:metrics:aggregate` 해시를 원자적으로 갱신하고 `/metrics`는 `HGETALL` 1회로 저장된 값을 반환하도록 변경. 기존 데이터는 서버 시작 시 회차별 카운터를 pipeline으로 이관
+
 ## [2026-09-14 11:00] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

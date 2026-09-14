@@ -504,7 +504,9 @@ prom-client 기반 Prometheus 메트릭 수집. `/metrics` 엔드포인트에서
 |---|---|
 | `queuing_http_request_duration_seconds` | HTTP 응답 시간 (method/route/status별, 10ms~5s 구간) |
 
-`updateGauges()`: Prometheus scrape 시 Redis에서 현재 값을 읽어 Gauge 갱신.
+`updateGauges()`: Prometheus scrape 시 Redis의 `seat:metrics:aggregate` 집계 해시와 대기열 집합을 읽어 Gauge를 갱신한다. 좌석 개별 키에 대한 `SCAN`/개별 `HGET`은 실행하지 않으므로 좌석 수가 증가해도 scrape 시간이 좌석 수에 비례해 늘어나지 않는다.
+
+좌석 집계 해시는 `src/services/seatService.js`가 좌석 상태 변경 시 `HINCRBY`로 유지한다. `initializeSeatMetricAggregate()`는 구버전 Redis에 전역 집계 키가 없을 때만 서버 시작 과정에서 기존 회차별 `seat:counter:*` 해시를 한 번 읽어 초기화한다. 집계 정합성 보정은 기존 `POST /seats/reconcile`를 사용한다.
 
 ---
 
