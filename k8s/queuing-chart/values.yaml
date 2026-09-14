@@ -6,8 +6,9 @@ image:
   pullPolicy: IfNotPresent
 
 service:
-  type: ClusterIP   # AWS: 보안상 ClusterIP로 유지 (외부 노출 차단)
+  type: NodePort   # 부하테스트용 ALB 타겟그룹 연결 (노드가 사설 서브넷이라 외부 노출 없음)
   port: 8080
+  nodePort: 30083
 
 env:
   # ⚠️ TODO: RDS 생성 후 실제 엔드포인트로 교체 필요
