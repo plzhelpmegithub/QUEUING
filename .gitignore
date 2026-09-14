@@ -13,3 +13,8 @@ get_helm.sh
 *.jtl
 # JMeter 배포판 (내려받은 도구, 저장소에 둘 것이 아님)
 apache-jmeter-5.6.3/
+
+# vim swap files
+*.swp
+*.swo
+*~
