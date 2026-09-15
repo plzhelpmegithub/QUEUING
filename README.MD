@@ -197,7 +197,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 ```env
 AUTO_ADMISSION_ENABLED=true
 AUTO_ADMISSION_INTERVAL_MS=1000
-BATCH_SIZE=100
+BATCH_SIZE=10
 ```
 
 ---
@@ -214,7 +214,7 @@ BATCH_SIZE=100
 | `GET /seats/timer/:seatId` | 남은 결제 시간 조회 |
 | `GET /seats/sold-out` | 매진 여부 확인 |
 | `GET /seats/available` | 상태별 좌석 수 집계 |
-| `GET /seats` | 좌석 목록 (Redis SCAN). `eventId`, `sessionDate`, `sessionTime` query를 주면 선택한 회차 좌석만 반환 |
+| `GET /seats` | 좌석 목록 (Redis SMEMBERS + pipeline HMGET). `eventId`, `sessionDate`, `sessionTime` query로 회차 필터링. 응답: `{ eventId, sessionDate, sessionTime, seats: [{seatId, status, section, price, heldBy, heldAt}], count }` |
 | `GET /reservations` | 예약 기록 조회 (MariaDB) |
 | `GET /reservations/:seatId` | 특정 좌석 예약 정보 |
 
@@ -356,7 +356,7 @@ Redis 기반 대기열 관리의 핵심 로직.
 **주요 함수:**
 - `enter()`: 대기열 진입. 티켓팅 상태에 따라 eligible 또는 standby 배정. 멤버십 레벨당 score -50 우선순위 부여. 중복 진입 방지. 이미 admitted인데 토큰이 없으면 admitted 상태를 유지한 채 Admission Token을 재발급하며, 일시적으로 발급할 수 없을 때는 `admitting` 상태를 반환한다.
 - `enterStandby()`: 매진 후 사용자를 일반 예매 상태에서 회차별 standby 취소표 대기열로 이동시키고 MariaDB 동기화
-- `admitBatch()`: eligible 상위 100명에 대한 JWT Admission Token을 먼저 발급·저장한 뒤 admitted로 이동하여, 승인 상태가 토큰보다 먼저 노출되는 경쟁 상태를 방지한다. MariaDB의 `status`와 `queue_status`도 `ADMITTED`로 동기화한다.
+- `admitBatch()`: eligible 상위 `BATCH_SIZE`명(기본 10, 환경변수로 조절)에 대한 JWT Admission Token을 먼저 발급·저장한 뒤 admitted로 이동하여, 승인 상태가 토큰보다 먼저 노출되는 경쟁 상태를 방지한다. MariaDB의 `status`와 `queue_status`도 `ADMITTED`로 동기화한다.
 - `scheduleTicketing()`: 자동 오픈/마감 타이머 설정
 - `restoreTicketingSchedule()`: Redis 초기화·복구 후 저장된 오픈 시각을 기준으로 스케줄과 메모리 타이머를 재등록. 이미 오픈 시각이 지났으면 즉시 `open` 상태로 복구
 - `scheduleStandbyClose()`: standby 마감 시간 예약
@@ -391,7 +391,9 @@ Redis Hash 기반 좌석 상태 머신.
 
 **상태 흐름:** `available → held → sold`
 
-**Redis 키:** `seat:{eventId}:{sessionKey}:{section-seat}` (Hash: status, heldBy, heldAt, section, price, sessionDate, sessionTime 등)
+**Redis 키:**
+- `seat:{eventId}:{section-seat}` (Hash: status, heldBy, heldAt, section, price, eventId, sessionDate, sessionTime)
+- `seat:index:{eventId}` (Set: 해당 이벤트의 모든 좌석 키 집합 — SMEMBERS로 O(N) 단일 조회)
 
 한 공연에 여러 `sessions`가 있으면 동일한 배치를 회차별로 반복 생성한다. 따라서 올림픽홀 3,322석 공연이 2회차이면 Redis와 MariaDB에 6,644석이 생성되고, 각 회차의 `/seats` 조회는 선택한 날짜·시간의 3,322석만 반환한다.
 
@@ -400,8 +402,9 @@ Redis Hash 기반 좌석 상태 머신.
 - `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분)
 - `cancelSeat()`: 예약을 CANCELLED로 기록하고 좌석을 available로 복구한 뒤 B파트용 SQS 취소 이벤트만 발행
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
-- `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 일괄 삭제
-- `getAllSeats()`: Redis SCAN으로 좌석을 조회하며 회차 컨텍스트가 있으면 해당 회차만 반환
+- `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 + 인덱스 Set 일괄 삭제
+- `getAllSeats()`: 좌석 인덱스 Set(SMEMBERS) + pipeline HMGET으로 좌석 조회. 회차 컨텍스트가 있으면 해당 회차만 필터링. eventId 없이 호출 시에만 SCAN 폴백
+- `recoverSeatsFromMariaDB()`: MariaDB에서 좌석 복구 후 인덱스 Set 재구성
 
 ---
 

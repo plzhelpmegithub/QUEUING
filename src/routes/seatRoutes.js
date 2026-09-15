@@ -221,7 +221,14 @@ async function seatRoutes(fastify) {
   fastify.get('/seats', async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.query || {};
     const seats = await seatService.getAllSeats(eventId || undefined, { sessionDate, sessionTime });
-    return reply.send({ seats, count: seats.length });
+    const first = seats[0];
+    const meta = {
+      eventId: eventId || (first && first.seatId ? first.seatId.split(':')[0] : '') || '',
+      sessionDate: first ? first.sessionDate : (sessionDate || ''),
+      sessionTime: first ? first.sessionTime : (sessionTime || ''),
+    };
+    const slim = seats.map(({ sessionDate: _sd, sessionTime: _st, ...rest }) => rest);
+    return reply.send({ ...meta, seats: slim, count: slim.length });
   });
 
   fastify.get('/reservations', adminAuth, async (request, reply) => {

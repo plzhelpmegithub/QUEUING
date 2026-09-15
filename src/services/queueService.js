@@ -13,7 +13,7 @@ const TICKETING_STATUS_KEY = 'event:ticketing-status';
 const HOLD_DURATION_KEY = 'event:hold-duration';
 const EVENT_LIST_KEY = 'events:list';
 
-const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 100;
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 10;
 
 function queueKeys(context = {}) {
   const normalized = normalizeSessionContext(context);

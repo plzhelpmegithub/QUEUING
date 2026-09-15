@@ -11,10 +11,15 @@ const { normalizeSessionContext, getScopedKey, sessionFromSeat } = require('./se
 const queueService = require('./queueService');
 
 const SEAT_PREFIX = 'seat:';
+const SEAT_INDEX_PREFIX = 'seat:index:';
 const ADMITTED_KEY = 'queue:admitted';
 const SOLD_OUT_KEY = 'event:sold-out';
 const EVENT_KEY = 'event:info';
 const EVENT_LIST_KEY = 'events:list';
+
+function seatIndexKey(eventId) {
+  return `${SEAT_INDEX_PREFIX}${eventId}`;
+}
 
 async function ensureEventInMariaDB(eventId) {
   if (!eventId) return;
@@ -80,6 +85,11 @@ async function initSeats(seatIds, section = '', price = 0, session = {}) {
     });
   }
   await pipeline.exec();
+
+  const seatKeys = seatIds.map(id => `${SEAT_PREFIX}${id}`);
+  if (eventId) {
+    await redis.sadd(seatIndexKey(eventId), ...seatKeys);
+  }
 
   const cKey = seatCounterKey(eventId, sessionContext);
   const counterPipeline = redis.pipeline();
@@ -205,30 +215,41 @@ async function getAllSeats(eventId, context = {}) {
     eventId = info && info.eventId ? info.eventId : null;
   }
 
-  const pattern = eventId
-    ? `${SEAT_PREFIX}${eventId}:*`
-    : `${SEAT_PREFIX}*`;
-
-  const keys = [];
-  let cursor = '0';
-  do {
-    const [nextCursor, results] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-    cursor = nextCursor;
-    keys.push(...results);
-  } while (cursor !== '0');
+  let keys;
+  if (eventId) {
+    keys = await redis.smembers(seatIndexKey(eventId));
+  } else {
+    keys = [];
+    let cursor = '0';
+    do {
+      const [nextCursor, results] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}*`, 'COUNT', 100);
+      cursor = nextCursor;
+      keys.push(...results);
+    } while (cursor !== '0');
+  }
 
   if (keys.length === 0) return [];
 
+  const FIELDS = ['status', 'heldBy', 'heldAt', 'section', 'price', 'sessionDate', 'sessionTime'];
   const pipeline = redis.pipeline();
   for (const key of keys) {
-    pipeline.hgetall(key);
+    pipeline.hmget(key, ...FIELDS);
   }
   const results = await pipeline.exec();
 
-  const seats = keys.map((key, i) => ({
-    seatId: key.replace(SEAT_PREFIX, ''),
-    ...results[i][1],
-  }));
+  const seats = keys.map((key, i) => {
+    const vals = results[i][1];
+    return {
+      seatId: key.replace(SEAT_PREFIX, ''),
+      status: vals[0] || '',
+      heldBy: vals[1] || '',
+      heldAt: vals[2] || '',
+      section: vals[3] || '',
+      price: vals[4] || '',
+      sessionDate: vals[5] || '',
+      sessionTime: vals[6] || '',
+    };
+  });
 
   const hasRequestedSession = Boolean(context.sessionDate || context.date || context.sessionTime || context.time);
   if (!hasRequestedSession) return seats;
@@ -244,16 +265,15 @@ async function getAllSeats(eventId, context = {}) {
 async function cleanupEventSeats(eventId) {
   if (!eventId) return { deleted: 0 };
 
+  const indexKey = seatIndexKey(eventId);
+  const keys = await redis.smembers(indexKey);
+
   let deleted = 0;
-  let cursor = '0';
-  do {
-    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${eventId}:*`, 'COUNT', 200);
-    cursor = nextCursor;
-    if (keys.length > 0) {
-      await redis.del(...keys);
-      deleted += keys.length;
-    }
-  } while (cursor !== '0');
+  if (keys.length > 0) {
+    await redis.del(...keys);
+    deleted = keys.length;
+  }
+  await redis.del(indexKey);
 
   console.log(`[Seat] cleanup — ${eventId} 좌석 키 ${deleted}개 삭제`);
 
@@ -476,13 +496,7 @@ async function recoverSeatsFromMariaDB(eventId, options = {}) {
   );
   if (rows.length === 0) return { recovered: false, message: 'MariaDB에 좌석 데이터 없음' };
 
-  const existingKeys = [];
-  let cursor = '0';
-  do {
-    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `${SEAT_PREFIX}${eventId}:*`, 'COUNT', 200);
-    cursor = nextCursor;
-    existingKeys.push(...keys);
-  } while (cursor !== '0');
+  const existingKeys = await redis.smembers(seatIndexKey(eventId));
 
   const force = Boolean(options.force);
   if (!force && existingKeys.length >= rows.length) {
@@ -490,10 +504,12 @@ async function recoverSeatsFromMariaDB(eventId, options = {}) {
   }
 
   const pipeline = redis.pipeline();
+  const recoveredKeys = [];
   let available = 0, held = 0, sold = 0;
   const sessionStats = new Map();
   for (const row of rows) {
     const key = `${SEAT_PREFIX}${row.seat_id}`;
+    recoveredKeys.push(key);
     const status = row.status || STATUS.AVAILABLE;
     pipeline.hset(key, {
       status,
@@ -517,6 +533,12 @@ async function recoverSeatsFromMariaDB(eventId, options = {}) {
     sessionStats.set(sessionKey, stats);
   }
   await pipeline.exec();
+
+  const indexKey = seatIndexKey(eventId);
+  await redis.del(indexKey);
+  if (recoveredKeys.length > 0) {
+    await redis.sadd(indexKey, ...recoveredKeys);
+  }
 
   for (const stats of sessionStats.values()) {
     const cKey = seatCounterKey(eventId, { sessionDate: stats.date, sessionTime: stats.time });

@@ -1,3 +1,21 @@
+## [2026-09-15 09:18] 업데이트 로그 — /seats 엔드포인트 성능 최적화 (SCAN 제거, 응답 경량화, 배치 사이즈)
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: `getAllSeats()` — Redis SCAN 루프(~24,569회/호출, 0.82초)를 SMEMBERS 단일 호출로 교체. 이벤트별 좌석 인덱스 Set(`seat:index:{eventId}`) 도입
+- **[src/services/seatService.js]**: `getAllSeats()` — pipeline HGETALL → pipeline HMGET 변환. eventId 제외 필요 필드(status, heldBy, heldAt, section, price, sessionDate, sessionTime)만 조회
+- **[src/services/seatService.js]**: `initSeats()` — 좌석 생성 시 `seat:index:{eventId}` Set에 좌석 키 일괄 등록 (SADD)
+- **[src/services/seatService.js]**: `cleanupEventSeats()` — SCAN → SMEMBERS 전환, 인덱스 Set도 함께 삭제
+- **[src/services/seatService.js]**: `recoverSeatsFromMariaDB()` — SCAN → SMEMBERS 전환, 복구 완료 후 인덱스 Set 재구성
+- **[src/routes/seatRoutes.js]**: `GET /seats` — 응답에서 좌석별 중복 필드(eventId, sessionDate, sessionTime) 제거 → 최상위로 이동. 3,322석 기준 ~626KB → ~450KB 절감
+- **[src/services/queueService.js]**: `BATCH_SIZE` 기본값 100 → 10 변경 (부하테스트용). 환경변수 `BATCH_SIZE`로 런타임 오버라이드 가능
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `/seats` TTFB 1.0~1.8초 — Redis SCAN이 전체 키스페이스를 순회하며 0.82초 소비 (3,322석 이벤트 기준 ~24,569 SCAN 반복)
+- **원인(Cause):** SCAN은 O(N) 전체 키 순회 + 패턴 매칭이므로 좌석 수와 무관하게 Redis 키스페이스 크기에 비례하여 느려짐. 응답 JSON도 좌석마다 동일한 eventId/sessionDate/sessionTime을 반복하여 626KB까지 팽창
+- **해결(Solution):** 이벤트별 좌석 인덱스 Set(`seat:index:{eventId}`)을 도입하여 SMEMBERS O(N) 단일 호출로 교체. N은 해당 이벤트의 좌석 수(3,322)이므로 전체 키스페이스와 무관. HMGET으로 필요 필드만 조회하고, 응답에서 중복 필드를 최상위로 추출
+
+---
+
 ## [2026-09-14 17:18] 업데이트 로그 — B파트 피드백 반영 (콜백 재시도 큐, 인증 헤더, 스코프 제한 세션)
 
 ### 🔄 변경 및 수정 사항
