@@ -104,6 +104,7 @@ $SesDomain = "queuing.kr"
 # terraform-final/yeji_prometheus_link.tf 의 var.prometheus_nodeport 와 같아야 한다
 $PrometheusNodePort = 30090
 $PrometheusLinkTg   = "queuing-prom-tg"
+$SecretId = "queuing-persistent/app-secrets"   # 비밀값 원본. terraform 밖이라 매일 destroy 에도 남는다
 
 # B파트(건아) 취소표 순차 배정. terraform-final/b_part_resale_workflow.tf 와 이름·경로가 맞아야 한다.
 # 코드는 건아님 브랜치에서 읽기만 한다.
@@ -205,14 +206,24 @@ function Helm-Release([string]$What, [string]$Ns, [string]$Release, [string]$Cha
 }
 
 # ══════════════════════════════════════════════
-# 비밀값 저장소 (이 PC, DPAPI)
+# 비밀값 저장소 (AWS Secrets Manager)
 # ══════════════════════════════════════════════
 function Get-Plain([Security.SecureString]$s) {
     return (New-Object System.Management.Automation.PSCredential("x", $s)).GetNetworkCredential().Password
 }
 
+#Secret키 반영
 function Read-Store {
-    if (Test-Path $SecretStore) { $s = Import-Clixml -Path $SecretStore } else { $s = @{} }
+    $s = @{}
+    $n = Read-Native "aws" @("secretsmanager", "list-secrets", "--region", $Region, "--filters", "Key=name,Values=$SecretId", "--query", "length(SecretList)", "--output", "text")
+    if ($script:ReadExit -ne 0) { Die "Secrets Manager 조회 실패 (aws 자격 증명 확인)" }
+    $script:SecretExists = ("$n".Trim() -ne "0")
+    if ($script:SecretExists) {
+        $json = Read-Native "aws" @("secretsmanager", "get-secret-value", "--region", $Region, "--secret-id", $SecretId, "--query", "SecretString", "--output", "text")
+        # 읽기가 실패한 채로 진행하면 빈 값으로 덮어쓸 수 있다. 여기서 멈춘다.
+        if ($script:ReadExit -ne 0 -or -not "$json".Trim()) { Die "$SecretId 값을 읽지 못했다" }
+        ($json | Out-String | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $s[$_.Name] = ConvertTo-SecureString ([string]$_.Value) -AsPlainText -Force }
+    }
     foreach ($k in $ResetSecret) {
         if ($k -eq "all") { $s = @{}; break }
         if ($s.ContainsKey($k)) { $s.Remove($k) }
@@ -222,9 +233,17 @@ function Read-Store {
 
 function Save-Store($Store) {
     if ($DryRun) { Info "[dry-run] 비밀값 저장 건너뜀"; return }
-    $dir = Split-Path $SecretStore
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
-    $Store | Export-Clixml -Path $SecretStore
+    $plain = [ordered]@{}
+    foreach ($k in ($Store.Keys | Sort-Object)) { $plain[$k] = Get-Plain $Store[$k] }
+    # 값은 파일로 넘긴다. 명령줄에 넣으면 PowerShell 5.1 에서 따옴표가 깨지고 프로세스 목록에 보인다.
+    $tmp = [IO.Path]::GetTempFileName()
+    try {
+        [IO.File]::WriteAllText($tmp, ($plain | ConvertTo-Json -Compress), $Utf8NoBom)
+        if ($script:SecretExists) { $ok = Invoke-Native "Secrets Manager 값 갱신" "aws" @("secretsmanager", "put-secret-value", "--region", $Region, "--secret-id", $SecretId, "--secret-string", "file://$tmp") }
+        else { $ok = Invoke-Native "Secrets Manager 생성" "aws" @("secretsmanager", "create-secret", "--region", $Region, "--name", $SecretId, "--description", "QUEUING app secrets for queuing-aws.ps1, kept outside daily destroy", "--secret-string", "file://$tmp") }
+        if (-not $ok) { Die "$SecretId 저장 실패" }
+        $script:SecretExists = $true
+    } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue; $plain = $null }
 }
 
 # 64자리 16진수. A파트 authTokenService.js 가 32자 이상을 요구한다.
@@ -642,7 +661,7 @@ function Invoke-Up {
     Ok "AWS 계정 $acct"
 
     # ── 1. 비밀값 먼저 (apply 20분 뒤에 묻지 않도록) ──
-    Step 1 "비밀값 ($SecretStore)"
+    Step 1 "비밀값 (Secrets Manager $SecretId)"
     $store = Read-Store
     $script:StoreDirty = $false
     $S = @{
@@ -903,8 +922,8 @@ function Invoke-Status {
     if (Test-FlowLogGroupLeftover) { Warn "state 밖에 Flow Log 로그 그룹이 남아 있다 - up 이 자동으로 지운다" }
     $vols = Get-OrphanVolumes
     if ($vols.Count) { Info "클러스터가 남긴 EBS $($vols.Count)개 ($(($vols | Measure-Object GB -Sum).Sum)GB)" }
-    Info "비밀값 저장소: $(if (Test-Path $SecretStore) { '있음' } else { '없음 (up 이 처음 한 번 묻는다)' })"
-    Write-Summary "status"
+    $sid = Read-Native "aws" @("secretsmanager", "list-secrets", "--region", $Region, "--filters", "Key=name,Values=$SecretId", "--query", "length(SecretList)", "--output", "text")
+    Info "비밀값 저장소: $(if ($script:ReadExit -eq 0 -and "$sid".Trim() -ne '0') { "Secrets Manager $SecretId" } else { '없음 (up 이 처음 한 번 묻고 Secrets Manager 에 만든다)' })"
 }
 
 switch ($Action) {
