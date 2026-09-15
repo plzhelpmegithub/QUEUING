@@ -29,7 +29,7 @@ fastify.addHook('onResponse', (request, reply, done) => {
   const [sec, nano] = process.hrtime(request.startTime);
   const duration = sec + nano / 1e9;
   httpRequestDuration.observe(
-    { method: request.method, route: request.url, status: reply.statusCode },
+    { method: request.method, route: request.routeOptions?.url || 'unknown', status: reply.statusCode },
     duration,
   );
   done();

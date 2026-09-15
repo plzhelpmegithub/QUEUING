@@ -522,7 +522,7 @@ prom-client 기반 Prometheus 메트릭 수집. `/metrics` 엔드포인트에서
 **Histogram:**
 | 이름 | 설명 |
 |---|---|
-| `queuing_http_request_duration_seconds` | HTTP 응답 시간 (method/route/status별, 10ms~5s 구간) |
+| `queuing_http_request_duration_seconds` | HTTP 응답 시간 (method/route/status별, 10ms~5s 구간). route 라벨은 Fastify 등록 라우트 패턴(`request.routeOptions.url`)을 사용하며, 미등록 경로(봇 요청 등)는 `unknown`으로 통합하여 라벨 카디널리티 폭발을 방지 |
 
 `updateGauges()`: Prometheus scrape 시 Redis의 `seat:metrics:aggregate` 집계 해시와 대기열 집합을 읽어 Gauge를 갱신한다. 좌석 개별 키에 대한 `SCAN`/개별 `HGET`은 실행하지 않으므로 좌석 수가 증가해도 scrape 시간이 좌석 수에 비례해 늘어나지 않는다.
 

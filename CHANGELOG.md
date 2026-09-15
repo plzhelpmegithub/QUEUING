@@ -1,3 +1,15 @@
+## [2026-09-15 16:07] 업데이트 로그 — Prometheus 라벨 카디널리티 폭발 방지
+
+### 🔄 변경 및 수정 사항
+- **[src/app.js]**: `onResponse` 훅의 `httpRequestDuration` 메트릭 route 라벨을 `request.url`(실제 URL) → `request.routeOptions?.url || 'unknown'`(등록된 라우트 패턴)으로 변경. 봇 요청(`/1xmomo.php`, `/.env` 등)과 쿼리스트링이 고유 라벨로 무한 생성되는 카디널리티 폭발을 방지하여 Prometheus 메모리 사용량 안정화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 봇이 존재하지 않는 경로(`/1xmomo.php`, `/wp-login.php` 등)로 요청 시 각 경로가 `queuing_http_request_duration_seconds` 히스토그램의 고유 route 라벨로 생성되어 Prometheus 메모리가 지속 증가
+- **원인(Cause):** `request.url`은 쿼리스트링 포함 실제 요청 URL을 그대로 반환하므로, 등록되지 않은 경로 + 파라미터 조합마다 새로운 시계열(time series)이 생성됨
+- **해결(Solution):** Fastify v5의 `request.routeOptions.url`은 등록된 라우트 패턴(예: `/seats/:id`)을 반환하고, 매칭되지 않는 요청에는 `undefined`를 반환하므로 `'unknown'`으로 폴백 처리하여 라벨 수를 등록 라우트 수로 고정
+
+---
+
 ## [2026-09-15 09:18] 업데이트 로그 — /seats 엔드포인트 성능 최적화 (SCAN 제거, 응답 경량화, 배치 사이즈)
 
 ### 🔄 변경 및 수정 사항
