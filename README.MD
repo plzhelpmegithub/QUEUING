@@ -403,7 +403,7 @@ Redis Hash 기반 좌석 상태 머신.
 - `cancelSeat()`: 예약을 CANCELLED로 기록하고 좌석을 available로 복구한 뒤 B파트용 SQS 취소 이벤트만 발행
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
 - `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 + 인덱스 Set 일괄 삭제
-- `getAllSeats()`: 좌석 인덱스 Set(SMEMBERS) + pipeline HMGET으로 좌석 조회. 회차 컨텍스트가 있으면 해당 회차만 필터링. eventId 없이 호출 시에만 SCAN 폴백
+- `getAllSeats()`: 좌석 인덱스 Set(SMEMBERS) + pipeline HMGET으로 좌석 조회. 1.5초 TTL 인메모리 캐시를 적용하여 동시 다수 요청 시 Redis 왕복을 1회로 축소. 좌석 상태 변경(hold/confirm/cancel/release) 시 해당 eventId 캐시를 즉시 무효화. 회차 컨텍스트가 있으면 해당 회차만 필터링. eventId 없이 호출 시에만 SCAN 폴백
 - `recoverSeatsFromMariaDB()`: MariaDB에서 좌석 복구 후 인덱스 Set 재구성
 
 ---

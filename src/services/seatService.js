@@ -17,6 +17,17 @@ const SOLD_OUT_KEY = 'event:sold-out';
 const EVENT_KEY = 'event:info';
 const EVENT_LIST_KEY = 'events:list';
 
+const SEATS_CACHE_TTL = 1500;
+const seatsCache = new Map();
+
+function invalidateSeatsCache(eventId) {
+  if (eventId) {
+    seatsCache.delete(eventId);
+  } else {
+    seatsCache.clear();
+  }
+}
+
 function seatIndexKey(eventId) {
   return `${SEAT_INDEX_PREFIX}${eventId}`;
 }
@@ -108,6 +119,7 @@ async function initSeats(seatIds, section = '', price = 0, session = {}) {
     `seat:init ${eventId}:${section} (${seatIds.length}석)`,
   );
 
+  invalidateSeatsCache(eventId);
   return { initialized: seatIds.length, section, price, seats: seatIds };
 }
 
@@ -162,6 +174,7 @@ async function holdSeat(userId, seatId, admissionToken, requestedContext = {}) {
     );
 
     await adjustSeatCounter(sessionContext.eventId, sessionContext, 'available', 'held');
+    invalidateSeatsCache(sessionContext.eventId);
 
     return {
       success: true,
@@ -193,6 +206,7 @@ async function releaseSeat(userId, seatId) {
 
   await redis.hset(seatKey, { status: STATUS.AVAILABLE, heldBy: '', heldAt: '' });
   await adjustSeatCounter(sessionContext.eventId, sessionContext, 'held', 'available');
+  invalidateSeatsCache(sessionContext.eventId);
   await publishSeatEvent(EVENT_TYPE.RELEASED, { seatId, userId });
 
   await syncToMariaDB(
@@ -209,12 +223,7 @@ async function releaseSeat(userId, seatId) {
   };
 }
 
-async function getAllSeats(eventId, context = {}) {
-  if (!eventId) {
-    const info = await redis.hgetall(EVENT_KEY);
-    eventId = info && info.eventId ? info.eventId : null;
-  }
-
+async function fetchAllSeats(eventId) {
   let keys;
   if (eventId) {
     keys = await redis.smembers(seatIndexKey(eventId));
@@ -237,7 +246,7 @@ async function getAllSeats(eventId, context = {}) {
   }
   const results = await pipeline.exec();
 
-  const seats = keys.map((key, i) => {
+  return keys.map((key, i) => {
     const vals = results[i][1];
     return {
       seatId: key.replace(SEAT_PREFIX, ''),
@@ -250,6 +259,23 @@ async function getAllSeats(eventId, context = {}) {
       sessionTime: vals[6] || '',
     };
   });
+}
+
+async function getAllSeats(eventId, context = {}) {
+  if (!eventId) {
+    const info = await redis.hgetall(EVENT_KEY);
+    eventId = info && info.eventId ? info.eventId : null;
+  }
+
+  const cacheKey = eventId || '__all__';
+  let seats;
+  const cached = seatsCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < SEATS_CACHE_TTL) {
+    seats = cached.data;
+  } else {
+    seats = await fetchAllSeats(eventId);
+    seatsCache.set(cacheKey, { data: seats, ts: Date.now() });
+  }
 
   const hasRequestedSession = Boolean(context.sessionDate || context.date || context.sessionTime || context.time);
   if (!hasRequestedSession) return seats;
@@ -258,7 +284,6 @@ async function getAllSeats(eventId, context = {}) {
     (seat.sessionDate || '') === requested.sessionDate
     && (seat.sessionTime || '') === requested.sessionTime
   ));
-  // 기존 공연은 회차 컬럼 없이 공연 전체에 하나의 좌석 목록만 사용했다.
   return filtered.length > 0 ? filtered : seats.filter((seat) => !seat.sessionDate && !seat.sessionTime);
 }
 
@@ -275,6 +300,7 @@ async function cleanupEventSeats(eventId) {
   }
   await redis.del(indexKey);
 
+  invalidateSeatsCache(eventId);
   console.log(`[Seat] cleanup — ${eventId} 좌석 키 ${deleted}개 삭제`);
 
   let counterCursor = '0';
@@ -333,6 +359,7 @@ async function confirmSeat(userId, seatId, requestedContext = {}) {
 
   await redis.hset(seatKey, { status: STATUS.SOLD });
   await adjustSeatCounter(sessionContext.eventId, sessionContext, 'held', 'sold');
+  invalidateSeatsCache(eventId);
   await cancelTimer(seatId);
   await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
 
@@ -395,6 +422,7 @@ async function cancelSeat(userId, seatId) {
     heldAt: '',
   });
   await adjustSeatCounter(sessionContext.eventId, sessionContext, 'sold', 'available');
+  invalidateSeatsCache(sessionContext.eventId);
 
   await redis.del(getScopedKey(SOLD_OUT_KEY, sessionContext));
   await redis.del(getScopedKey('event:ticketing-status', sessionContext));
@@ -572,6 +600,7 @@ async function recoverSeatsFromMariaDB(eventId, options = {}) {
     }
   }
 
+  invalidateSeatsCache(eventId);
   console.log(`[Seat Recovery] ${eventId}: ${rows.length}석 복구 (available=${available}, held=${held}, sold=${sold})`);
   return { recovered: true, total: rows.length, available, held, sold, existing: existingKeys.length };
 }

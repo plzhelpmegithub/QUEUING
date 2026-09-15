@@ -1,3 +1,11 @@
+## [2026-09-15 17:42] 업데이트 로그 — /seats 인메모리 캐시 도입 (Redis 부하 감소)
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: `getAllSeats()` 결과를 Node.js 프로세스 메모리에 1.5초 TTL로 캐시. Redis 조회 로직을 `fetchAllSeats()` 내부 함수로 분리하고, `getAllSeats()`는 캐시 히트 시 Redis 왕복 없이 즉시 반환
+- **[src/services/seatService.js]**: 좌석 상태 변경 함수(`initSeats`, `holdSeat`, `releaseSeat`, `confirmSeat`, `cancelSeat`, `cleanupEventSeats`, `recoverSeatsFromMariaDB`) 7곳에 `invalidateSeatsCache(eventId)` 호출 추가. 상태 변경 즉시 해당 이벤트의 캐시를 무효화하여 다음 조회 시 최신 데이터 반환 보장
+
+---
+
 ## [2026-09-15 16:07] 업데이트 로그 — Prometheus 라벨 카디널리티 폭발 방지
 
 ### 🔄 변경 및 수정 사항
