@@ -515,6 +515,9 @@ prom-client 기반 Prometheus 메트릭 수집. `/metrics` 엔드포인트에서
 | `queuing_lock_attempts_total` | 분산 락 시도 (result: success/fail) |
 | `queuing_seat_events_total` | 좌석 상태 변경 이벤트 (type별) |
 | `queuing_timer_expirations_total` | 결제 타이머 만료 횟수 |
+| `queuing_booking_operations_total` | 예매 업무 처리 결과 (operation: hold/confirm/cancel, result: success/rejected/error) |
+| `queuing_timer_starts_total` | 좌석 선점 결제 타이머 시작 횟수 |
+| `queuing_timer_cancellations_total` | 결제 완료·좌석 해제로 실제 삭제된 타이머 수 |
 
 **Histogram:**
 | 이름 | 설명 |
@@ -821,7 +824,9 @@ metrics:
       release: "kube-prometheus-stack"
 ```
 
-수집되는 주요 커스텀 메트릭: `queuing_queue_eligible`, `queuing_queue_standby`, `queuing_queue_admitted`, `queuing_seats_available`, `queuing_seats_held`, `queuing_seats_sold`, `queuing_lock_attempts_total`, `queuing_seat_events_total`, `queuing_timer_expirations_total`, `queuing_http_request_duration_seconds`.
+수집되는 주요 커스텀 메트릭: `queuing_queue_eligible`, `queuing_queue_standby`, `queuing_queue_admitted`, `queuing_seats_available`, `queuing_seats_held`, `queuing_seats_sold`, `queuing_lock_attempts_total`, `queuing_seat_events_total`, `queuing_timer_expirations_total`, `queuing_booking_operations_total`, `queuing_timer_starts_total`, `queuing_timer_cancellations_total`, `queuing_http_request_duration_seconds`.
+
+`queuing_seat_events_total`은 Redis 좌석 상태 이벤트(`held`, `sold`, `released`, `cancelled`, `sold_out`)를 세고, `queuing_booking_operations_total`은 `/seats/hold`, `/seats/confirm`, `/seats/cancel` 업무 요청의 처리 결과를 센다. 두 메트릭은 이름과 측정 대상이 다르므로 예매 성공률과 좌석 상태 이벤트를 중복 집계하지 않고 분리해서 분석할 수 있다.
 
 ### Kubernetes Helm 차트의 B파트 재판매 파이프라인 연동 설정
 

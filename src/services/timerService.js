@@ -1,6 +1,6 @@
 const Redis = require('ioredis');
 const redis = require('../config/redis');
-const { timerExpirations } = require('./metricsService');
+const { timerExpirations, timerStarts, timerCancellations } = require('./metricsService');
 
 const TIMER_PREFIX = 'timer:seat:';
 const SEAT_PREFIX = 'seat:';
@@ -19,12 +19,14 @@ async function startTimer(seatId, userId) {
   const holdDuration = await getCurrentHoldDuration();
   const timerKey = `${TIMER_PREFIX}${seatId}`;
   await redis.set(timerKey, userId, 'EX', holdDuration);
+  timerStarts.inc();
   console.log(`[Timer] ${seatId} 타이머 시작 (${holdDuration}초) — ${userId}`);
 }
 
 async function cancelTimer(seatId) {
   const timerKey = `${TIMER_PREFIX}${seatId}`;
-  await redis.del(timerKey);
+  const deleted = await redis.del(timerKey);
+  if (deleted > 0) timerCancellations.inc();
   console.log(`[Timer] ${seatId} 타이머 취소`);
 }
 

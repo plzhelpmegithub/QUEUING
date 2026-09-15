@@ -754,3 +754,15 @@
 - **증상(Issue):** `매진 연출` 직후 실제 멤버십 유저에게 취소표 대기 등록 완료 모달과 대기번호가 표시됨
 - **원인(Cause):** 시뮬레이션 API가 매진 처리와 동시에 `realUserEmail`을 standby Redis Sorted Set에 등록하고 있었음
 - **해결(Solution):** 매진 단계에서는 더미 standby만 생성하고 실제 유저 등록을 제거. 실제 사용자의 `/queue/enter` 요청이 들어올 때 `queueService.enter()`가 `sold_out` 상태를 확인해 standby 대기번호를 발급하도록 변경
+## [2026-09-15 13:53] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/metricsService.js]**: `queuing_booking_operations_total`, `queuing_timer_starts_total`, `queuing_timer_cancellations_total` 메트릭을 추가해 예매 업무 처리와 좌석 상태 이벤트를 분리
+- **[src/routes/seatRoutes.js]**: 좌석 선점·예매 확정·환불 API 결과를 `success/rejected/error`로 기록
+- **[src/services/timerService.js]**: 타이머 시작 및 실제 삭제 동작을 별도 카운터로 기록
+- **[README.MD]**: 신규 예매·타이머 메트릭 이름과 `queuing_seat_events_total`과의 측정 범위를 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 기존 `queuing_seat_events_total{type="sold"}`만으로는 좌석 상태 이벤트와 예매 API 처리 결과를 구분하기 어려움
+- **원인(Cause):** 좌석 상태 변경 이벤트와 사용자 예매 업무 결과가 서로 다른 관측 대상인데 별도 메트릭이 없었음
+- **해결(Solution):** 좌석 이벤트 메트릭은 유지하고 예매 업무·타이머 시작·타이머 삭제를 전용 Counter로 분리

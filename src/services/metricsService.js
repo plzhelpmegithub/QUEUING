@@ -62,6 +62,27 @@ const timerExpirations = new client.Counter({
   help: '결제 타이머 만료 횟수 (자동 좌석 해제)',
 });
 
+// --- 예매 업무 처리 ---
+// seat_events_total은 Redis 좌석 상태 이벤트용이고, 이 메트릭은 API 업무
+// 처리 결과용이다. 따라서 좌석 상태 이벤트와 예매 요청 결과를 구분해서
+// Grafana에서 집계할 수 있다.
+const bookingOperations = new client.Counter({
+  name: 'queuing_booking_operations_total',
+  help: '좌석 선점·예매 확정·환불 업무 처리 결과 수',
+  labelNames: ['operation', 'result'], // operation: hold/confirm/cancel, result: success/rejected/error
+});
+
+// --- 좌석 타이머 동작 ---
+const timerStarts = new client.Counter({
+  name: 'queuing_timer_starts_total',
+  help: '좌석 선점 결제 타이머 시작 횟수',
+});
+
+const timerCancellations = new client.Counter({
+  name: 'queuing_timer_cancellations_total',
+  help: '결제 완료·좌석 해제로 실제 삭제된 타이머 수',
+});
+
 // --- HTTP 요청 ---
 const httpRequestDuration = new client.Histogram({
   name: 'queuing_http_request_duration_seconds',
@@ -158,5 +179,8 @@ module.exports = {
   lockAttempts,
   seatEvents,
   timerExpirations,
+  bookingOperations,
+  timerStarts,
+  timerCancellations,
   httpRequestDuration,
 };

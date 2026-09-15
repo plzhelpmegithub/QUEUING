@@ -4,6 +4,7 @@ const { sendEmail } = require('../services/notificationService');
 const redis = require('../config/redis');
 const pool = require('../config/mariadb');
 const { guardRecaptcha } = require('../services/recaptchaService');
+const { bookingOperations } = require('../services/metricsService');
 const {
   authenticate,
   requireRole,
@@ -13,6 +14,20 @@ const {
 
 const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
 const userAuth = { preHandler: [allowUserOrCancelLink, requireSelfOrLink] };
+
+async function executeBookingOperation(operation, handler) {
+  try {
+    const result = await handler();
+    bookingOperations.inc({
+      operation,
+      result: result.success ? 'success' : 'rejected',
+    });
+    return result;
+  } catch (err) {
+    bookingOperations.inc({ operation, result: 'error' });
+    throw err;
+  }
+}
 
 const GRADE_MAP = {
   Floor: 'VIP', A1: 'S', A2: 'S', A3: 'S', A4: 'S',
@@ -78,7 +93,10 @@ async function seatRoutes(fastify) {
     if (!token) {
       return reply.status(401).send({ error: 'Admission Token(token)은 필수입니다.' });
     }
-    const result = await seatService.holdSeat(userId, seatId, token, { eventId, sessionDate, sessionTime });
+    const result = await executeBookingOperation(
+      'hold',
+      () => seatService.holdSeat(userId, seatId, token, { eventId, sessionDate, sessionTime }),
+    );
     const statusCode = result.success ? 200 : result.reason === 'no_token' || result.reason === 'expired' ? 401 : 409;
     return reply.status(statusCode).send(result);
   });
@@ -89,7 +107,10 @@ async function seatRoutes(fastify) {
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
     }
-    const result = await seatService.confirmSeat(userId, seatId, { eventId, sessionDate, sessionTime });
+    const result = await executeBookingOperation(
+      'confirm',
+      () => seatService.confirmSeat(userId, seatId, { eventId, sessionDate, sessionTime }),
+    );
     const statusCode = result.success ? 200 : 409;
 
     if (result.success) {
@@ -151,7 +172,10 @@ async function seatRoutes(fastify) {
     if (!userId || !seatId) {
       return reply.status(400).send({ error: 'userId와 seatId는 필수입니다.' });
     }
-    const result = await seatService.cancelSeat(userId, seatId);
+    const result = await executeBookingOperation(
+      'cancel',
+      () => seatService.cancelSeat(userId, seatId),
+    );
     const statusCode = result.success ? 200 : 409;
 
     if (result.success) {
