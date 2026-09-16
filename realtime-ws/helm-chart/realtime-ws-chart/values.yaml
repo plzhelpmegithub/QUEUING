@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: "chlwldp/realtime-ws"
-  tag: "1.0.9"
+  tag: "1.0.10"
   pullPolicy: IfNotPresent
 
 service:
