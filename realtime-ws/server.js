@@ -53,6 +53,13 @@ const MAX_BUFFERED_BYTES = 1 * 1024 * 1024; // 1MB
 // 부하테스트처럼 일부러 빠르게 보내야 할 때는 CHAT_COOLDOWN_MS=0 으로 끌 수 있다.
 const CHAT_COOLDOWN_MS = Number(process.env.CHAT_COOLDOWN_MS ?? 5000);
 
+// 좌석 채널은 토큰 없이도 볼 수 있게 한다 (2026-09-16, 팀 결정)
+// 좌석 상태는 /seats API 로도 로그인 없이 조회할 수 있는 공개 정보다. 그런데 실시간 채널만
+// 토큰을 요구해서, 프론트의 좌석 소켓이 401 로 막혀 "산 좌석이 회색으로 안 바뀌는" 증상이 있었다.
+// 채팅은 작성자 이름이 필요하고 도배 방지도 걸려 있어 토큰을 계속 요구한다.
+// 다시 잠그려면 SEATS_REQUIRE_TOKEN=true 로 띄운다.
+const SEATS_REQUIRE_TOKEN = String(process.env.SEATS_REQUIRE_TOKEN || 'false') === 'true';
+
 const app = express();
 
 // 다른 팀의 프론트엔드(각자 다른 IP/포트의 dev 서버)에서 fetch로 REST API를 호출할 수 있게
@@ -208,7 +215,11 @@ server.on('upgrade', (request, socket, head) => {
   const token = parsedUrl.searchParams.get('token');
   const user = verifyToken(token);
 
-  if (!user) {
+  // 경로가 /ws/<종류>/<이벤트> 라서 두 번째 조각이 채널 종류다.
+  const kind = parsedUrl.pathname.split('/').filter(Boolean)[1];
+  const anonymousAllowed = kind === 'seats' && !SEATS_REQUIRE_TOKEN;
+
+  if (!user && !anonymousAllowed) {
     // 인증 실패 원인을 서버 로그에 남긴다 (연동팀이 401만 보고 원인을 못 찾는 문제 방지).
     // 흔한 원인: 자기 로그인 mock accessToken을 그대로 재사용 (realtime-ws 전용 토큰이 아님)
     const reason = !token ? 'token 파라미터 없음' : '토큰 검증 실패 (JWT 형식이 아니거나 시크릿 불일치 — 로그인용 accessToken을 그대로 쓴 건 아닌지 확인)';
@@ -219,8 +230,9 @@ server.on('upgrade', (request, socket, head) => {
   }
 
   wss.handleUpgrade(request, socket, head, (ws) => {
-    ws.userId = user.userId;
-    ws.nickname = user.nickname || user.userId; // 토큰에 닉네임 있으면 그걸, 없으면 userId 사용
+    // 좌석 채널은 토큰 없이 붙을 수 있어 user 가 없을 수 있다. 읽기 전용이라 이름이 필요 없다.
+    ws.userId = user ? user.userId : 'anonymous';
+    ws.nickname = user ? (user.nickname || user.userId) : 'anonymous';
     ws.isAlive = true;                          // 하트비트 판정용 (아래 heartbeatTimer 참고)
     wss.emit('connection', ws, request);
   });
