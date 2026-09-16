@@ -16,35 +16,37 @@ async function initTable() {
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS memberships (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      user_id VARCHAR(50) NOT NULL,
+      membership_id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      tier_name VARCHAR(50) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       is_membership BOOLEAN NOT NULL DEFAULT TRUE,
       plan VARCHAR(20) NOT NULL DEFAULT 'monthly',
-      expires_at DATETIME NOT NULL,
       priority_level INT NOT NULL DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_user (user_id)
     )
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (
-      event_id VARCHAR(50) PRIMARY KEY,
-      event_name VARCHAR(200) NOT NULL,
+      event_id VARCHAR(100) PRIMARY KEY,
+      title VARCHAR(200) NOT NULL DEFAULT '',
+      description TEXT NULL,
       event_date VARCHAR(50) DEFAULT '',
-      sessions JSON NULL,
-      venue VARCHAR(200) DEFAULT '',
+      venue VARCHAR(100) DEFAULT '',
       total_seats INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      event_name VARCHAR(200) NOT NULL,
       seating_type VARCHAR(20) DEFAULT 'arena',
       sections JSON NULL,
       status VARCHAR(20) NOT NULL DEFAULT 'open',
       ticket_open_at DATETIME NULL,
-      ticket_close_at DATETIME NULL,
       emoji VARCHAR(10) DEFAULT '',
       color VARCHAR(50) DEFAULT '',
       cancel_reason TEXT NULL,
       cancelled_at DATETIME NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NULL
+      updated_at DATETIME NULL,
+      ticket_close_at DATETIME NULL
     )
   `);
   await pool.query(`
@@ -85,15 +87,17 @@ async function initTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cancel_allocations (
       allocation_id INT AUTO_INCREMENT PRIMARY KEY,
-      user_id VARCHAR(50) NOT NULL,
-      seat_id VARCHAR(100) NOT NULL DEFAULT '',
-      event_id VARCHAR(50) NOT NULL DEFAULT '',
+      user_id VARCHAR(100) NOT NULL,
+      seat_id VARCHAR(50) NULL,
+      event_id VARCHAR(100) NOT NULL,
+      hold_duration INT NULL,
       session_date VARCHAR(50) DEFAULT '',
       session_time VARCHAR(10) DEFAULT '',
       status VARCHAR(20) NOT NULL DEFAULT 'LINK_SENT',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       expires_at DATETIME NULL,
       responded_at DATETIME NULL,
+      failed_at DATETIME NULL,
       INDEX idx_user (user_id),
       INDEX idx_status (status),
       INDEX idx_expires (expires_at)
@@ -140,7 +144,7 @@ async function initTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cancellation_outbox (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      event_payload JSON NOT NULL,
+      event_payload LONGTEXT NOT NULL,
       status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
       attempts INT NOT NULL DEFAULT 0,
       last_error TEXT NULL,
@@ -153,7 +157,7 @@ async function initTable() {
     CREATE TABLE IF NOT EXISTS callback_outbox (
       id INT AUTO_INCREMENT PRIMARY KEY,
       action VARCHAR(50) NOT NULL,
-      payload JSON NOT NULL,
+      payload LONGTEXT NOT NULL,
       status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
       attempts INT NOT NULL DEFAULT 0,
       last_error TEXT NULL,

@@ -73,6 +73,12 @@ spec:
               value: {{ .Values.env.autoAdmissionEnabled | quote }}
             - name: AUTO_ADMISSION_INTERVAL_MS
               value: {{ .Values.env.autoAdmissionIntervalMs | quote }}
+            - name: BATCH_SIZE
+              value: {{ .Values.env.batchSize | quote }}
+            - name: ADMISSION_TIMEOUT
+              value: {{ .Values.env.admissionTimeout | quote }}
+            - name: ADMISSION_TIMEOUT_CHECK_INTERVAL_MS
+              value: {{ .Values.env.admissionTimeoutCheckIntervalMs | quote }}
             - name: DB_HOST
               value: {{ .Values.env.dbHost | quote }}
             - name: DB_PORT

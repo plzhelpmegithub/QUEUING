@@ -18,12 +18,12 @@ QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설
 ## ⚙️ Core Logic & Code Description
 ### `values.yaml`
 - **목적:** 배포 환경별 설정을 템플릿과 분리하고, 이미지·네트워크·리소스 값을 재사용한다.
-- **주요 기능:** `env`에는 비밀이 아닌 연결 설정을 보관하고, `dbPasswordSecret`, `auth.secret`, `auth.bootstrap.secret`, `smtp.secret`에는 이미 클러스터에 생성된 Secret의 이름과 키만 기록한다. `autoAdmissionEnabled`와 `autoAdmissionIntervalMs`로 대기열 자동 승인 워커를 제어한다.
+- **주요 기능:** `env`에는 비밀이 아닌 연결 설정을 보관하고, `dbPasswordSecret`, `auth.secret`, `auth.bootstrap.secret`, `smtp.secret`에는 이미 클러스터에 생성된 Secret의 이름과 키만 기록한다. `autoAdmissionEnabled`, `autoAdmissionIntervalMs`, `batchSize`, `admissionTimeout`, `admissionTimeoutCheckIntervalMs`로 대기열 자동 승인과 승인 만료 정책을 제어한다.
 - **API 명세 / 라우팅 규칙:** API 컨테이너는 기본적으로 3000번 포트를 사용하며, 기본 Service 타입은 NodePort다.
 
 ### `templates/deployment.yaml`
 - **목적:** Redis, MariaDB, AWS LocalStack 및 선택적 SMTP 설정을 API Pod에 주입한다.
-- **주요 기능:** `JWT_AUTH_SECRET`와 `JWT_SECRET`을 `auth.secret`의 외부 Secret에서 항상 주입한다. 둘 중 하나라도 없으면 파드가 생성되지 않으며, 애플리케이션은 32자 미만의 키로 기동하지 않는다. `AUTO_ADMISSION_ENABLED`와 `AUTO_ADMISSION_INTERVAL_MS`를 values에서 주입하여 자동 승인 워커를 제어한다. `auth.bootstrap.enabled: true`일 때만 bootstrap Secret의 관리자·모니터링 계정 변수를 추가 주입한다. `recaptcha.enabled: true`일 때 `RECAPTCHA_SECRET_KEY`(v3)를 외부 Secret에서 주입하고, `RECAPTCHA_REQUIRED`, `RECAPTCHA_SCORE_THRESHOLD`, `RECAPTCHA_ALLOWED_HOSTNAMES`를 values에서 주입한다. `recaptcha.v2Fallback: true`이면 같은 Secret에서 `RECAPTCHA_V2_SECRET_KEY`도 추가 주입한다. `recaptcha.enabled: false`일 때 관련 환경변수를 만들지 않아 기존 배포 흐름을 유지한다. `smtp.enabled: true`일 때 `SMTP_HOST`, `SMTP_PORT`를 values에서 읽고 `SMTP_USER`, `SMTP_PASS`를 `secretKeyRef`로 주입한다. `smtp.enabled: false`일 때 SMTP 환경변수를 만들지 않아 애플리케이션의 AWS SES fallback이 유지된다.
+- **주요 기능:** `JWT_AUTH_SECRET`와 `JWT_SECRET`을 `auth.secret`의 외부 Secret에서 항상 주입한다. 둘 중 하나라도 없으면 파드가 생성되지 않으며, 애플리케이션은 32자 미만의 키로 기동하지 않는다. `AUTO_ADMISSION_ENABLED`, `AUTO_ADMISSION_INTERVAL_MS`, `BATCH_SIZE`, `ADMISSION_TIMEOUT`, `ADMISSION_TIMEOUT_CHECK_INTERVAL_MS`를 values에서 주입하여 자동 승인 워커·승인 풀·만료 처리를 제어한다. `auth.bootstrap.enabled: true`일 때만 bootstrap Secret의 관리자·모니터링 계정 변수를 추가 주입한다. `recaptcha.enabled: true`일 때 `RECAPTCHA_SECRET_KEY`(v3)를 외부 Secret에서 주입하고, `RECAPTCHA_REQUIRED`, `RECAPTCHA_SCORE_THRESHOLD`, `RECAPTCHA_ALLOWED_HOSTNAMES`를 values에서 주입한다. `recaptcha.v2Fallback: true`이면 같은 Secret에서 `RECAPTCHA_V2_SECRET_KEY`도 추가 주입한다. `recaptcha.enabled: false`일 때 관련 환경변수를 만들지 않아 기존 배포 흐름을 유지한다. `smtp.enabled: true`일 때 `SMTP_HOST`, `SMTP_PORT`를 values에서 읽고 `SMTP_USER`, `SMTP_PASS`를 `secretKeyRef`로 주입한다. `smtp.enabled: false`일 때 SMTP 환경변수를 만들지 않아 애플리케이션의 AWS SES fallback이 유지된다.
 - **API 명세 / 라우팅 규칙:** 이메일 테스트 API는 API 애플리케이션의 `POST /admin/test-email` 라우트를 사용한다. SMTP 자격증명은 HTTP 응답이나 로그에 출력하지 않는다.
 
 ### `auth` 설정
@@ -33,16 +33,23 @@ QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설
 
 ### 자동 승인 워커 설정
 
-- `env.autoAdmissionEnabled: true`로 설정하면 API 파드가 `waiting_queue`의 `eligible`·`WAITING` 회차를 찾아 상위 `BATCH_SIZE`명을 자동 승인한다.
+- `env.autoAdmissionEnabled: true`로 설정하면 API 파드가 `waiting_queue`의 `eligible`·`WAITING` 회차를 찾아 admitted 풀의 빈 슬롯만큼, 최대 `env.batchSize`명까지 자동 승인한다.
 - `env.autoAdmissionIntervalMs`는 확인 주기이며 기본 예시는 1초(`"1000"`)다.
+- `env.batchSize`는 회차별 admitted 풀의 최대 인원이며 API Pod에 `BATCH_SIZE`로 전달된다. 기본값은 100명이다.
+- `env.admissionTimeout`은 승인된 사용자가 좌석 선택 단계로 이동할 수 있도록 유지되는 제한시간(초)이며 `ADMISSION_TIMEOUT`으로 전달된다. 기본값 420초(7분)다.
+- `env.admissionTimeoutCheckIntervalMs`는 만료된 승인 사용자를 정리하고 다음 eligible 사용자를 보충하는 점검 주기(밀리초)이며 `ADMISSION_TIMEOUT_CHECK_INTERVAL_MS`로 전달된다.
 - `JWT_SECRET`이 32자 미만이면 워커는 자동 승인을 수행하지 않으므로 인증 Secret을 먼저 생성해야 한다.
 - 자동 승인은 `JWT_SECRET`로 Admission Token을 발급하고 MariaDB의 대기 상태를 `ADMITTED`로 변경한다. `standby` 취소표 대기자는 대상이 아니다.
 - API 파드가 여러 개여도 회차별 Redis 분산 락을 사용하지만, 운영 환경에서는 자동 승인 배치 크기와 좌석 정책을 별도로 검토해야 한다.
+- 승인 만료 시 Redis admitted 상태와 Admission Token을 정리하고 MariaDB 상태를 `EXPIRED`로 동기화한 뒤, 빈 슬롯 1개를 eligible 대기자에게 보충한다.
 
 ```yaml
 env:
   autoAdmissionEnabled: true
   autoAdmissionIntervalMs: "1000"
+  batchSize: "100"
+  admissionTimeout: "420"
+  admissionTimeoutCheckIntervalMs: "1000"
 ```
 
 ## 🔐 API 인증 Secret 설정

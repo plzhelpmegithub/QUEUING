@@ -1,18 +1,121 @@
 const pool = require('../config/mariadb');
 
+const COMPLETED_STATUSES = new Set(['RESPONDED', 'COMPLETED']);
+
+function isPastExpiry(allocation) {
+  if (!allocation || allocation.status !== 'LINK_SENT' || !allocation.expiresAt) return false;
+  const expiresAtMs = new Date(allocation.expiresAt).getTime();
+  return Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now();
+}
+
+function toAllocation(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    seatId: row.seat_id,
+    eventId: row.event_id,
+    sessionDate: row.session_date || '',
+    sessionTime: row.session_time || '',
+    status: row.status,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at,
+    respondedAt: row.responded_at instanceof Date ? row.responded_at.toISOString() : row.responded_at || null,
+  };
+}
+
+async function getAllocationById(allocationId) {
+  if (allocationId === undefined || allocationId === null || allocationId === '') return null;
+  const rows = await pool.query(
+    `SELECT allocation_id AS id, user_id, seat_id, event_id, status,
+            created_at, expires_at, responded_at, session_date, session_time
+     FROM cancel_allocations
+     WHERE allocation_id = ? LIMIT 1`,
+    [allocationId],
+  );
+  return rows.length ? toAllocation(rows[0]) : null;
+}
+
+async function getLatestAllocation(userId, eventId = '') {
+  const eventFilter = eventId ? ' AND event_id = ?' : '';
+  const params = eventId ? [userId, eventId] : [userId];
+  const rows = await pool.query(
+    `SELECT allocation_id AS id, user_id, seat_id, event_id, status,
+            created_at, expires_at, responded_at, session_date, session_time
+     FROM cancel_allocations
+     WHERE user_id = ?${eventFilter}
+     ORDER BY created_at DESC, allocation_id DESC LIMIT 1`,
+    params,
+  );
+  return rows.length ? toAllocation(rows[0]) : null;
+}
+
+async function getActionAllocation(userId, eventId = '') {
+  // 아직 처리되지 않은 할당을 우선하고, 없으면 terminal 상태도 반환한다.
+  // 중복 complete/expire 요청을 멱등하게 처리하기 위한 조회 순서다.
+  return (await getAllocation(userId, eventId, false)) || getLatestAllocation(userId, eventId);
+}
+
 async function markRespondedById(allocationId, seatId) {
   const seatUpdate = seatId ? ', seat_id = ?' : '';
-  const params = seatId ? [allocationId, seatId] : [allocationId];
   const result = await pool.query(
-    `UPDATE cancel_allocations SET status = 'RESPONDED', responded_at = NOW()${seatUpdate}
-     WHERE allocation_id = ? AND status = 'LINK_SENT'`,
+    `UPDATE cancel_allocations SET status = 'RESPONDED', responded_at = COALESCE(responded_at, UTC_TIMESTAMP())${seatUpdate}
+     WHERE allocation_id = ? AND status = 'LINK_SENT'
+       AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())`,
     seatId ? [seatId, allocationId] : [allocationId],
   );
-  return { affected: result.affectedRows || 0 };
+
+  if ((result.affectedRows || 0) > 0) {
+    return {
+      affected: result.affectedRows,
+      idempotent: false,
+      status: 'RESPONDED',
+      allocation: await getAllocationById(allocationId),
+    };
+  }
+
+  const current = await getAllocationById(allocationId);
+  if (!current) {
+    return { affected: 0, idempotent: false, reason: 'not_found', message: '취소표 할당을 찾을 수 없습니다.' };
+  }
+  if (COMPLETED_STATUSES.has(current.status)) {
+    if (seatId && current.seatId && current.seatId !== seatId) {
+      return { affected: 0, idempotent: false, reason: 'seat_mismatch', status: current.status, allocation: current };
+    }
+    return {
+      affected: 0,
+      idempotent: true,
+      alreadyProcessed: true,
+      status: current.status,
+      allocation: current,
+      message: '이미 완료 처리된 취소표 할당입니다.',
+    };
+  }
+  if (current.status === 'EXPIRED') {
+    return {
+      affected: 0,
+      idempotent: false,
+      reason: 'already_expired',
+      status: current.status,
+      allocation: current,
+      message: '이미 만료된 취소표 할당입니다.',
+    };
+  }
+  if (isPastExpiry(current)) {
+    return {
+      affected: 0,
+      idempotent: false,
+      reason: 'already_expired',
+      status: current.status,
+      allocation: current,
+      message: '취소표 할당의 제한 시간이 만료되었습니다.',
+    };
+  }
+  return { affected: 0, idempotent: false, reason: 'invalid_status', status: current.status, allocation: current };
 }
 
 async function markResponded(userId, seatId, eventId = '') {
-  const allocation = await getAllocation(userId, eventId, false);
+  const allocation = await getActionAllocation(userId, eventId);
   if (!allocation) return { affected: 0 };
   return markRespondedById(allocation.id, seatId);
 }
@@ -23,11 +126,45 @@ async function markExpiredById(allocationId) {
      WHERE allocation_id = ? AND status = 'LINK_SENT'`,
     [allocationId],
   );
-  return { affected: result.affectedRows || 0 };
+
+  if ((result.affectedRows || 0) > 0) {
+    return {
+      affected: result.affectedRows,
+      idempotent: false,
+      status: 'EXPIRED',
+      allocation: await getAllocationById(allocationId),
+    };
+  }
+
+  const current = await getAllocationById(allocationId);
+  if (!current) {
+    return { affected: 0, idempotent: false, reason: 'not_found', message: '취소표 할당을 찾을 수 없습니다.' };
+  }
+  if (current.status === 'EXPIRED') {
+    return {
+      affected: 0,
+      idempotent: true,
+      alreadyProcessed: true,
+      status: current.status,
+      allocation: current,
+      message: '이미 만료 처리된 취소표 할당입니다.',
+    };
+  }
+  if (COMPLETED_STATUSES.has(current.status)) {
+    return {
+      affected: 0,
+      idempotent: false,
+      reason: 'already_completed',
+      status: current.status,
+      allocation: current,
+      message: '이미 완료된 취소표 할당은 만료 처리할 수 없습니다.',
+    };
+  }
+  return { affected: 0, idempotent: false, reason: 'invalid_status', status: current.status, allocation: current };
 }
 
 async function markExpired(userId, seatId, eventId = '') {
-  const allocation = await getAllocation(userId, eventId, true);
+  const allocation = await getActionAllocation(userId, eventId);
   if (!allocation) return { affected: 0 };
   return markExpiredById(allocation.id);
 }
@@ -53,26 +190,15 @@ async function getAllocation(userId, eventId = '', includeExpired = false) {
   const params = eventId ? [userId, eventId] : [userId];
   const expiryFilter = includeExpired ? '' : ' AND expires_at > UTC_TIMESTAMP()';
   const rows = await pool.query(
-    `SELECT allocation_id AS id, user_id, seat_id, event_id, status, created_at, expires_at
-     , session_date, session_time
+    `SELECT allocation_id AS id, user_id, seat_id, event_id, status, created_at, expires_at,
+            responded_at, session_date, session_time
      FROM cancel_allocations
      WHERE user_id = ?${eventFilter} AND status = 'LINK_SENT'${expiryFilter}
      ORDER BY created_at DESC LIMIT 1`,
     params,
   );
   if (rows.length === 0) return null;
-  const r = rows[0];
-  return {
-    id: r.id,
-    userId: r.user_id,
-    seatId: r.seat_id,
-    eventId: r.event_id,
-    sessionDate: r.session_date || '',
-    sessionTime: r.session_time || '',
-    status: r.status,
-    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
-    expiresAt: r.expires_at instanceof Date ? r.expires_at.toISOString() : r.expires_at,
-  };
+  return toAllocation(rows[0]);
 }
 
 async function getActiveAllocation(userId, eventId = '') {
@@ -80,12 +206,31 @@ async function getActiveAllocation(userId, eventId = '') {
 }
 
 async function expireAllocation(userId, eventId, seatId, context = {}) {
-  const allocation = await getAllocation(userId, eventId, true);
+  const allocation = await getActionAllocation(userId, eventId);
   if (!allocation) {
     return { success: false, message: '활성화된 취소표 할당이 없습니다.' };
   }
   if (seatId && allocation.seatId && allocation.seatId !== seatId) {
     return { success: false, message: '활성화된 취소표 할당이 없습니다.' };
+  }
+
+  if (allocation.status !== 'LINK_SENT') {
+    if (allocation.status === 'EXPIRED') {
+      return {
+        success: true,
+        idempotent: true,
+        alreadyProcessed: true,
+        expired: allocation,
+        next: null,
+        message: '이미 만료 처리된 취소표 할당입니다.',
+      };
+    }
+    return {
+      success: false,
+      reason: 'already_completed',
+      status: allocation.status,
+      message: '이미 완료된 취소표 할당은 만료 처리할 수 없습니다.',
+    };
   }
 
   const effectiveSeatId = seatId || allocation.seatId;
@@ -98,12 +243,14 @@ async function expireAllocation(userId, eventId, seatId, context = {}) {
   }
 
   const result = await markExpiredById(allocation.id);
-  if (!result.affected) {
+  if (!result.affected && !result.idempotent) {
     return { success: false, message: '이미 처리된 취소표 할당입니다.' };
   }
 
   return {
     success: true,
+    idempotent: !!result.idempotent,
+    alreadyProcessed: !!result.idempotent,
     expired: allocation,
     next: null,
     message: '취소표 할당이 만료되었습니다. 다음 배정은 B파트 파이프라인이 처리합니다.',
@@ -137,7 +284,10 @@ module.exports = {
   markExpiredById,
   expireAllOverdue,
   getActiveAllocation,
+  getAllocationById,
   getAllocation,
+  getActionAllocation,
+  getLatestAllocation,
   getAllocationHistory,
   expireAllocation,
 };

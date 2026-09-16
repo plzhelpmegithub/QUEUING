@@ -2,6 +2,8 @@ const redis = require('../config/redis');
 const queueService = require('../services/queueService');
 const { guardRecaptcha } = require('../services/recaptchaService');
 const { authenticate, requireRole, requireSelf } = require('../middleware/auth');
+const { syncToMariaDB } = require('../services/syncRetryService');
+const { acquireLock, releaseLock } = require('../services/lockService');
 
 const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
 const userAuth = { preHandler: [authenticate, requireSelf] };
@@ -47,8 +49,19 @@ async function queueRoutes(fastify) {
   });
 
   fastify.post('/queue/admit', adminAuth, async (request, reply) => {
-    const result = await queueService.admitBatch(getQueueContext(request));
-    return reply.send(result);
+    const context = getQueueContext(request);
+    const normalized = queueService.queueKeys(context);
+    const resource = `admission:${normalized.eventId || 'default'}:${normalized.sessionKey}`;
+    const lock = await acquireLock(resource);
+    if (!lock.acquired) {
+      return reply.status(409).send({ error: '같은 회차의 입장 승인 작업이 진행 중입니다.' });
+    }
+    try {
+      const result = await queueService.admitBatch(context);
+      return reply.send(result);
+    } finally {
+      await releaseLock(resource, lock.token).catch(() => {});
+    }
   });
 
   fastify.get('/queue/standby/next', adminAuth, async (request, reply) => {
@@ -97,6 +110,24 @@ async function queueRoutes(fastify) {
   fastify.get('/admin/hold-duration', adminAuth, async (request, reply) => {
     const result = await queueService.getHoldDuration();
     return reply.send(result);
+  });
+
+  fastify.post('/admin/admission-timeout', adminAuth, async (request, reply) => {
+    const { seconds } = request.body || {};
+    const normalizedSeconds = Number.parseInt(seconds, 10);
+    if (!Number.isFinite(normalizedSeconds) || normalizedSeconds < 10) {
+      return reply.status(400).send({ error: '입장 제한 시간은 10초 이상의 정수여야 합니다.' });
+    }
+    const result = await queueService.setAdmissionTimeout(normalizedSeconds);
+    return reply.send(result);
+  });
+
+  fastify.get('/admin/admission-timeout', adminAuth, async (request, reply) => {
+    const admissionTimeout = await queueService.getAdmissionTimeout();
+    return reply.send({
+      admissionTimeout,
+      display: `${Math.floor(admissionTimeout / 60)}분 ${admissionTimeout % 60}초`,
+    });
   });
 
   fastify.post('/admin/ticketing/schedule', adminAuth, async (request, reply) => {
@@ -189,24 +220,60 @@ async function queueRoutes(fastify) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
     }
 
-    let removed = false;
-    let from = '';
-
     const context = getQueueContext(request);
     const keys = queueService.queueKeys(context);
     const eligibleRemoved = await redis.zrem(keys.waitingKey, userId);
-    if (eligibleRemoved > 0) { removed = true; from = 'eligible'; }
-
     const standbyRemoved = await redis.zrem(keys.standbyKey, userId);
-    if (standbyRemoved > 0) { removed = true; from = 'standby'; }
+    let admittedRemoved = false;
+    if (await redis.sismember(keys.admittedKey, userId)) {
+      admittedRemoved = await queueService.removeAdmitted(userId, context);
+    } else {
+      await queueService.cancelAdmissionDeadline(userId, context);
+      await revokeToken(userId, context);
+    }
 
-    const admittedRemoved = await redis.srem(keys.admittedKey, userId);
-    if (admittedRemoved > 0) { removed = true; from = 'admitted'; }
+    const removedFrom = admittedRemoved
+      ? 'admitted'
+      : eligibleRemoved > 0
+        ? 'eligible'
+        : standbyRemoved > 0
+          ? 'standby'
+          : '';
 
-    await revokeToken(userId, context);
+    if (eligibleRemoved > 0 || standbyRemoved > 0) {
+      await syncToMariaDB(
+        `UPDATE waiting_queue
+         SET status = 'LEFT', updated_at = NOW()
+         WHERE user_id = ?
+           AND event_id = ?
+           AND session_date = ?
+           AND session_time = ?
+           AND status = 'WAITING'`,
+        [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+        `queue:leave ${userId}`,
+      );
+    }
 
-    if (removed) {
-      return reply.send({ success: true, from, message: `${userId}가 대기열에서 이탈했습니다.` });
+    let backfill = null;
+    if (admittedRemoved) {
+      const resource = `admission:${keys.eventId || 'default'}:${keys.sessionKey}`;
+      const lock = await acquireLock(resource);
+      if (lock.acquired) {
+        try {
+          backfill = await queueService.backfillOne(context);
+        } finally {
+          await releaseLock(resource, lock.token).catch(() => {});
+        }
+      }
+    }
+
+    if (removedFrom) {
+      return reply.send({
+        success: true,
+        from: removedFrom,
+        backfill,
+        message: `${userId}가 대기열에서 이탈했습니다.`,
+      });
     }
     return reply.send({ success: false, message: '대기열에 등록되어 있지 않습니다.' });
   });

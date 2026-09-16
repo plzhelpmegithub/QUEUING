@@ -15,6 +15,146 @@ const EVENT_LIST_KEY = 'events:list';
 
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 100;
 
+const ADMISSION_DEADLINE_PREFIX = 'admission:deadline:';
+const ADMISSION_DEADLINE_META = 'admission:deadline:meta';
+const ADMISSION_TIMEOUT_KEY = 'event:admission-timeout';
+const DEFAULT_ADMISSION_TIMEOUT = parseInt(process.env.ADMISSION_TIMEOUT, 10) || 420;
+
+function admissionDeadlineKey(userId, context = {}) {
+  const session = normalizeSessionContext(context);
+  if (!session.scoped) return `${ADMISSION_DEADLINE_PREFIX}${userId}`;
+  return `${ADMISSION_DEADLINE_PREFIX}${session.eventId || 'event'}:${session.sessionKey}:${userId}`;
+}
+
+async function getAdmissionTimeout() {
+  const stored = await redis.get(ADMISSION_TIMEOUT_KEY);
+  const parsed = Number.parseInt(stored, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ADMISSION_TIMEOUT;
+}
+
+async function setAdmissionTimeout(seconds) {
+  const normalizedSeconds = Number.parseInt(seconds, 10);
+  if (!Number.isFinite(normalizedSeconds) || normalizedSeconds < 10) {
+    throw new Error('입장 제한시간은 10초 이상의 정수여야 합니다.');
+  }
+
+  await redis.set(ADMISSION_TIMEOUT_KEY, normalizedSeconds);
+  console.log(`[Queue] 입장 제한시간: ${normalizedSeconds}초 (${Math.floor(normalizedSeconds / 60)}분)`);
+  return {
+    admissionTimeout: normalizedSeconds,
+    display: `${Math.floor(normalizedSeconds / 60)}분 ${normalizedSeconds % 60}초`,
+    message: `입장 제한시간이 ${normalizedSeconds}초로 설정되었습니다.`,
+  };
+}
+
+async function setAdmissionDeadline(userId, context = {}) {
+  const timeout = await getAdmissionTimeout();
+  const key = admissionDeadlineKey(userId, context);
+  const metaField = key.slice(ADMISSION_DEADLINE_PREFIX.length);
+  const session = normalizeSessionContext(context);
+  const meta = JSON.stringify({
+    userId,
+    eventId: session.eventId,
+    sessionDate: session.sessionDate,
+    sessionTime: session.sessionTime,
+  });
+
+  await redis.pipeline()
+    .set(key, '1', 'EX', timeout)
+    .hset(ADMISSION_DEADLINE_META, metaField, meta)
+    .exec();
+}
+
+async function cancelAdmissionDeadline(userId, context = {}) {
+  const key = admissionDeadlineKey(userId, context);
+  const metaField = key.slice(ADMISSION_DEADLINE_PREFIX.length);
+
+  await redis.pipeline()
+    .del(key)
+    .hdel(ADMISSION_DEADLINE_META, metaField)
+    .exec();
+}
+
+async function removeAdmitted(userId, context = {}, options = {}) {
+  const { revokeToken } = require('./tokenService');
+  const keys = queueKeys(context);
+  const finalStatus = options.finalStatus || 'EXPIRED';
+
+  const removed = await redis.srem(keys.admittedKey, userId);
+  if (removed > 0) {
+    await revokeToken(userId, context);
+    await cancelAdmissionDeadline(userId, context);
+
+    await syncToMariaDB(
+      `UPDATE waiting_queue
+       SET status = ?,
+           updated_at = NOW()
+       WHERE user_id = ?
+         AND event_id = ?
+         AND session_date = ?
+         AND session_time = ?
+         AND status IN ('ADMITTED', 'PROMOTED')`,
+       [finalStatus, userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+      `queue:remove-admitted ${userId}`,
+    );
+
+    console.log(`[Queue] ${userId} admitted에서 제거`);
+    return true;
+  }
+  return false;
+}
+
+async function backfillOne(context = {}) {
+  const { issueToken, revokeToken } = require('./tokenService');
+  const keys = queueKeys(context);
+  const admissionTimeout = await getAdmissionTimeout();
+
+  const waiting = await redis.zrange(keys.waitingKey, 0, 0);
+  if (waiting.length > 0) {
+    const userId = waiting[0];
+
+    let tokenInfo;
+    try {
+      tokenInfo = await issueToken(userId, admissionTimeout, keys);
+    } catch (err) {
+      console.error(`[Backfill] Token 발급 실패 (${userId}):`, err.message);
+      return null;
+    }
+
+    try {
+      await redis.pipeline()
+        .zrem(keys.waitingKey, userId)
+        .sadd(keys.admittedKey, userId)
+        .exec();
+    } catch (err) {
+      await revokeToken(userId, keys).catch(() => {});
+      throw err;
+    }
+
+    await setAdmissionDeadline(userId, context);
+
+    await syncToMariaDB(
+      `UPDATE waiting_queue
+       SET status = 'ADMITTED',
+           updated_at = NOW()
+       WHERE user_id = ?
+         AND event_id = ?
+         AND session_date = ?
+         AND session_time = ?
+         AND status = 'WAITING'`,
+      [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+      `queue:backfill:eligible ${userId}`,
+    );
+
+    console.log(`[Backfill] ${userId} eligible → admitted`);
+    return { userId, type: 'eligible' };
+  }
+
+  // standby is reserved for the separate cancellation-ticket flow. It must
+  // not receive a normal admission token when an eligible slot is refilled.
+  return null;
+}
+
 function queueKeys(context = {}) {
   const normalized = normalizeSessionContext(context);
 
@@ -388,6 +528,41 @@ async function enterStandby(
   const membershipAtJoin =
     priorityLevel > 0 ? 1 : 0;
 
+  // standby 접수가 마감된 뒤에도 이미 등록된 사용자는 마이페이지에서
+  // 자신의 취소표 대기 상태를 다시 조회할 수 있어야 한다. 신규 등록만
+  // 막고, 기존 standby의 멱등 조회는 허용한다.
+  const existingStandby =
+    await redis.zscore(
+      keys.standbyKey,
+      userId
+    );
+
+  if (existingStandby !== null) {
+    const rank =
+      await redis.zrank(
+        keys.standbyKey,
+        userId
+      );
+
+    const totalStandby =
+      await redis.zcard(
+        keys.standbyKey
+      );
+
+    return {
+      status: 'waiting',
+      type: 'standby',
+      standbyPosition: rank + 1,
+      totalStandby,
+      ticket: parseInt(
+        existingStandby,
+        10
+      ),
+      message:
+        '이미 취소표 대기열에 등록되어 있습니다.',
+    };
+  }
+
   const currentStatus = await redis.get(
     keys.statusKey
   );
@@ -430,38 +605,6 @@ async function enterStandby(
           '아직 취소표 대기 접수 상태가 아닙니다.',
       };
     }
-  }
-
-  const existingStandby =
-    await redis.zscore(
-      keys.standbyKey,
-      userId
-    );
-
-  if (existingStandby !== null) {
-    const rank =
-      await redis.zrank(
-        keys.standbyKey,
-        userId
-      );
-
-    const totalStandby =
-      await redis.zcard(
-        keys.standbyKey
-      );
-
-    return {
-      status: 'waiting',
-      type: 'standby',
-      standbyPosition: rank + 1,
-      totalStandby,
-      ticket: parseInt(
-        existingStandby,
-        10
-      ),
-      message:
-        '이미 취소표 대기열에 등록되어 있습니다.',
-    };
   }
 
   await redis.zrem(
@@ -635,12 +778,24 @@ async function admitBatch(
     require('./tokenService');
 
   const keys = queueKeys(context);
+  const admissionTimeout = await getAdmissionTimeout();
+
+  const admittedCount = await redis.scard(keys.admittedKey);
+  const availableSlots = Math.max(0, BATCH_SIZE - admittedCount);
+  if (availableSlots === 0) {
+    return {
+      admitted: [],
+      count: 0,
+      remaining: await redis.zcard(keys.waitingKey),
+      message: `현재 입장 슬롯이 가득 찼습니다. (최대 ${BATCH_SIZE}명)`,
+    };
+  }
 
   const users =
     await redis.zrange(
       keys.waitingKey,
       0,
-      BATCH_SIZE - 1
+      availableSlots - 1
     );
 
   if (users.length === 0) {
@@ -654,10 +809,6 @@ async function admitBatch(
 
   const tokens = {};
 
-  // Prepare every token before exposing the users through admittedKey. The
-  // position endpoint can be polled immediately after admittedKey changes,
-  // so publishing admission first creates a race where /queue/enter sees an
-  // admitted user but cannot find the token yet.
   try {
     for (const userId of users) {
       const {
@@ -665,7 +816,7 @@ async function admitBatch(
         expiresAt,
       } = await issueToken(
         userId,
-        undefined,
+        admissionTimeout,
         keys
       );
 
@@ -713,7 +864,6 @@ async function admitBatch(
   await syncToMariaDB(
     `UPDATE waiting_queue
      SET status = 'ADMITTED',
-         queue_status = 'ADMITTED',
          updated_at = NOW()
      WHERE user_id IN (${placeholders})
        AND event_id = ?
@@ -728,6 +878,18 @@ async function admitBatch(
     ],
     `queue:admit batch(${users.length})`,
   );
+
+  const session = normalizeSessionContext(context);
+  const deadlinePipeline = redis.pipeline();
+  for (const userId of users) {
+    const dKey = admissionDeadlineKey(userId, context);
+    const metaField = dKey.slice(ADMISSION_DEADLINE_PREFIX.length);
+    deadlinePipeline.set(dKey, '1', 'EX', admissionTimeout);
+    deadlinePipeline.hset(ADMISSION_DEADLINE_META, metaField, JSON.stringify({
+      userId, eventId: session.eventId, sessionDate: session.sessionDate, sessionTime: session.sessionTime,
+    }));
+  }
+  await deadlinePipeline.exec();
 
   const remaining =
     await redis.zcard(
@@ -819,6 +981,7 @@ async function promoteStandby(
     require('./tokenService');
 
   const keys = queueKeys(context);
+  const admissionTimeout = await getAdmissionTimeout();
 
   const standbyScore = await redis.zscore(
     keys.standbyKey,
@@ -841,12 +1004,9 @@ async function promoteStandby(
 
   let tokenInfo;
   try {
-    // As with eligible admission, prepare the token before exposing the
-    // user through admittedKey so the frontend cannot observe a tokenless
-    // admission.
     tokenInfo = await issueToken(
       userId,
-      undefined,
+      admissionTimeout,
       keys
     );
 
@@ -854,6 +1014,8 @@ async function promoteStandby(
       keys.admittedKey,
       userId
     );
+
+    await setAdmissionDeadline(userId, context);
   } catch (err) {
     if (standbyScore !== null) {
       await redis.zadd(
@@ -869,7 +1031,6 @@ async function promoteStandby(
   await syncToMariaDB(
     `UPDATE waiting_queue
      SET status = 'PROMOTED',
-         queue_status = 'PROMOTED',
          updated_at = NOW()
      WHERE user_id = ?
        AND event_id = ?
@@ -1737,6 +1898,12 @@ module.exports = {
   getTicketingStatus,
   setHoldDuration,
   getHoldDuration,
+  getAdmissionTimeout,
+  setAdmissionTimeout,
+  setAdmissionDeadline,
+  cancelAdmissionDeadline,
+  removeAdmitted,
+  backfillOne,
   scheduleTicketing,
   restoreTicketingSchedule,
   cancelSchedule,
@@ -1745,4 +1912,6 @@ module.exports = {
   scheduleCloseTime,
   cancelCloseSchedule,
   recoverQueueFromMariaDB,
+  ADMISSION_DEADLINE_PREFIX,
+  ADMISSION_DEADLINE_META,
 };

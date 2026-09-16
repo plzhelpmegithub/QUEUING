@@ -16,6 +16,40 @@ function buildHeaders() {
   return headers;
 }
 
+async function readJsonBody(res) {
+  const text = await res.text().catch(() => '');
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return {};
+  }
+}
+
+async function callbackVerifyLink(token) {
+  const res = await fetch(`${B_CALLBACK_BASE_URL}/b-callback/verify-link`, {
+    method: 'POST',
+    headers: buildHeaders(),
+    body: JSON.stringify({ token }),
+  });
+
+  const bodyText = await res.text().catch(() => '');
+  let body = {};
+  try {
+    body = bodyText ? JSON.parse(bodyText) : {};
+  } catch (_) {
+    body = {};
+  }
+
+  if (!res.ok) {
+    const error = new Error(`B callback /b-callback/verify-link ${res.status}`);
+    error.status = res.status;
+    error.reason = body.reason || '';
+    throw error;
+  }
+  return body;
+}
+
 async function callbackComplete({ userId, eventId, seatId, allocationId }) {
   const res = await fetch(`${B_CALLBACK_BASE_URL}/verify-link/complete`, {
     method: 'POST',
@@ -31,7 +65,7 @@ async function callbackComplete({ userId, eventId, seatId, allocationId }) {
     const body = await res.text().catch(() => '');
     throw new Error(`B callback /complete ${res.status}: ${body}`);
   }
-  return res.json();
+  return readJsonBody(res);
 }
 
 async function callbackExpire({ userId, eventId, seatId, allocationId }) {
@@ -49,7 +83,7 @@ async function callbackExpire({ userId, eventId, seatId, allocationId }) {
     const body = await res.text().catch(() => '');
     throw new Error(`B callback /expire ${res.status}: ${body}`);
   }
-  return res.json();
+  return readJsonBody(res);
 }
 
 async function saveCallbackToOutbox(action, payload, errorMessage = '') {
@@ -110,4 +144,11 @@ async function relayCallbackOutbox() {
   return { relayed, failed };
 }
 
-module.exports = { isConfigured, callbackComplete, callbackExpire, saveCallbackToOutbox, relayCallbackOutbox };
+module.exports = {
+  isConfigured,
+  callbackVerifyLink,
+  callbackComplete,
+  callbackExpire,
+  saveCallbackToOutbox,
+  relayCallbackOutbox,
+};

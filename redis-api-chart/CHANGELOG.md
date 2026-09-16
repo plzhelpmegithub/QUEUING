@@ -1,3 +1,13 @@
+## [2026-09-16 14:45] 업데이트 로그 — 대기열 승인 정책 환경변수 추가
+
+### 🔄 변경 및 수정 사항
+- **[values.yaml]**: `batchSize`, `admissionTimeout`, `admissionTimeoutCheckIntervalMs` 기본값을 추가하여 admitted 풀 크기와 승인 만료 정책을 Helm values에서 조정할 수 있도록 변경
+- **[templates/deployment.yaml]**: `BATCH_SIZE`, `ADMISSION_TIMEOUT`, `ADMISSION_TIMEOUT_CHECK_INTERVAL_MS`를 API Pod 환경변수로 주입
+- **[Chart.yaml]**: 템플릿 변경을 반영하여 차트 버전을 `2.2.1`로 증가. API 이미지 버전은 변경하지 않음
+- **[README.md]**: Helm values와 API 환경변수의 매핑, admitted 풀 상한 및 만료 시 보충 동작을 문서화
+
+---
+
 ## [2026-09-10 12:58] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

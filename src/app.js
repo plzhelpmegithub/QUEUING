@@ -75,6 +75,10 @@ const { initExpiryListener, stopExpiryListener } = require('./services/timerServ
 const { initTable } = require('./services/dbService');
 const { startRetryWorker, stopRetryWorker } = require('./services/syncRetryService');
 const { startAdmissionWorker, stopAdmissionWorker } = require('./services/admissionWorker');
+const {
+  startAdmissionTimeoutWorker,
+  stopAdmissionTimeoutWorker,
+} = require('./services/admissionTimeoutService');
 const { relayCancellationOutbox } = require('./services/cancellationEventPublisher');
 const { relayCallbackOutbox } = require('./services/bPartCallbackService');
 const {
@@ -104,6 +108,7 @@ const start = async () => {
     startAutoRecovery();
     startRetryWorker();
     startAdmissionWorker();
+    startAdmissionTimeoutWorker();
     const outboxRelayId = setInterval(() => relayCancellationOutbox().catch(e => console.error('[Outbox] relay error:', e.message)), 30000);
     const callbackRelayId = setInterval(() => relayCallbackOutbox().catch(e => console.error('[CallbackOutbox] relay error:', e.message)), 30000);
     process.once('beforeExit', () => { clearInterval(outboxRelayId); clearInterval(callbackRelayId); });
@@ -120,6 +125,7 @@ process.on('SIGINT', async () => {
   stopAutoRecovery();
   stopRetryWorker();
   stopAdmissionWorker();
+  stopAdmissionTimeoutWorker();
   await stopExpiryListener();
   await fastify.close();
   process.exit(0);

@@ -27,6 +27,10 @@ function createClient() {
   return new SQSClient(config);
 }
 
+function isConfigured() {
+  return Boolean(QUEUE_URL);
+}
+
 const sqsClient = createClient();
 
 async function sendToSQS(event) {
@@ -131,4 +135,4 @@ async function relayCancellationOutbox() {
   return { relayed, failed };
 }
 
-module.exports = { publishCancellationEvent, relayCancellationOutbox };
+module.exports = { isConfigured, publishCancellationEvent, relayCancellationOutbox };

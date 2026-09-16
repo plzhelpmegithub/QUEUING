@@ -1,6 +1,7 @@
 const Redis = require('ioredis');
 const redis = require('../config/redis');
 const { timerExpirations, timerStarts, timerCancellations } = require('./metricsService');
+const { normalizeSessionContext } = require('./sessionContext');
 
 const TIMER_PREFIX = 'timer:seat:';
 const SEAT_PREFIX = 'seat:';
@@ -65,17 +66,37 @@ async function initExpiryListener() {
       const heldBy = seatInfo.heldBy;
       timerExpirations.inc();
 
-      // 선점 만료는 일반 좌석 반환이다. 취소표 순차 배정은 B파트가 담당하므로
-      // A파트에서 standby 승격·Secret Link 발급을 수행하지 않는다.
       try {
         const result = await require('./seatService').releaseSeat(heldBy, seatId);
         if (result.success) {
-          console.log(`[Timer] ${heldBy} 시간 초과 — ${seatId} available 복구 (직접 재배정 없음)`);
+          console.log(`[Timer] ${heldBy} 시간 초과 — ${seatId} available 복구`);
         } else {
           console.warn(`[Timer] ${seatId} 만료 후 좌석 해제 실패: ${result.message || result.reason}`);
         }
       } catch (err) {
         console.error(`[Timer] ${seatId} 만료 좌석 해제 실패:`, err.message);
+      }
+
+      const { sessionFromSeat } = require('./sessionContext');
+      const { acquireLock, releaseLock } = require('./lockService');
+      const queueService = require('./queueService');
+      const context = sessionFromSeat(seatId, seatInfo);
+      try {
+        const removed = await queueService.removeAdmitted(heldBy, context);
+        if (removed) {
+          const normalized = normalizeSessionContext(context);
+          const resource = `admission:${normalized.eventId || 'default'}:${normalized.sessionKey}`;
+          const lock = await acquireLock(resource);
+          if (lock.acquired) {
+            try {
+              await queueService.backfillOne(context);
+            } finally {
+              await releaseLock(resource, lock.token).catch(() => {});
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[Timer] ${heldBy} admitted 제거/backfill 실패:`, err.message);
       }
     }
   });

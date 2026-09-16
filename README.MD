@@ -53,6 +53,7 @@ api/
         ├── cancelAllocationService.js  # 취소표 할당 관리
         ├── redisRecoveryService.js     # Redis 자동 복구·주기적 정합성 점검
         ├── admissionWorker.js           # 대기열 자동 승인 워커
+        ├── admissionTimeoutService.js  # 입장 제한시간 만료·슬롯 재충원
         └── dbService.js                # MariaDB 테이블 초기화
 ```
 
@@ -96,7 +97,7 @@ api/
 - 헬스체크 (`GET /health`)
 - 서버 시작 시 초기화: Redis 만료 리스너, MariaDB 9개 테이블 생성, 관리자 계정 생성
 - 서버 시작 시 MariaDB 기준 Redis 자동 복구를 최대 3회 시도하고, 이후 주기적 정합성 점검 시작
-- `AUTO_ADMISSION_ENABLED=true`일 때 DB의 대기 중인 회차를 찾아 대기열 상위 `BATCH_SIZE`명을 주기적으로 자동 승인하고 Admission Token을 발급
+- `AUTO_ADMISSION_ENABLED=true`일 때 DB의 대기 중인 회차를 찾아 빈 입장 슬롯만큼(최대 `BATCH_SIZE`) 주기적으로 자동 승인하고 Admission Token을 발급
 - `SIGINT` 시그널 수신 시 Redis 리스너·자동 복구 타이머 정리 후 graceful shutdown
 
 ---
@@ -173,6 +174,8 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `POST /admin/ticketing/schedule-standby-close` | standby 마감 시간 설정 |
 | `POST /admin/hold-duration` | 결제 제한 시간 설정 |
 | `GET /admin/hold-duration` | 결제 제한 시간 조회 |
+| `POST /admin/admission-timeout` | 입장 승인 후 제한시간(초) 설정 |
+| `GET /admin/admission-timeout` | 현재 입장 제한시간 조회 |
 | `POST /queue/leave` | 로그인한 본인 사용자의 대기열 이탈 |
 | `POST /admin/queue/simulate` | 대량 사용자 시뮬레이션 (Redis pipeline, 5000명 배치) |
 | `POST /admin/queue/reset` | 대기열 전체 초기화 |
@@ -180,24 +183,34 @@ mariadb 라이브러리 기반 커넥션 풀.
 ### src/routes/simulationRoutes.js — 취소표 시뮬레이션
 
 - `POST /admin/simulation/init`에서 지정한 실제 유저 이메일은 시뮬레이션 대상 계정과 멤버십만 준비한다.
-- `POST /admin/simulation/sellout`은 더미 좌석을 매진 처리하고 더미 standby 대기자 및 `sold_out` 상태를 만든다. 실제 유저는 이 단계에서 사전 등록하지 않으며, 프론트엔드의 일반 예매 흐름에서 `/queue/enter`를 호출할 때 취소표 standby 대기번호를 발급받는다.
-- 매진 단계 이후 응답의 `realUserPosition`은 `null`이며, 상태 조회에서도 실제 유저가 직접 진입하기 전에는 `아직 대기열에 진입하지 않음`으로 표시된다.
+- `POST /admin/simulation/sellout`은 더미 좌석을 매진 처리하고 더미 standby 대기자 및 `sold_out` 상태를 만든다.
+- `POST /admin/simulation/close`는 `simulation:{eventId}`에 저장된 `realUserEmail`을 현재 회차의 Redis standby와 MariaDB `waiting_queue`에 멱등 등록한다. 따라서 조기 마감 후 실제 사용자의 마이페이지에서 취소표 대기 공연을 복원할 수 있다.
 
 ### src/services/admissionWorker.js — 자동 승인 워커
 
 - `AUTO_ADMISSION_ENABLED=true`일 때만 시작한다. `false`이면 기존처럼 관리자 `POST /queue/admit` 수동 승인만 사용한다.
-- `AUTO_ADMISSION_INTERVAL_MS` 간격으로 `waiting_queue`의 `eligible`/`WAITING` 회차를 찾고, 각 회차의 Redis 대기열 상위 `BATCH_SIZE`명을 자동 승인한다.
+- `AUTO_ADMISSION_INTERVAL_MS` 간격으로 `waiting_queue`의 `eligible`/`WAITING` 회차를 찾고, 각 회차의 빈 입장 슬롯만큼(최대 `BATCH_SIZE`) 자동 승인한다. admitted 수가 한도에 도달하면 다음 사용자를 자동 승인하지 않는다.
 - `JWT_SECRET`이 32자 미만이면 사용자를 `admitted`로 이동하지 않고 자동 승인 사이클을 건너뛴다.
-- 승인 시 `JWT_SECRET`로 회차 전용 Admission Token을 먼저 저장한 후 Redis의 `admitted` 집합에 등록하며, MariaDB의 `status`·`queue_status`를 `ADMITTED`로 동기화한다. 토큰 발급 전 승인 상태가 보이지 않으므로 프론트의 즉시 재진입에 따른 `RE_QUEUED` 경쟁 상태를 방지한다.
+- 승인 시 `JWT_SECRET`로 회차 전용 Admission Token을 먼저 저장한 후 Redis의 `admitted` 집합에 등록하며, MariaDB의 `status`를 `ADMITTED`로 동기화한다. 토큰 발급 전 승인 상태가 보이지 않으므로 프론트의 즉시 재진입에 따른 `RE_QUEUED` 경쟁 상태를 방지한다.
 - 여러 API 파드가 동시에 실행되어도 회차별 Redis 분산 락으로 중복 승인을 방지한다.
 - `standby` 취소표 대기열은 자동 승인 대상이 아니다.
+
+### src/services/admissionTimeoutService.js — 입장 제한시간·슬롯 재충원
+
+- Admission Token 발급과 함께 생성된 `admission:deadline:*` 키를 주기적으로 확인한다.
+- 제한시간(기본 420초/7분)이 지나면 해당 사용자를 `admitted`에서 제거하고 토큰을 무효화하며 MariaDB `waiting_queue.status`를 `EXPIRED`로 갱신한다.
+- 만료로 빈 슬롯이 생기면 eligible 대기열에서 정확히 한 명을 backfill하여 Admission Token을 발급한다. standby는 B파트 취소표 흐름과 분리한다.
+- `POST /queue/leave`에서 admitted 사용자가 명시적으로 이탈한 경우에도 동일한 슬롯 재충원이 실행된다. 예매 확정 시에는 상태를 `COMPLETED`로 기록한 뒤 슬롯을 반납한다.
+- 여러 API 파드가 동시에 실행되어도 admission 워커와 동일한 회차별 Redis 분산 락을 사용한다.
 
 개발환경 예시:
 
 ```env
 AUTO_ADMISSION_ENABLED=true
 AUTO_ADMISSION_INTERVAL_MS=1000
-BATCH_SIZE=10
+BATCH_SIZE=100
+ADMISSION_TIMEOUT=420
+ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 ```
 
 ---
@@ -260,15 +273,18 @@ BATCH_SIZE=10
 |---|---|
 | `POST /cancel-queue/join` | 로그인 사용자 Bearer JWT로 일반 예매 대기/입장 상태를 정리하고 회차별 standby 취소표 대기열에 등록 |
 | `GET /cancel-queue/status/:eventId/:userId` | 로그인 사용자 JWT 또는 유효한 본인용 linkToken으로 사용자 취소표 대기 종합 상태 조회 (대기 순번 + 멤버십 + Secret Link) |
+| `GET /cancel-queue/mine` | 로그인한 사용자의 MariaDB `waiting_queue` 중 현재 `standby`·`WAITING` 상태인 취소표 대기 공연 목록 조회. 대기 행이 `PASSED`로 바뀌어도 활성 `cancel_allocations`가 있으면 목록에 유지하며, Redis가 살아 있으면 현재 순번과 전체 대기자 수를 보정 |
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
 | `POST /cancel-queue/hold` | 배정된 좌석을 Admission Token으로 선점. B파트 NULL seat_id 할당 시 사용자가 선택한 좌석을 허용 |
 | `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/expire`로 포워드 |
 | `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/complete`로 포워드 |
-| `POST /verify-link` | 이메일 Secret Link 랜딩 — linkToken JWT를 검증하고 할당 정보 + 선택 가능 좌석 목록 반환. 인증 불필요 |
+| `POST /verify-link` | 이메일 Secret Link 랜딩 — `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임하고, 미설정 시 로컬 개발용 A파트 JWT를 검증한 뒤 할당 정보 + 선택 가능 좌석 목록 반환 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
 | `GET /cancel-queue/history/:eventId` | 이벤트별 할당 내역 조회 |
+
+`/cancel-queue/respond`와 `/cancel-queue/expire`는 `allocationId` 또는 `allocation_id`를 선택적으로 받을 수 있다. 지정하지 않으면 사용자·공연 기준의 현재 처리 대상 할당을 찾는다. 같은 `allocation_id`에 대해 같은 요청을 반복하면 이미 `RESPONDED`/`COMPLETED`인 complete는 `200`과 `idempotent: true`, 이미 `EXPIRED`인 expire는 `200`과 `idempotent: true`로 반환한다. 반대 상태로의 충돌 요청(완료 후 expire, 만료 후 complete)은 `409`로 거부한다.
 
 ---
 
@@ -281,9 +297,9 @@ BATCH_SIZE=10
 | `GET /admin/simulation/events` | DB 등록 공연 목록 조회 (드롭다운용) |
 | `POST /admin/simulation/init` | 시뮬레이션 초기화 — 더미 유저 생성 + 실제 멤버십 유저 계정/멤버십 자동 등록 |
 | `POST /admin/simulation/sellout` | [단계1] 매진 연출 — 전체 좌석 더미 점유(SOLD) + 잔여를 standby 큐 등록. 실제 유저는 이후 직접 진입 |
-| `POST /admin/simulation/close` | [단계2] 조기 마감 — ticketing 상태 closed + 멤버십/대기열 유지 교차 검증 |
-| `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 더미 좌석 랜덤 취소(AVAILABLE 복원) 후 SQS 이벤트 발행 |
-| `POST /admin/simulation/issue-links` | **410 비활성화** — SQS 이벤트를 받은 B파트가 순차 배정·Secret Link 발급 |
+| `POST /admin/simulation/close` | [단계2] 조기 마감 — ticketing 상태 closed + 지정한 실제 사용자를 해당 회차 standby와 MariaDB `waiting_queue`에 등록 |
+| `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 더미 좌석 랜덤 취소(AVAILABLE 복원) 및 B파트 전송용 이벤트 준비 |
+| `POST /admin/simulation/issue-links` | [단계4] 실제 멤버십 유저를 standby 최우선에 등록한 뒤 준비된 취소 이벤트를 B파트 SQS로 전송 |
 | `POST /admin/simulation/cleanup` | 시뮬레이션 데이터 일괄 삭제 (더미 유저·좌석·대기열·예약·멤버십) |
 | `GET /admin/simulation/status` | 현재 시뮬레이션 단계·좌석·대기열·실제유저 상태 조회 |
 
@@ -293,9 +309,10 @@ BATCH_SIZE=10
 **시뮬레이션 단계 흐름:**
 1. `initialized` → 더미 유저 + 실제 유저 준비 완료
 2. `sold_out` → 전석 SOLD + standby 대기열 구성
-3. `closed` → 티켓팅 마감 + 멤버십 검증
-4. `seats_cancelled` → 더미 좌석 일부 취소 (취소표 생성)
-5. B파트 Step Functions가 SQS 이벤트를 소비해 순차 배정·시크릿 링크 발급
+3. `closed` → 티켓팅 마감 + 지정 실제 유저를 standby에 멱등 등록 + 멤버십 검증
+4. `seats_cancelled` → 더미 좌석 일부 취소 및 취소 이벤트 준비
+5. 단계4 → 활성 멤버십 실제 유저를 standby에 등록하고 B파트 SQS로 이벤트 전송
+6. B파트 Step Functions가 SQS 이벤트를 소비해 순차 배정·Secret Link 이메일 발급
 
 ---
 
@@ -355,8 +372,8 @@ Redis 기반 대기열 관리의 핵심 로직.
 
 **주요 함수:**
 - `enter()`: 대기열 진입. 티켓팅 상태에 따라 eligible 또는 standby 배정. 멤버십 레벨당 score -50 우선순위 부여. 중복 진입 방지. 이미 admitted인데 토큰이 없으면 admitted 상태를 유지한 채 Admission Token을 재발급하며, 일시적으로 발급할 수 없을 때는 `admitting` 상태를 반환한다.
-- `enterStandby()`: 매진 후 사용자를 일반 예매 상태에서 회차별 standby 취소표 대기열로 이동시키고 MariaDB 동기화
-- `admitBatch()`: eligible 상위 `BATCH_SIZE`명(기본 10, 환경변수로 조절)에 대한 JWT Admission Token을 먼저 발급·저장한 뒤 admitted로 이동하여, 승인 상태가 토큰보다 먼저 노출되는 경쟁 상태를 방지한다. MariaDB의 `status`와 `queue_status`도 `ADMITTED`로 동기화한다.
+- `enterStandby()`: 매진 후 사용자를 일반 예매 상태에서 회차별 standby 취소표 대기열로 이동시키고 MariaDB 동기화. standby 접수 마감 후에도 이미 등록된 사용자의 재조회는 허용하고 신규 등록만 차단
+- `admitBatch()`: admitted 현재 인원을 먼저 확인해 빈 슬롯만큼 eligible 상위 사용자를 선택하고, JWT Admission Token을 먼저 발급·저장한 뒤 admitted로 이동하여 승인 상태가 토큰보다 먼저 노출되는 경쟁 상태를 방지한다. 기본 최대 admitted 수는 `BATCH_SIZE=100`이며 MariaDB의 `status`를 `ADMITTED`로 동기화한다.
 - `scheduleTicketing()`: 자동 오픈/마감 타이머 설정
 - `restoreTicketingSchedule()`: Redis 초기화·복구 후 저장된 오픈 시각을 기준으로 스케줄과 메모리 타이머를 재등록. 이미 오픈 시각이 지났으면 즉시 `open` 상태로 복구
 - `scheduleStandbyClose()`: standby 마감 시간 예약
@@ -398,8 +415,8 @@ Redis Hash 기반 좌석 상태 머신.
 한 공연에 여러 `sessions`가 있으면 동일한 배치를 회차별로 반복 생성한다. 따라서 올림픽홀 3,322석 공연이 2회차이면 Redis와 MariaDB에 6,644석이 생성되고, 각 회차의 `/seats` 조회는 선택한 날짜·시간의 3,322석만 반환한다.
 
 **주요 함수:**
-- `holdSeat()`: Admission Token 검증 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작. 토큰은 무효화하지 않음(좌석 변경 허용)
-- `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분)
+- `holdSeat()`: Admission Token 검증 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작 → 입장 제한시간(admission deadline) 취소(seat timer가 이어받음). 토큰은 무효화하지 않음(좌석 변경 허용)
+- `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → admitted에서 제거(`COMPLETED`) → 빈 슬롯 backfill → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분)
 - `cancelSeat()`: 예약을 CANCELLED로 기록하고 좌석을 available로 복구한 뒤 B파트용 SQS 취소 이벤트만 발행
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
 - `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 + 인덱스 Set 일괄 삭제
@@ -429,9 +446,10 @@ Redis Pub/Sub + SSE + Prometheus 연동.
 
 ### src/services/cancellationEventPublisher.js — 취소표 SQS 이벤트 발행 + Outbox
 
-B파트의 Step Functions + Lambda 재판매 파이프라인에 좌석 반환 이벤트를 전달한다. SQS 발행 실패 시 `cancellation_outbox` 테이블에 저장하고 30초 주기로 재시도하는 outbox 패턴을 사용한다.
+B파트의 Step Functions + Lambda 재판매 파이프라인에 좌석 반환 이벤트를 전달한다. SQS 발행 실패 시 `cancellation_outbox` 테이블에 저장하고 30초 주기로 재시도하는 outbox 패턴을 사용한다. 어드민 시뮬레이션의 단계4도 같은 발행기를 사용하므로 실제 운영 흐름과 동일한 B파트 연동 경로를 검증할 수 있다.
 
 - `publishCancellationEvent()`: `event_id`, `seat_id`, `reservation_id`, `dedup_key`를 포함한 JSON 메시지를 SQS로 발행. `dedup_key`는 `{event_id}#{seat_id}#{reservation_id}` 형식으로 B파트 Step Functions 실행 이름(멱등성 키)으로 사용된다
+- `isConfigured()`: `CANCELLATION_EVENTS_QUEUE_URL` 또는 호환 별칭 설정 여부를 확인한다. 미설정 상태에서 단계4를 실행하면 링크 발급 요청을 보내지 않고 설정 오류를 반환한다
 - SQS 발행 실패 시 `cancellation_outbox` 테이블에 PENDING 상태로 저장 (fire-and-forget 방지)
 - 큐 URL 미설정 시에도 outbox에 저장하여 나중에 큐가 구성되면 재발행 가능
 - `relayCancellationOutbox()`: PENDING 상태 outbox 항목을 최대 50건 조회 → SQS 재발행 시도 → 성공 시 SENT, 3회 실패 시 FAILED로 마킹. `app.js`에서 30초 `setInterval`로 실행
@@ -440,13 +458,42 @@ B파트의 Step Functions + Lambda 재판매 파이프라인에 좌석 반환 �
 
 ### src/services/bPartCallbackService.js — B파트 콜백 API 클라이언트
 
-`B_CALLBACK_BASE_URL` 환경변수가 설정되면 취소표 할당 상태 전환을 B파트 Lambda에 위임한다. 미설정 시 A파트가 로컬 DB를 직접 업데이트한다 (개발 모드).
+`B_CALLBACK_BASE_URL` 환경변수가 설정되면 취소표 링크 검증과 할당 상태 전환을 B파트 API에 위임한다. 링크 검증 요청에는 `X-Callback-Secret` 헤더를 함께 전송한다. 미설정 시 `/verify-link`만 A파트의 로컬 JWT 검증을 사용한다 (로컬 개발 모드).
 
 - `isConfigured()`: `B_CALLBACK_BASE_URL` 설정 여부 반환
+- `callbackVerifyLink(token)`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link`에 `POST` — 브라우저에서 전달된 Secret Link 토큰을 B파트에서 검증
 - `callbackComplete({ userId, eventId, seatId, allocationId })`: B파트 `/verify-link/complete`에 POST — 사용자가 좌석 선택을 완료했음을 B파트 Step Functions에 알림
 - `callbackExpire({ userId, eventId, seatId, allocationId })`: B파트 `/verify-link/expire`에 POST — Secret Link 만료를 B파트에 알려 다음 대기자 배정을 트리거
 
-`cancelQueueRoutes.js`의 `/respond`와 `/expire` 엔드포인트가 이 서비스를 사용한다. B파트 콜백 실패 시 로컬 DB 업데이트로 폴백한다.
+complete/expire 콜백은 B파트가 `200` JSON 또는 `204 No Content`로 응답해도 성공으로 처리한다. A파트의 `/cancel-queue/respond`, `/cancel-queue/expire`는 먼저 A DB의 `cancel_allocations` 상태를 확인하여 terminal 상태의 중복 요청을 B파트로 재전송하지 않는다. 최초 콜백 성공 뒤에는 A DB도 `allocation_id` 기준으로 상태를 동기화한다. expire 콜백 성공 후에는 A Redis의 해당 사용자의 held 좌석도 해제한다. 취소표 사용자의 `POST /seats/confirm`도 활성 할당이 있으면 동일한 complete 콜백을 자동 호출하고, 실패 시 `callback_outbox`에 저장한 뒤 A DB 할당은 응답 완료로 마감한다.
+
+`cancelQueueRoutes.js`의 `/verify-link`, `/respond`, `/expire` 엔드포인트가 이 서비스를 사용한다. B파트 검증 응답의 식별자와 A파트 `cancel_allocations`를 대조하여 다른 할당으로 변조되는 것을 차단한다. B파트 콜백 실패 시 complete/expire 요청은 `callback_outbox`에 저장되어 재시도된다.
+
+#### B파트 `/b-callback/verify-link` 연동 계약
+
+- **요청:** `POST ${B_CALLBACK_BASE_URL}/b-callback/verify-link`
+- **헤더:** `Content-Type: application/json`, `X-Callback-Secret: ${B_CALLBACK_SECRET}`
+- **본문:** `{ "token": "B파트가 발급한 Secret Link 토큰" }`
+- **성공 응답:** `200`과 함께 아래 식별자·만료 정보를 반환해야 한다. 필드는 camelCase와 snake_case 중 하나를 사용할 수 있다.
+
+```json
+{
+  "valid": true,
+  "user_id": "user@example.com",
+  "event_id": "evt-123",
+  "allocation_id": 1,
+  "seat_id": null,
+  "expires_at": "2026-09-16T15:00:00.000Z",
+  "session_date": "2026-09-20",
+  "session_time": "19:00"
+}
+```
+
+- A파트는 `valid`, `user_id`, `event_id`, `allocation_id`가 없으면 검증 응답 오류로 처리한다.
+- A파트는 `allocation_id`가 자사 `cancel_allocations`의 활성 할당과 일치하는지 확인한 뒤, A파트 DB 만료 시각과 B파트 만료 시각 중 더 이른 시간을 클라이언트에 전달한다.
+- 실제 `cancel_allocations.allocation_id`는 `INT AUTO_INCREMENT` 기본 키이므로 B파트가 전달하는 값도 문자열 예시(`ALLOC-001`)가 아닌 A DB에 생성된 정수 ID와 일치해야 한다. `callback_outbox.id`는 별도의 outbox 자동 증가 키다.
+- 토큰이 유효하지 않으면 `401`, 만료되었으면 `410`과 `{ "valid": false, "reason": "expired" }`를 반환해야 한다. B파트 연결 실패나 잘못된 응답은 A파트가 `502`로 반환한다.
+- A파트는 B파트 토큰을 직접 해석하거나 로그에 기록하지 않는다. 링크 토큰은 서버 간 검증 요청으로만 전달된다.
 
 ---
 
@@ -471,8 +518,9 @@ Redis 키 만료(keyspace notification)를 활용한 결제 시간 제한.
 - `getRemaining()`: 남은 시간(TTL) 조회
 - `initExpiryListener()`: 서버 시작 시 1회 호출. `__keyevent@0__:expired` 채널 구독
   - `timer:seat:*` 키 만료 시:
-    - standby 여부와 관계없이 → available 복구
-    - A파트에서 대기자 승격·Secret Link 발급을 수행하지 않음
+    - 좌석을 available로 복구 (`releaseSeat`)
+    - 해당 사용자를 `admitted`에서 제거 (`removeAdmitted`), 토큰 무효화 + MariaDB `EXPIRED` 갱신
+    - 빈 슬롯을 eligible 대기열에서 즉시 재충원 (`backfillOne`), 분산 락으로 동시성 보호
   - 상태 변경 시 MariaDB 동기화 + Pub/Sub 이벤트 발행
 - `stopExpiryListener()`: graceful shutdown 시 구독 해제
 
@@ -596,19 +644,23 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 
 ### src/services/cancelAllocationService.js — 취소표 할당 서비스
 
-취소표 할당 기록을 조회·만료 처리한다. 다음 대기자 선택과 Secret Link 발급은 B파트 파이프라인이 담당한다. B파트는 `seat_id = NULL`로 할당을 생성하므로, 모든 UPDATE 쿼리는 `allocation_id` 기반으로 수행한다 (SQL `WHERE seat_id = NULL`은 항상 0건 매칭되는 버그 방지).
+취소표 할당 기록을 조회·만료 처리한다. 다음 대기자 선택과 Secret Link 발급은 B파트 파이프라인이 담당한다. 실제 테이블의 `allocation_id`를 기준으로 할당을 찾고, B파트가 `seat_id = NULL`로 생성한 행도 처리할 수 있도록 모든 상태 UPDATE를 `allocation_id` 기준으로 수행한다 (SQL `WHERE seat_id = NULL`은 항상 0건 매칭되는 버그 방지).
 
 - `markRespondedById(allocationId, seatId)`: allocation_id로 직접 RESPONDED 상태 변경. seatId가 있으면 함께 업데이트
-- `markResponded(userId, seatId, eventId)`: 사용자 활성 할당을 조회한 뒤 `markRespondedById()`로 위임
+- `markResponded(userId, seatId, eventId)`: 사용자 처리 대상 할당을 조회한 뒤 `markRespondedById()`로 위임
 - `markExpiredById(allocationId)`: allocation_id로 직접 EXPIRED 상태 변경
-- `markExpired(userId, seatId, eventId)`: 사용자 할당을 조회한 뒤 `markExpiredById()`로 위임
+- `markExpired(userId, seatId, eventId)`: 사용자 처리 대상 할당을 조회한 뒤 `markExpiredById()`로 위임
+- `getAllocationById(allocationId)`: 실제 PK인 `cancel_allocations.allocation_id`로 단일 할당 조회
+- `getLatestAllocation(userId, eventId)`: terminal 상태를 포함하여 사용자·공연의 최신 할당 조회
+- `getActionAllocation(userId, eventId)`: 처리되지 않은 `LINK_SENT` 할당을 우선 조회하고, 없으면 최신 terminal 할당을 조회하여 중복 요청 판별에 사용
+- `markRespondedById()` / `markExpiredById()`: 조건부 UPDATE의 영향 행이 0이어도 현재 상태를 재조회하여 같은 terminal 상태면 멱등 성공 결과를 반환
 - `expireAllOverdue()`: 단일 `UPDATE ... WHERE status='LINK_SENT' AND expires_at < UTC_TIMESTAMP()` 쿼리로 만료 할당 일괄 처리
 - `getActiveAllocation()`: 사용자의 활성 할당 조회
 - `getAllocation()`: 사용자·이벤트별 할당 조회 (만료 포함 여부 선택)
 - `getAllocationHistory()`: 이벤트별 전체 할당 내역
 - `expireAllocation()`: 활성 할당을 만료시키고 선점 중인 좌석을 해제. `seat_id`가 NULL인 할당은 좌석 해제를 건너뜀
 
-할당에는 `event_id`, `session_date`, `session_time`을 함께 저장해 회차별 Admission Token과 좌석을 분리한다. 판매 좌석 취소(`POST /seats/cancel`)가 성공하면 A파트는 SQS 취소 이벤트만 발행하고, 다음 멤버십 사용자 선택·Secret Link 발급은 B파트가 수행한다. 취소표 예매 확정(`POST /seats/confirm`) 시 할당을 `RESPONDED`로 변경한다.
+할당에는 `event_id`, `session_date`, `session_time`을 함께 저장해 회차별 Admission Token과 좌석을 분리한다. 판매 좌석 취소(`POST /seats/cancel`)가 성공하면 A파트는 SQS 취소 이벤트만 발행하고, 다음 멤버십 사용자 선택·Secret Link 발급은 B파트가 수행한다. 취소표 예매 확정(`POST /seats/confirm`) 시 B파트 complete 콜백을 호출한 뒤 할당을 `RESPONDED`로 변경한다. 콜백 실패도 outbox에 보관되므로 결제 확정 자체가 중복 콜백으로 되지 않는다.
 
 ---
 
@@ -616,7 +668,7 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 
 MariaDB 테이블 생성 및 reservations CRUD.
 
-**생성하는 테이블 (10개):**
+**A파트가 초기화하는 테이블 (11개):**
 | 테이블 | 설명 |
 |---|---|
 | `users` | 사용자 계정 |
@@ -626,12 +678,15 @@ MariaDB 테이블 생성 및 reservations CRUD.
 | `waiting_queue` | 대기열 (MariaDB 측 동기화용) |
 | `cancel_allocations` | 취소표 할당 |
 | `cancellation_outbox` | SQS 발행 실패 이벤트 보관 (outbox 패턴) |
+| `callback_outbox` | B파트 complete/expire 콜백 실패 요청 보관 (outbox 패턴) |
 | `wishlists` | 위시리스트 |
 | `backups` | 스냅샷 백업 |
 | `reservations` | 예약 확정 기록 |
 
-`events.sessions`에는 공연 회차 목록을 JSON으로 저장하고, `seats`, `waiting_queue`, `reservations`에는 `session_date`·`session_time`을 저장해 날짜가 다른 회차의 좌석·대기열·예약 기록을 분리한다.
+공연 회차 목록은 Redis 이벤트 카드의 `sessions` 필드에서 관리하고, 실제 MariaDB `events` 테이블에는 회차 JSON을 저장하지 않는다. `seats`, `waiting_queue`, `reservations`, `cancel_allocations`에는 `session_date`·`session_time`을 저장해 날짜가 다른 회차의 좌석·대기열·예약·취소표 할당 기록을 분리한다.
 `initTable()`은 `CREATE TABLE IF NOT EXISTS`만 수행한다. 이미 존재하는 테이블에는 `ALTER TABLE`, `ADD COLUMN`, `MODIFY COLUMN`을 실행하지 않으므로, 기존 DB에 필요한 컬럼이 없으면 API가 컬럼을 자동 생성하지 않고 해당 SQL 오류를 그대로 드러낸다. 운영 DB 스키마 변경은 DB 관리자가 별도 마이그레이션으로 수행해야 한다.
+
+현재 운영 스키마에서 `cancel_allocations.allocation_id`는 정수 `AUTO_INCREMENT` PK이며, `seat_id`는 NULL을 허용한다. `cancellation_link`는 B파트가 관리하는 테이블로 A파트의 초기화 대상이 아니다.
 
 reservations CRUD 함수: `saveReservation()`, `getReservations()`, `getReservationBySeat()`
 
@@ -674,7 +729,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
    POST /queue/enter → 선택 회차의 queue:waiting Sorted Set에 추가 (멤버십 우선순위 적용)
 
 4. 입장 허용
-   `AUTO_ADMISSION_ENABLED=true`이면 자동 승인 워커가 선택 회차의 상위 100명을 주기적으로 승인한다. 비활성화 시 관리자 Bearer JWT로 POST /queue/admit을 호출한다.
+   `AUTO_ADMISSION_ENABLED=true`이면 자동 승인 워커가 선택 회차의 admitted 빈 슬롯만큼, `BATCH_SIZE` 설정값을 상한으로 주기적으로 승인한다. 비활성화 시 관리자 Bearer JWT로 POST /queue/admit을 호출한다.
 
 5. 좌석 선점
    POST /seats/hold → Token 검증 → 분산 락 → held 상태 → 결제 타이머 시작
@@ -696,7 +751,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | 대상 | 용도 | 주소 |
 |---|---|---|
 | C팀 WebSocket 서버 | 좌석 실시간 현황 | `ws://192.168.0.220` |
-| B팀 Step Functions + Lambda | SQS 취소 이벤트 기반 순차 재판매·Secret Link 발급. 콜백: `/verify-link/complete`, `/verify-link/expire` | `queuing-cancellation-events` SQS + `B_CALLBACK_BASE_URL` |
+| B팀 Step Functions + Lambda | SQS 취소 이벤트 기반 순차 재판매·Secret Link 발급. 검증: `/b-callback/verify-link`, 상태 콜백: `/verify-link/complete`, `/verify-link/expire` | `queuing-cancellation-events` SQS + `B_CALLBACK_BASE_URL` |
 | LocalStack | AWS SES/SNS 로컬 에뮬레이션 | `http://192.168.0.191:4566` |
 
 ---
@@ -729,7 +784,8 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `RECAPTCHA_ALLOWED_HOSTNAMES` | *(없음)* | 검증 응답 hostname 허용 목록. 개발 환경은 `localhost` 권장 |
 | `CANCELLATION_EVENTS_QUEUE_URL` | *(없음; AWS 운영 필수)* | B파트 재판매 파이프라인 `queuing-cancellation-events` SQS 큐 URL. 미설정 시 outbox에 저장 |
 | `SQS_CANCELLATION_EVENTS_QUEUE_URL` | *(없음)* | 위 변수의 호환용 별칭 |
-| `B_CALLBACK_BASE_URL` | *(없음)* | B파트 Step Functions Lambda Function URL. 설정 시 `/respond`·`/expire`가 B파트에 포워드 |
+| `B_CALLBACK_BASE_URL` | *(없음)* | B파트 검증/콜백 API의 base URL. 설정 시 `/verify-link`는 `${B_CALLBACK_BASE_URL}/b-callback/verify-link`, `/respond`는 `${B_CALLBACK_BASE_URL}/verify-link/complete`, `/expire`는 `${B_CALLBACK_BASE_URL}/verify-link/expire`로 서버 간 포워드 |
+| `B_CALLBACK_SECRET` | *(없음)* | A↔B 서버 간 공유 시크릿. `X-Callback-Secret` 헤더로 전송하며 Kubernetes Secret 사용 권장 |
 
 ---
 
@@ -840,6 +896,25 @@ env:
 ```
 
 SQS 권한: 워커 노드 IAM Role 또는 IRSA에 `sqs:SendMessage` 권한을 추가한다. B파트 콜백 URL은 Lambda Function URL 또는 API Gateway 주소를 사용한다.
+
+### Kubernetes Helm 차트의 대기열 승인 환경변수
+
+`redis-api-chart/values.yaml`의 다음 값이 `templates/deployment.yaml`을 통해 API Pod 환경변수로 주입된다.
+
+```yaml
+env:
+  autoAdmissionEnabled: true
+  autoAdmissionIntervalMs: "1000"
+  batchSize: "100"
+  admissionTimeout: "420"
+  admissionTimeoutCheckIntervalMs: "1000"
+```
+
+- `batchSize` → `BATCH_SIZE`: 회차별 admitted 풀의 최대 인원
+- `admissionTimeout` → `ADMISSION_TIMEOUT`: 승인 후 입장 제한시간(초)
+- `admissionTimeoutCheckIntervalMs` → `ADMISSION_TIMEOUT_CHECK_INTERVAL_MS`: 만료 승인 정리·다음 사용자 보충 주기(밀리초)
+
+값을 변경한 뒤에는 Helm 업그레이드가 완료되어 새 API Pod가 생성되어야 적용된다. 현재 실행 중인 Pod에는 자동으로 반영되지 않는다.
 
 ### Kubernetes Helm 차트의 네임스페이스 설정
 

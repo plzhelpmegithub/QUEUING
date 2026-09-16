@@ -209,9 +209,9 @@ async function eventRoutes(fastify) {
 
     try {
       await pool.query(
-        `INSERT INTO events (event_id, event_name, title, event_date, sessions, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NOW())`,
-        [eventId, eventName, eventName, eventDate || '', JSON.stringify(eventSessions), venue || '', totalEventSeatCount, resolvedSeatingType, JSON.stringify(sectionsWithGeometry), chosenEmoji, chosenColor],
+        `INSERT INTO events (event_id, event_name, title, event_date, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NOW())`,
+        [eventId, eventName, eventName, eventDate || '', venue || '', totalEventSeatCount, resolvedSeatingType, JSON.stringify(sectionsWithGeometry), chosenEmoji, chosenColor],
       );
     } catch (dbErr) {
       console.error('[Event] MariaDB 저장 실패:', dbErr.message);

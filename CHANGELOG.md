@@ -1,3 +1,22 @@
+## [2026-09-16 15:40] 업데이트 로그 — 대기열 미구현 기능 완성 (timerService·seatService 연동)
+
+### 🔄 변경 및 수정 사항
+- **[timerService.js]**: seat hold 만료 시 `removeAdmitted()` + `backfillOne()` 호출 추가. 결제 시간 초과로 좌석이 해제될 때 해당 사용자를 admitted에서 제거하고 빈 슬롯을 eligible 대기열에서 즉시 재충원. 분산 락으로 동시성 보호
+- **[seatService.js]**: `holdSeat()` 성공 시 `cancelAdmissionDeadline()` 호출 추가. 좌석 선점에 성공하면 입장 제한시간(7분)을 해제하고, 결제 시간 제한(seat timer)이 시간 관리를 이어받음
+- **[README.md]**: timerService 만료 핸들러 동작 설명 갱신, seatService holdSeat/confirmSeat 함수 설명에 admitted 정리·backfill 흐름 반영
+
+---
+
+## [2026-09-16 14:45] 업데이트 로그 — Helm 대기열 환경변수 주입
+
+### 🔄 변경 및 수정 사항
+- **[redis-api-chart/values.yaml]**: admitted 풀 크기(`batchSize`)와 승인 만료 시간·점검 주기(`admissionTimeout`, `admissionTimeoutCheckIntervalMs`) 기본값 추가
+- **[redis-api-chart/templates/deployment.yaml]**: `BATCH_SIZE`, `ADMISSION_TIMEOUT`, `ADMISSION_TIMEOUT_CHECK_INTERVAL_MS`를 API Pod에 전달
+- **[redis-api-chart/Chart.yaml]**: Helm 템플릿 변경을 반영하여 차트 버전을 `2.2.1`로 증가. API 이미지 버전은 유지
+- **[README.md / redis-api-chart/README.md]**: Helm 설정값과 런타임 환경변수 매핑 및 기본 정책 문서화
+
+---
+
 ## [2026-09-15 17:42] 업데이트 로그 — /seats 인메모리 캐시 도입 (Redis 부하 감소)
 
 ### 🔄 변경 및 수정 사항
@@ -786,3 +805,121 @@
 - **증상(Issue):** 기존 `queuing_seat_events_total{type="sold"}`만으로는 좌석 상태 이벤트와 예매 API 처리 결과를 구분하기 어려움
 - **원인(Cause):** 좌석 상태 변경 이벤트와 사용자 예매 업무 결과가 서로 다른 관측 대상인데 별도 메트릭이 없었음
 - **해결(Solution):** 좌석 이벤트 메트릭은 유지하고 예매 업무·타이머 시작·타이머 삭제를 전용 Counter로 분리
+## [2026-09-16 13:45] 업데이트 로그 — B파트 Secret Link 검증 프록시 연동
+
+### 🔄 변경 및 수정 사항
+- **[src/services/bPartCallbackService.js]**: `callbackVerifyLink(token)` 추가 — A 서버가 브라우저의 Secret Link 토큰을 B파트 `/b-callback/verify-link`로 전달하고 `X-Callback-Secret` 인증 헤더를 사용
+- **[src/routes/cancelQueueRoutes.js]**: `B_CALLBACK_BASE_URL`이 설정된 경우 `/verify-link`의 A파트 자체 JWT 검증 대신 B파트 서버 검증을 사용하도록 변경
+- **[src/routes/cancelQueueRoutes.js]**: B파트 응답의 `user_id/userId`, `event_id/eventId`, `allocation_id/allocationId`, `expires_at/expiresAt` 형식을 수용하고, A파트 `cancel_allocations`의 할당 ID와 일치 여부를 검증
+- **[src/routes/cancelQueueRoutes.js]**: B파트 검증 결과와 A파트 DB 만료 시각 중 더 이른 시각을 사용하여 Secret Link 세션의 만료 시간을 제한
+- **[README.md]**: `/verify-link` B파트 프록시 동작, 응답 계약, 환경변수 설명을 갱신
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트가 발급한 토큰은 A파트와 서명키·형식이 달라 기존 `jwt.verify(token, JWT_SECRET)` 검증을 통과하지 못함
+- **원인(Cause):** A파트 `/verify-link`가 토큰 발급 주체인 B파트를 호출하지 않고 A파트 전용 `cancel_link` JWT만 검증함
+- **해결(Solution):** 운영 환경에서 `B_CALLBACK_BASE_URL`이 설정되면 A파트가 토큰을 B파트 `/b-callback/verify-link`에 서버 간 POST로 전달하고, `X-Callback-Secret`으로 인증하도록 변경. B파트가 응답한 할당 식별자와 A파트 DB를 추가 대조함
+
+---
+## [2026-09-16 14:33] 업데이트 로그 — 대기열 입장 풀 제한·만료 재충원·이탈 처리
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: admitted 현재 인원을 기준으로 `BATCH_SIZE`만큼만 입장시키도록 슬롯 상한을 적용하고, 입장 제한시간 기본값 420초를 Redis deadline 키로 관리하도록 보완
+- **[src/services/admissionTimeoutService.js]**: `admission:deadline:*` 만료 감시 워커를 추가해 만료 사용자의 Admission Token·대기 상태를 정리하고 eligible 대기자 1명을 재입장시키도록 구현
+- **[src/routes/queueRoutes.js]**: `/admin/admission-timeout` 조회·설정 API를 추가하고 `/queue/leave`에서 대기열 이탈, admitted 슬롯 반납, 후속 backfill을 처리
+- **[src/services/seatService.js]**: 예매 확정 시 admitted 슬롯을 `COMPLETED`로 반납하고 다음 eligible 대기자를 재입장시키도록 연결
+- **[src/app.js]**: API 시작·종료 생명주기에 입장 제한시간 워커를 등록·정리
+- **[README.md]**: 입장 제한시간, admitted 상한, backfill 규칙 및 신규 API·환경변수 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 자동 승인 워커가 주기마다 `BATCH_SIZE`만큼 추가 승인하여 admitted 풀이 100명을 초과할 수 있었고, 대기열 페이지 이탈을 서버가 인식하지 못했음
+- **원인(Cause):** 승인 시 현재 admitted 수를 차감하지 않았고, 브라우저 이탈을 알리는 프론트엔드 요청과 서버 측 입장 제한시간 감시가 없었음. 또한 일부 갱신 SQL이 실제 `waiting_queue` 스키마에 없는 `queue_status` 컬럼을 참조했음
+- **해결(Solution):** admitted 슬롯을 `BATCH_SIZE - 현재 admitted 수`로 계산하고, Redis deadline 메타데이터를 감시하는 워커와 keepalive `/queue/leave` 호출을 추가했다. 실제 스키마에 맞춰 `waiting_queue.status`만 갱신하도록 정리했다.
+
+---
+## [2026-09-16 15:06] 업데이트 로그 — 취소표 complete/expire 멱등 처리
+
+### 🔄 변경 및 수정 사항
+- **[src/services/cancelAllocationService.js]**: 실제 `cancel_allocations` 컬럼(`allocation_id`, `status`, `responded_at`, `seat_id`)을 기준으로 terminal 상태를 조회하고 중복 요청 결과를 반환하도록 수정
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/respond`와 `/cancel-queue/expire`가 `allocationId`/`allocation_id`를 지원하고, 동일 할당의 중복 요청은 성공으로 처리하며 상태 충돌은 거부하도록 변경
+- **[src/services/bPartCallbackService.js]**: B파트 complete/expire의 빈 응답 또는 `204 No Content`를 불필요한 재시도로 판단하지 않도록 처리
+- **[README.md]**: 실제 스키마와 A↔B 콜백 경로, allocation ID 형식, 멱등 정책 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** complete/expire 요청이 네트워크 재시도나 브라우저 중복 호출로 여러 번 도착하면 이미 처리된 `cancel_allocations`에 대해 다시 상태 변경 또는 B파트 콜백을 시도할 수 있음
+- **원인(Cause):** 기존 로직이 `LINK_SENT` 활성 행만 조회하고 `UPDATE` 결과가 0건인 경우를 이미 처리된 요청으로 구분하지 않음
+- **해결(Solution):** `allocation_id`로 현재 행을 재조회하고 `RESPONDED`/`COMPLETED` complete, `EXPIRED` expire를 `idempotent: true` 성공으로 반환한다. `EXPIRED → RESPONDED`, `RESPONDED/COMPLETED → EXPIRED` 같은 역방향 전이는 `409`로 차단한다. 실제 스키마 변경은 필요하지 않다.
+
+---
+## [2026-09-16 15:11] 업데이트 로그 — 실제 MariaDB 스키마 정렬
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/eventRoutes.js]**: 실제 `events` 테이블에 존재하지 않는 `sessions` 컬럼을 생성 INSERT에서 제거하고, 필수 `title`을 `event_name`과 함께 저장
+- **[src/services/seatService.js]**: Redis 이벤트 카드의 MariaDB 자동 복구 INSERT를 실제 `events` 컬럼(`title`, `event_name`, `event_date`, `venue`, `total_seats` 등)에 맞게 수정
+- **[src/services/seatService.js]**: 취소표 결제 확정 시 B파트 `/verify-link/complete`를 호출하고, 실패한 콜백은 `callback_outbox`에 저장한 뒤 A파트 상태를 `RESPONDED`로 마감
+- **[src/services/dbService.js]**: 신규 DB 초기화 정의를 실제 스키마 기준으로 정렬(`memberships.membership_id`, `tier_name`, `cancel_allocations.seat_id NULL`, `hold_duration`, `failed_at`, `callback_outbox` LONGTEXT 등)
+- **[README.md]**: A파트 초기화 테이블 수와 실제 회차·취소표·콜백 저장 구조 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 실제 `events` 테이블에는 `sessions` 컬럼이 없는데 이벤트 생성 및 Redis 장애 후 MariaDB 자동 복구 SQL이 해당 컬럼을 INSERT 대상으로 사용함
+- **원인(Cause):** 초기 개발 스키마와 현재 운영 MariaDB 스키마가 달라졌지만 `CREATE TABLE IF NOT EXISTS`는 기존 테이블을 변경하지 않음
+- **해결(Solution):** A파트 SQL을 실제 컬럼만 사용하도록 조정하고, 회차 목록은 Redis 이벤트 카드에서 유지하며 좌석·대기열·예약·취소표 할당에는 회차별 `session_date`/`session_time`을 저장하도록 기준을 명확히 함. 기존 운영 테이블에 대한 자동 ALTER나 마이그레이션은 수행하지 않음.
+
+---
+## [2026-09-16 15:14] 업데이트 로그 — 취소표 결제 complete 콜백 연결
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: 취소표 할당이 있는 `POST /seats/confirm` 성공 시 B파트 `/verify-link/complete`를 호출하고, 실패 시 `callback_outbox`에 저장하도록 연결
+- **[src/routes/cancelQueueRoutes.js]**: B파트 expire 콜백 성공 후 A Redis의 held 좌석도 해제하도록 보완
+- **[src/services/cancelAllocationService.js]**: 만료된 `LINK_SENT` 할당이 complete로 전환되지 않도록 `expires_at` 조건을 원자적 UPDATE에 추가
+- **[README.md]**: 결제 확정과 B파트 complete 콜백의 실제 연결 흐름을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 결제는 A DB에서 `RESPONDED`로 바뀌지만 B파트의 complete 콜백이 호출되지 않음
+- **원인(Cause):** 프론트엔드는 `/seats/confirm`을 호출하고, 기존 B 콜백은 별도 `/cancel-queue/respond` 요청에서만 실행됨
+- **해결(Solution):** `seatService.confirmSeat()`에서 활성 `cancel_allocations.allocation_id`를 조회해 B complete를 호출하고, 콜백 실패는 `callback_outbox`로 재전달한다. 이후 A 상태도 `allocation_id` 기준으로 멱등 마감한다.
+
+---
+## [2026-09-16 15:38] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 어드민 시뮬레이션 단계3은 취소표 좌석을 복구하고 B파트 전송용 이벤트를 저장하도록 변경. 단계4에서 활성 멤버십 실제 유저를 standby 최우선에 등록한 뒤 저장된 이벤트를 B파트 SQS로 전송
+- **[src/services/cancellationEventPublisher.js]**: `isConfigured()`를 추가해 B파트 취소 이벤트 SQS 연결 여부를 명확하게 확인
+- **[src/routes/simulationRoutes.js]**: 단계4 응답에 즉시 전송·재시도 outbox·실패 건수를 포함하고, 활성 할당이 이미 있으면 멱등 성공으로 반환
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 어드민의 `단계4: B파트 링크 발급` 버튼이 항상 비활성화되고 API도 `410`을 반환함
+- **원인(Cause):** A파트의 중복 배정을 막기 위해 기존 수동 링크 발급 경로를 차단한 상태였으며, 시뮬레이션 단계3에서 B파트 이벤트를 먼저 소비하면 실제 테스트 사용자가 standby에 등록되기 전에 대상에서 빠질 수 있었음
+- **해결(Solution):** 단계3은 이벤트를 Redis 시뮬레이션 상태에 준비하고, 단계4에서 멤버십을 확인한 실제 사용자를 standby 최우선에 등록한 다음 동일한 SQS 발행기를 통해 B파트에 위임하도록 순서를 조정
+
+## [2026-09-16 16:00] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 시뮬레이션 단계2(마감)에서 지정한 실제 유저를 회차별 Redis `queue:standby`와 MariaDB `waiting_queue`에 멱등 등록하도록 수정
+- **[src/routes/cancelQueueRoutes.js]**: 로그인 사용자의 `standby`·`WAITING` 대기 공연을 조회하는 `GET /cancel-queue/mine` 추가. Redis가 사용 가능하면 현재 순번과 전체 대기자 수를 보정
+- **[src/routes/cancelQueueRoutes.js]**: 대기 행이 `PASSED`로 변경되어도 활성 `cancel_allocations`가 있으면 마이페이지 목록에 유지하도록 조회 조건 보완
+- **[src/services/queueService.js]**: standby 접수 마감 후에도 기존 등록 사용자의 상태 재조회는 허용하고 신규 등록만 차단
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 어드민 시뮬레이션에서 공연을 마감해도 마이페이지의 취소표 대기열에 해당 공연이 표시되지 않음
+- **원인(Cause):** 마감 API가 실제 테스트 계정을 standby에 등록하지 않았고, 프론트엔드 마이페이지도 서버 `waiting_queue`가 아닌 브라우저 메모리 `cancelQueues`만 사용함
+- **해결(Solution):** 마감 시 실제 계정의 Redis·MariaDB 대기열을 함께 기록하고, 마이페이지가 `GET /cancel-queue/mine`을 최초 진입 및 5초 주기로 조회하도록 연결. 시뮬레이션 정리 시 해당 실제 계정의 회차별 standby 기록도 삭제
+
+## [2026-09-16 16:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: `waiting_queue.membership_at_join` 컬럼이 없는 초기 스키마에서도 시뮬레이션 실제 유저 등록을 공통 컬럼으로 재시도하도록 호환 처리
+
+---
+
+## [2026-09-16 16:15] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 조기 마감 처리에서 시뮬레이션의 `realUserEmail`을 지역 변수로 명시해 실제 사용자의 Redis standby 및 MariaDB `waiting_queue` 등록이 실행되도록 수정
+- **[README.md]**: 매진·조기 마감 단계의 실제 사용자 등록 동작을 현재 코드 기준으로 갱신
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 조기 마감 후에도 실제 사용자 마이페이지의 취소표 대기열에 공연이 표시되지 않음
+- **원인(Cause):** 조기 마감 라우트가 선언되지 않은 `realUserEmail`을 참조하여 실제 사용자 등록 전에 `ReferenceError`로 중단됨
+- **해결(Solution):** `const realUserEmail = simData.realUserEmail;`을 추가하여 시뮬레이션 초기화 때 저장한 실제 사용자와 대기열 등록 대상을 일치시킴
+
+---

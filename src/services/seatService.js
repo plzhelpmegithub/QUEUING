@@ -9,6 +9,7 @@ const { saveReservation, cancelReservation } = require('./dbService');
 const { syncToMariaDB } = require('./syncRetryService');
 const { normalizeSessionContext, getScopedKey, sessionFromSeat } = require('./sessionContext');
 const queueService = require('./queueService');
+const bCallback = require('./bPartCallbackService');
 
 const SEAT_PREFIX = 'seat:';
 const SEAT_INDEX_PREFIX = 'seat:index:';
@@ -43,9 +44,9 @@ async function ensureEventInMariaDB(eventId) {
   }
   const e = JSON.parse(cardStr);
   await pool.query(
-    `INSERT IGNORE INTO events (event_id, event_name, event_date, sessions, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
+    `INSERT IGNORE INTO events (event_id, event_name, title, event_date, venue, total_seats, seating_type, sections, status, emoji, color, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-    [eventId, e.eventName || '', e.eventDate || '', JSON.stringify(e.sessions || []), e.venue || '', e.totalSeats || 0, e.seatingType || 'arena', JSON.stringify(e.sections || []), e.status || 'open', e.emoji || '', e.color || ''],
+    [eventId, e.eventName || '', e.eventName || '', e.eventDate || '', e.venue || '', e.totalSeats || 0, e.seatingType || 'arena', JSON.stringify(e.sections || []), e.status || 'open', e.emoji || '', e.color || ''],
   );
   console.log(`[Seat] MariaDB events 테이블에 ${eventId} 자동 동기화 완료`);
 }
@@ -165,6 +166,7 @@ async function holdSeat(userId, seatId, admissionToken, requestedContext = {}) {
       heldAt: Date.now().toString(),
     });
     await startTimer(seatId, userId);
+    await queueService.cancelAdmissionDeadline(userId, sessionContext);
     await publishSeatEvent(EVENT_TYPE.HELD, { seatId, userId });
 
     await syncToMariaDB(
@@ -366,10 +368,47 @@ async function confirmSeat(userId, seatId, requestedContext = {}) {
   const { revokeToken } = require('./tokenService');
   await revokeToken(userId, sessionContext);
 
+  // 예매를 완료한 사용자는 admission 풀에서 빠져야 다음 대기자가
+  // 빈 슬롯을 이어받을 수 있다. DB 상태는 만료가 아닌 완료로 남긴다.
+  const admissionReleased = await queueService.removeAdmitted(
+    userId,
+    sessionContext,
+    { finalStatus: 'COMPLETED' },
+  );
+  if (admissionReleased) {
+    const resource = `admission:${sessionContext.eventId || 'default'}:${sessionContext.sessionKey}`;
+    const admissionLock = await acquireLock(resource);
+    if (admissionLock.acquired) {
+      try {
+        await queueService.backfillOne(sessionContext);
+      } finally {
+        await releaseLock(resource, admissionLock.token).catch(() => {});
+      }
+    }
+  }
+
   // 취소표 좌석도 일반 예매와 동일하게 백엔드에서 확정하고,
-  // 해당 Secret Link 할당을 RESPONDED로 마감한다.
+  // 해당 Secret Link 할당을 RESPONDED로 마감한다. B파트 연동 시
+  // 결제 확정 자체가 complete 콜백의 실제 트리거가 된다.
   try {
-    await require('./cancelAllocationService').markResponded(userId, seatId, eventId);
+    const cancelAllocationService = require('./cancelAllocationService');
+    const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
+    if (allocation) {
+      const payload = { userId, eventId, seatId, allocationId: allocation.id };
+      if (bCallback.isConfigured()) {
+        try {
+          await bCallback.callbackComplete(payload);
+        } catch (err) {
+          console.error('[CancelAlloc] B callback /complete 실패 → 재시도 큐 저장:', err.message);
+          await bCallback.saveCallbackToOutbox('complete', payload, err.message);
+        }
+      }
+
+      const result = await cancelAllocationService.markRespondedById(allocation.id, seatId);
+      if (!result.affected && !result.idempotent) {
+        console.error('[CancelAlloc] 예매 확정 상태 반영 실패:', result.reason || 'unknown');
+      }
+    }
   } catch (err) {
     console.error('[CancelAlloc] 예매 확정 상태 반영 실패:', err.message);
   }
