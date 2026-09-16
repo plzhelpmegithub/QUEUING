@@ -52,7 +52,7 @@ resource "aws_wafv2_web_acl" "alb" {
   count = var.waf_alb_enabled ? 1 : 0
 
   name        = "${var.project}-alb-waf"
-  description = "QUEUING api.queuing.kr (ALB) WAF"
+  description = "QUEUING api.queuing.kr ALB WAF"
   scope       = "REGIONAL"
 
   # 규칙에 걸리지 않은 요청은 통과시킨다.

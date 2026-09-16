@@ -824,6 +824,8 @@ function Invoke-Up {
         "--set-string", "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$($tf.ses_send_role_arn.value)")
     # B파트 콜백 API 주소. terraform 이 콜백 Lambda 를 만들었을 때만 값이 있다.
     if ($tf.b_callback_base_url.value) { $aArgs += @("--set", "env.bCallbackBaseUrl=$($tf.b_callback_base_url.value)") }
+    # 좌석 취소 이벤트를 보낼 SQS 큐 주소 (건아님 큐). 없으면 A 가 DB outbox 에만 쌓는다.
+    if ($tf.cancellation_events_queue_url.value) { $aArgs += @("--set", "env.cancellationEventsQueueUrl=$($tf.cancellation_events_queue_url.value)") }
     if ($charts.a -and (Helm-Release "A파트 api" "queuing-a" "api" $charts.a $aArgs -Wait)) { Ok "A api" }
 
     # B (건아) — email-worker 는 Step Functions 워크플로로 대체되어 배포하지 않는다 (2026-09-15 건아님 확인)
