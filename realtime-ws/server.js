@@ -47,6 +47,12 @@ const HISTORY_TTL_SEC = 10800; // 3시간
 // 컨테이너 메모리 한도(256Mi)를 지키려면 한도를 넘은 연결은 끊는 게 낫다.
 const MAX_BUFFERED_BYTES = 1 * 1024 * 1024; // 1MB
 
+// 채팅 도배 방지 — 서버에서도 막는다 (2026-09-16)
+// 지금까지 5초 잠금이 브라우저(프론트엔드)에만 있어서, WebSocket 에 직접 붙으면
+// 그대로 우회됐다. 같은 값을 서버에서도 강제한다.
+// 부하테스트처럼 일부러 빠르게 보내야 할 때는 CHAT_COOLDOWN_MS=0 으로 끌 수 있다.
+const CHAT_COOLDOWN_MS = Number(process.env.CHAT_COOLDOWN_MS ?? 5000);
+
 const app = express();
 
 // 다른 팀의 프론트엔드(각자 다른 IP/포트의 dev 서버)에서 fetch로 REST API를 호출할 수 있게
@@ -160,6 +166,13 @@ const wsConnectionsGauge = new client.Gauge({
   name: 'ws_active_connections',
   help: '현재 활성 WebSocket 연결 수',
   labelNames: ['kind'],
+  registers: [register],
+});
+
+const chatRejectedCounter = new client.Counter({
+  name: 'ws_chat_rejected_total',
+  help: '서버가 거절한 채팅 수 (도배 방지)',
+  labelNames: ['reason'],
   registers: [register],
 });
 
@@ -322,6 +335,24 @@ wss.on('connection', (ws, request) => {
       .catch((err) => console.error('채팅 기록 조회 실패:', err.message));
 
     ws.on('message', (data) => {
+      // 마지막 전송으로부터 CHAT_COOLDOWN_MS 가 지나지 않았으면 버린다.
+      // 연결마다 시각을 들고 있어서 추가 저장소가 필요 없다 (같은 사람이 여러 파드에
+      // 동시에 붙으면 각각 따로 계산되지만, 브라우저는 연결을 하나만 쓴다).
+      const now = Date.now();
+      if (CHAT_COOLDOWN_MS > 0 && ws.lastChatAt && now - ws.lastChatAt < CHAT_COOLDOWN_MS) {
+        chatRejectedCounter.inc({ reason: 'cooldown' });
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            reason: 'cooldown',
+            retryAfterMs: CHAT_COOLDOWN_MS - (now - ws.lastChatAt),
+            message: `도배 방지를 위해 ${Math.ceil(CHAT_COOLDOWN_MS / 1000)}초에 한 번만 보낼 수 있습니다.`,
+          }));
+        }
+        return;
+      }
+      ws.lastChatAt = now;
+
       // 욕설/비하 발언 필터링
       const { filtered, matched } = filterMessage(data.toString());
 
