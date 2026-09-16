@@ -5,8 +5,8 @@
     "name": "ad5sdrv",
     "namespace": "default",
     "uid": "ef30654c-a02b-4283-8fdc-c5b5ef179bc9",
-    "resourceVersion": "1789371261076998",
-    "generation": 28,
+    "resourceVersion": "1789537036060989",
+    "generation": 46,
     "creationTimestamp": "2026-09-11T09:55:39Z",
     "labels": {
       "grafana.app/deprecatedInternalID": "4175920465567744"
@@ -17,11 +17,11 @@
       "grafana.app/managerAllowsEdits": "true",
       "grafana.app/managerId": "queuing",
       "grafana.app/saved-from-ui": "Grafana v13.2.1 (56cd3e9288)",
-      "grafana.app/sourceChecksum": "60957322da93a65ac6050c2ccd4a9317",
+      "grafana.app/sourceChecksum": "1c4196eebbdfdee1ee13301e59d3febe",
       "grafana.app/sourcePath": "/var/lib/grafana/dashboards/team-integrated-dashboard.json",
-      "grafana.app/sourceTimestamp": "1789124482000",
+      "grafana.app/sourceTimestamp": "1789377522000",
       "grafana.app/updatedBy": "user:dfxx3fhkw3rwgf",
-      "grafana.app/updatedTimestamp": "2026-09-14T07:34:21Z"
+      "grafana.app/updatedTimestamp": "2026-09-16T05:37:16Z"
     }
   },
   "spec": {
@@ -72,12 +72,34 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "kube_horizontalpodautoscaler_status_current_replicas",
+                        "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"queuing-a\"}",
                         "legendFormat": "{{horizontalpodautoscaler}}",
                         "range": true
                       }
                     },
                     "refId": "A",
+                    "hidden": false
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "queuing-prometheus"
+                      },
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "\tkube_horizontalpodautoscaler_spec_max_replicas{namespace=\"queuing-a\"}",
+                        "instant": false,
+                        "legendFormat": "최대 한도",
+                        "range": true
+                      }
+                    },
+                    "refId": "B",
                     "hidden": false
                   }
                 }
@@ -107,7 +129,7 @@
               "fieldConfig": {
                 "defaults": {
                   "min": 0,
-                  "max": 10,
+                  "max": 30,
                   "thresholds": {
                     "mode": "absolute",
                     "steps": [
@@ -531,8 +553,8 @@
                         "name": "queuing-prometheus"
                       },
                       "spec": {
-                        "editorMode": "code",
-                        "expr": "sum(rate(http_server_requests_seconds_count{job=\"backend-counter-service\", uri!~\"/actuator.*\"}[1m])) by (status)",
+                        "editorMode": "builder",
+                        "expr": "sum(rate(http_server_requests_seconds_count[1m])) by (status)",
                         "legendFormat": "{{status}}",
                         "range": true
                       }
@@ -646,8 +668,8 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum(rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[5m])) by (uri)\r\n- sum(rate(http_server_requests_seconds_bucket{uri!~\"/actuator.*\", le=\"1.0\"}[5m])) by (uri)",
-                        "legendFormat": "__auto",
+                        "expr": "queuing:slow_requests:rate5m",
+                        "legendFormat": "{{part}} {{path}}",
                         "range": true
                       }
                     },
@@ -813,7 +835,7 @@
         "kind": "Panel",
         "spec": {
           "id": 7,
-          "title": "트래픽 지연/에러 시계열",
+          "title": "A파트 경로별 평균 응답시간 (초)",
           "description": "",
           "links": [],
           "data": {
@@ -832,7 +854,7 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum(rate(http_server_requests_seconds_sum{uri!~\"/actuator.*\"}[1m])) by (uri)\r\n/ sum(rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[1m])) by (uri)",
+                        "expr": "sum by (route) (rate(queuing_http_request_duration_seconds_sum{route!~\"unknown|/health|/metrics\"}[1m])) / sum by (route) (rate(queuing_http_request_duration_seconds_count{route!~\"unknown|/health|/metrics\"}[1m]))",
                         "legendFormat": "__auto",
                         "range": true
                       }
@@ -948,7 +970,7 @@
                         "editorMode": "code",
                         "expr": "max(queuing_queue_eligible)",
                         "interval": "",
-                        "legendFormat": "입장 가능",
+                        "legendFormat": "본예매 대기자",
                         "range": true
                       }
                     },
@@ -968,10 +990,10 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "max(queuing_queue_standby)",
+                        "expr": "max(queuing_queue_admitted)",
                         "instant": false,
                         "interval": "",
-                        "legendFormat": "대기 ",
+                        "legendFormat": "입장 가능 사용자",
                         "range": true
                       }
                     },
@@ -991,10 +1013,10 @@
                       },
                       "spec": {
                         "editorMode": "code",
-                        "expr": "max(queuing_queue_admitted)",
+                        "expr": "max(queuing_queue_standby)",
                         "instant": false,
                         "interval": "",
-                        "legendFormat": "입장 허용",
+                        "legendFormat": "취소표 대기자",
                         "range": true
                       }
                     },
@@ -1219,23 +1241,10 @@
               "x": 12,
               "y": 0,
               "width": 12,
-              "height": 9,
+              "height": 8,
               "element": {
                 "kind": "ElementReference",
-                "name": "panel-2"
-              }
-            }
-          },
-          {
-            "kind": "GridLayoutItem",
-            "spec": {
-              "x": 0,
-              "y": 9,
-              "width": 12,
-              "height": 9,
-              "element": {
-                "kind": "ElementReference",
-                "name": "panel-3"
+                "name": "panel-10"
               }
             }
           },
@@ -1243,12 +1252,12 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 12,
-              "y": 9,
+              "y": 8,
               "width": 12,
-              "height": 9,
+              "height": 8,
               "element": {
                 "kind": "ElementReference",
-                "name": "panel-4"
+                "name": "panel-7"
               }
             }
           },
@@ -1256,7 +1265,7 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 0,
-              "y": 18,
+              "y": 9,
               "width": 12,
               "height": 8,
               "element": {
@@ -1269,12 +1278,12 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 12,
-              "y": 18,
+              "y": 16,
               "width": 12,
-              "height": 8,
+              "height": 9,
               "element": {
                 "kind": "ElementReference",
-                "name": "panel-6"
+                "name": "panel-2"
               }
             }
           },
@@ -1282,12 +1291,12 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 0,
-              "y": 26,
+              "y": 17,
               "width": 12,
-              "height": 8,
+              "height": 9,
               "element": {
                 "kind": "ElementReference",
-                "name": "panel-7"
+                "name": "panel-3"
               }
             }
           },
@@ -1295,12 +1304,12 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 12,
-              "y": 26,
+              "y": 25,
               "width": 12,
-              "height": 8,
+              "height": 9,
               "element": {
                 "kind": "ElementReference",
-                "name": "panel-8"
+                "name": "panel-4"
               }
             }
           },
@@ -1308,7 +1317,7 @@
             "kind": "GridLayoutItem",
             "spec": {
               "x": 0,
-              "y": 34,
+              "y": 26,
               "width": 12,
               "height": 8,
               "element": {
@@ -1326,7 +1335,20 @@
               "height": 8,
               "element": {
                 "kind": "ElementReference",
-                "name": "panel-10"
+                "name": "panel-6"
+              }
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "x": 12,
+              "y": 42,
+              "width": 12,
+              "height": 8,
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-8"
               }
             }
           }
