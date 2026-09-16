@@ -443,36 +443,76 @@ async function getSeatTimer(seatId) {
 
 async function cancelSeat(userId, seatId) {
   const seatKey = `${SEAT_PREFIX}${seatId}`;
-  const seatInfo = await redis.hgetall(seatKey);
-  const status = seatInfo.status;
-  const heldBy = seatInfo.heldBy;
-  const sessionContext = sessionFromSeat(seatId, seatInfo);
-
-  if (status !== STATUS.SOLD) {
-    return { success: false, reason: 'not_sold', message: '판매 완료 상태가 아닌 좌석입니다.' };
-  }
-  if (heldBy && heldBy !== userId) {
-    return { success: false, reason: 'not_owner', message: '본인이 구매한 좌석이 아닙니다.' };
-  }
-
-  await redis.hset(seatKey, {
-    status: STATUS.AVAILABLE,
-    heldBy: '',
-    heldAt: '',
-  });
-  await adjustSeatCounter(sessionContext.eventId, sessionContext, 'sold', 'available');
-  invalidateSeatsCache(sessionContext.eventId);
-
-  await redis.del(getScopedKey(SOLD_OUT_KEY, sessionContext));
-  await redis.del(getScopedKey('event:ticketing-status', sessionContext));
-  await publishSeatEvent(EVENT_TYPE.CANCELLED, { seatId, userId });
   const cancelResult = await cancelReservation(seatId, userId);
 
-  await syncToMariaDB(
-    `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id = ?`,
-    [seatId],
-    `seat:cancel ${seatId}`,
-  );
+  if (!cancelResult.affected) {
+    if (cancelResult.idempotent) {
+      return {
+        success: true,
+        idempotent: true,
+        seatId,
+        status: STATUS.AVAILABLE,
+        message: '이미 취소 및 환불 처리된 예약입니다.',
+      };
+    }
+    const notOwner = cancelResult.reason === 'not_owner';
+    return {
+      success: false,
+      reason: cancelResult.reason || 'not_reserved',
+      message: notOwner
+        ? '본인이 구매한 좌석이 아닙니다.'
+        : '취소 가능한 확정 예약을 찾을 수 없습니다.',
+    };
+  }
+
+  const reservation = cancelResult.reservation || {};
+  const durableSeat = cancelResult.seat || {};
+  const inferredContext = sessionFromSeat(seatId, {});
+  const sessionContext = normalizeSessionContext({
+    eventId: reservation.eventId || durableSeat.eventId || inferredContext.eventId,
+    sessionDate: reservation.sessionDate || durableSeat.sessionDate || inferredContext.sessionDate,
+    sessionTime: reservation.sessionTime || durableSeat.sessionTime || inferredContext.sessionTime,
+  });
+
+  // MariaDB 트랜잭션이 이미 성공했으므로 Redis는 실시간 조회용 캐시로
+  // 동기화한다. Redis가 일시적으로 실패해도 환불 자체는 성공 상태를
+  // 유지하며, 이후 MariaDB 기반 복구가 좌석 상태를 재구성한다.
+  let redisSynced = true;
+  try {
+    const seatInfo = await redis.hgetall(seatKey);
+    const redisSeatExists = Object.keys(seatInfo).length > 0;
+    if (redisSeatExists) {
+      await redis.hset(seatKey, {
+        status: STATUS.AVAILABLE,
+        heldBy: '',
+        heldAt: '',
+      });
+    } else if (durableSeat.eventId) {
+      await redis.hset(seatKey, {
+        status: STATUS.AVAILABLE,
+        heldBy: '',
+        heldAt: '',
+        section: durableSeat.section || '',
+        price: String(durableSeat.price || 0),
+        eventId: durableSeat.eventId,
+        sessionDate: durableSeat.sessionDate || '',
+        sessionTime: durableSeat.sessionTime || '',
+      });
+      await redis.sadd(seatIndexKey(durableSeat.eventId), seatKey);
+    }
+
+    const previousStatus = seatInfo.status || durableSeat.previousStatus;
+    if (previousStatus === STATUS.SOLD) {
+      await adjustSeatCounter(sessionContext.eventId, sessionContext, 'sold', 'available');
+    }
+    await redis.del(getScopedKey(SOLD_OUT_KEY, sessionContext));
+    await redis.del(getScopedKey('event:ticketing-status', sessionContext));
+    await publishSeatEvent(EVENT_TYPE.CANCELLED, { seatId, userId });
+  } catch (err) {
+    redisSynced = false;
+    console.error(`[Seat] 환불 후 Redis 동기화 실패 (${seatId}):`, err.message);
+  }
+  invalidateSeatsCache(sessionContext.eventId);
 
   let cancellationEvent = null;
   try {
@@ -492,8 +532,10 @@ async function cancelSeat(userId, seatId) {
 
   return {
     success: true,
+    idempotent: false,
     seatId,
     status: STATUS.AVAILABLE,
+    redisSynced,
     cancellationEvent,
     message: '좌석이 취소되었습니다. 취소표 대기자에게 기회가 부여됩니다.',
   };

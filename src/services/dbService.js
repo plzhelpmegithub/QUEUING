@@ -1,5 +1,10 @@
 const pool = require('../config/mariadb');
 
+// 운영/기존 데이터에서 사용될 수 있는 확정 예약 상태를 모두 허용한다.
+// 신규 저장은 CONFIRMED를 사용하지만, 이전 버전에서 RESERVED 또는 PAID로
+// 저장된 예약도 소유자 본인이 환불할 수 있어야 한다.
+const ACTIVE_RESERVATION_STATUSES = ['CONFIRMED', 'RESERVED', 'PAID'];
+
 async function initTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -171,6 +176,7 @@ async function initTable() {
 
 function toItem(row) {
   return {
+    reservationId: row.id || null,
     seatId: row.seat_id,
     userId: row.user_id,
     eventId: row.event_id || '',
@@ -184,51 +190,142 @@ function toItem(row) {
 
 async function saveReservation(data) {
   const reservedAt = new Date();
-  await pool.query(
+  const insertResult = await pool.query(
     `INSERT INTO reservations (seat_id, user_id, event_id, session_date, session_time, status, reserved_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [data.seatId, data.userId, data.eventId || '', data.sessionDate || '', data.sessionTime || '', 'CONFIRMED', reservedAt],
   );
   console.log(`[MariaDB] 예약 저장: ${data.seatId} → ${data.userId}`);
-  return { seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', sessionDate: data.sessionDate || '', sessionTime: data.sessionTime || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
+  return { reservationId: insertResult.insertId || null, seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', sessionDate: data.sessionDate || '', sessionTime: data.sessionTime || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
 }
 
 async function getReservationsBySeat(seatId) {
   const rows = await pool.query(
-    `SELECT seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
+    `SELECT id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
     [seatId],
   );
   return rows.map(toItem);
 }
 
 async function getAllReservations() {
-  const rows = await pool.query(`SELECT seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations`);
+  const rows = await pool.query(`SELECT id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations`);
   return rows.map(toItem);
 }
 
 async function getReservationsByUser(userId) {
   const rows = await pool.query(
-    `SELECT seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
+    `SELECT id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
     [userId],
   );
   return rows.map(toItem);
 }
 
 async function cancelReservation(seatId, userId) {
-  const rows = await pool.query(
-    `SELECT id FROM reservations
-     WHERE seat_id = ? AND user_id = ? AND status != 'CANCELLED'
-     ORDER BY reserved_at DESC LIMIT 1`,
-    [seatId, userId],
-  );
-  const reservationId = rows.length > 0 ? rows[0].id : null;
-  if (reservationId) {
-    await pool.query(
-      `UPDATE reservations SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = ?`,
-      [reservationId],
+  const connection = await pool.getConnection();
+  const activeStatusPlaceholders = ACTIVE_RESERVATION_STATUSES.map(() => '?').join(', ');
+  try {
+    await connection.beginTransaction();
+
+    // Redis의 좌석 상태가 아니라 가장 최근의 MariaDB 확정 예약을 소유권과
+    // 환불 가능 여부의 기준으로 사용한다. 같은 좌석이 재판매된 뒤 이전
+    // 구매자가 다시 취소하는 경우를 막기 위해 user_id 조건보다 먼저 현재
+    // 활성 예약자를 잠근다.
+    const activeRows = await connection.query(
+      `SELECT id, seat_id, user_id, event_id, session_date, session_time,
+              status, reserved_at, cancelled_at
+       FROM reservations
+       WHERE seat_id = ? AND status IN (${activeStatusPlaceholders})
+       ORDER BY reserved_at DESC, id DESC
+       LIMIT 1 FOR UPDATE`,
+      [seatId, ...ACTIVE_RESERVATION_STATUSES],
     );
+
+    if (activeRows.length === 0) {
+      const previousRows = await connection.query(
+        `SELECT id, seat_id, user_id, event_id, session_date, session_time,
+                status, reserved_at, cancelled_at
+         FROM reservations
+         WHERE seat_id = ? AND user_id = ?
+         ORDER BY reserved_at DESC, id DESC
+         LIMIT 1`,
+        [seatId, userId],
+      );
+      await connection.commit();
+
+      const previous = previousRows[0];
+      if (previous && previous.status === 'CANCELLED') {
+        return {
+          affected: 0,
+          idempotent: true,
+          reservationId: previous.id,
+          reservation: toItem(previous),
+        };
+      }
+      return { affected: 0, idempotent: false, reason: 'not_found' };
+    }
+
+    const active = activeRows[0];
+    if (String(active.user_id) !== String(userId)) {
+      await connection.rollback();
+      return { affected: 0, idempotent: false, reason: 'not_owner' };
+    }
+
+    const seatRows = await connection.query(
+      `SELECT seat_id, event_id, session_date, session_time, section, price, status
+       FROM seats WHERE seat_id = ? LIMIT 1 FOR UPDATE`,
+      [seatId],
+    );
+
+    const updateResult = await connection.query(
+      `UPDATE reservations
+       SET status = 'CANCELLED', cancelled_at = NOW()
+       WHERE id = ? AND status IN (${activeStatusPlaceholders})`,
+      [active.id, ...ACTIVE_RESERVATION_STATUSES],
+    );
+    if (Number(updateResult.affectedRows) !== 1) {
+      await connection.rollback();
+      return { affected: 0, idempotent: false, reason: 'conflict' };
+    }
+
+    await connection.query(
+      `UPDATE seats
+       SET status = 'AVAILABLE', held_by = '', held_at = NULL
+       WHERE seat_id = ?`,
+      [seatId],
+    );
+    await connection.commit();
+
+    const cancelledAt = new Date();
+    const reservation = toItem({
+      ...active,
+      status: 'CANCELLED',
+      cancelled_at: cancelledAt,
+    });
+    const seat = seatRows[0]
+      ? {
+          seatId: seatRows[0].seat_id,
+          eventId: seatRows[0].event_id || reservation.eventId,
+          sessionDate: seatRows[0].session_date || reservation.sessionDate,
+          sessionTime: seatRows[0].session_time || reservation.sessionTime,
+          section: seatRows[0].section || '',
+          price: Number(seatRows[0].price) || 0,
+          previousStatus: seatRows[0].status || '',
+        }
+      : null;
+
+    console.log(`[MariaDB] 예약 취소: ${seatId} (${userId}) reservation_id=${active.id}`);
+    return {
+      affected: 1,
+      idempotent: false,
+      reservationId: active.id,
+      reservation,
+      seat,
+    };
+  } catch (err) {
+    await connection.rollback().catch(() => {});
+    throw err;
+  } finally {
+    connection.release();
   }
-  console.log(`[MariaDB] 예약 취소: ${seatId} (${userId}) reservation_id=${reservationId}`);
-  return { affected: reservationId ? 1 : 0, reservationId };
 }
 
 module.exports = {

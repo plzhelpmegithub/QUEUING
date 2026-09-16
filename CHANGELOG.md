@@ -1,3 +1,42 @@
+## [2026-09-16 17:52] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: `saveReservation()`이 MariaDB INSERT 결과의 `insertId`를 `reservationId`로 반환하도록 유지하고, `cancelReservation()`의 활성 예약 상태 목록을 `CONFIRMED`, `RESERVED`, `PAID`로 통합
+- **[src/services/seatService.js]**: 환불은 MariaDB 트랜잭션 성공을 기준으로 확정하고 Redis는 후속 캐시 동기화 대상으로 처리. Redis 응답 지연·키 누락이 DB 환불 성공을 실패로 되돌리지 않도록 유지
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 프론트엔드가 예약 자료를 늦게 받거나 오래된 좌석 ID를 사용하면 마이페이지 환불 요청이 실패하거나 환불 상태와 DB 상태가 달라질 수 있었음
+- **원인(Cause):** 확정 예약 상태가 데이터 버전에 따라 달랐고, 환불 요청이 Redis 좌석 상태에 의존하면 캐시 지연·누락의 영향을 받음
+- **해결(Solution):** MariaDB에서 현재 소유자의 활성 예약을 행 잠금으로 확인하고 예약과 좌석을 같은 트랜잭션에서 취소한다. 동일 환불 재요청은 `idempotent: true` 성공으로 반환해 프론트엔드 재시도와 중복 이메일·재판매 이벤트를 안전하게 처리
+
+## [2026-09-16 17:44] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: 환불 대상 확정 예약 상태에 `CONFIRMED`뿐 아니라 기존 데이터에서 사용될 수 있는 `RESERVED`, `PAID`도 포함. 신규 예약 INSERT 결과의 `reservationId`도 반환
+- **[README.md]**: 환불 가능한 예약 상태와 DB 우선 처리 기준을 문서에 반영
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 결제 완료 내역이 존재해도 과거 상태값으로 저장된 예약은 마이페이지 환불 요청이 `취소 가능한 확정 예약을 찾을 수 없습니다.`로 거절될 수 있음
+- **원인(Cause):** 환불 SQL이 `reservations.status = 'CONFIRMED'` 하나만 조회했음
+- **해결(Solution):** `CONFIRMED`, `RESERVED`, `PAID`를 활성 예약 상태로 취급하여 MariaDB 트랜잭션에서 동일하게 소유권 검증·취소 처리
+
+---
+
+## [2026-09-16 17:32] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: 환불 시 MariaDB의 최신 `CONFIRMED` 예약을 행 잠금으로 조회하고, 예약 `CANCELLED` 변경과 좌석 `AVAILABLE` 복구를 단일 트랜잭션으로 처리하도록 `cancelReservation()`을 개편. 재시도된 동일 환불은 `idempotent: true`로 응답하고 예약 조회 응답에 `reservationId`를 포함
+- **[src/services/seatService.js]**: `cancelSeat()`의 기준 데이터를 Redis 좌석 상태에서 MariaDB 예약으로 변경. Redis 조회도 DB 환불 완료 뒤로 이동하고 좌석·카운터·매진 플래그를 후속 동기화하며, Redis 키가 없으면 DB 좌석 메타데이터로 캐시를 재구성. Redis 장애 시에도 DB 환불 결과를 유지
+- **[src/routes/seatRoutes.js]**: 멱등 환불 재시도에서는 취소·환불 안내 이메일을 중복 발송하지 않도록 처리
+- **[README.md]**: MariaDB 우선 환불 흐름, 트랜잭션, 소유권 검증 및 멱등 처리 규칙을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 마이페이지에서 관리자·일반 사용자 모두 예매 내역은 조회되지만 환불 요청이 `판매 완료 상태가 아닌 좌석입니다`로 거절될 수 있음
+- **원인(Cause):** 기존 `cancelSeat()`이 MariaDB의 확정 예약을 조회하기 전에 Redis 좌석 해시의 `SOLD` 상태부터 검사하여, Redis 재시작·복구 지연·키 누락 시 정상 예약도 환불할 수 없었음. 또한 Redis를 먼저 변경해 DB 취소 실패 시 상태가 어긋날 위험이 있었음
+- **해결(Solution):** MariaDB를 기준 데이터로 사용해 현재 확정 예약자 검증과 예약·좌석 상태 변경을 트랜잭션으로 먼저 완료한 뒤 Redis를 캐시로 동기화. 동일 요청은 멱등 성공으로 처리해 재판매 좌석 및 중복 알림을 보호
+
+---
+
 ## [2026-09-16 15:40] 업데이트 로그 — 대기열 미구현 기능 완성 (timerService·seatService 연동)
 
 ### 🔄 변경 및 수정 사항

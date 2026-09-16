@@ -222,7 +222,7 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 | `POST /seats/init` | 좌석 초기화 (Redis Hash 생성) |
 | `POST /seats/hold` | reCAPTCHA v3와 좌석 ID에 포함된 회차·Admission Token을 검증한 뒤 분산 락·타이머 시작 |
 | `POST /seats/confirm` | reCAPTCHA v3 검증 후 결제 확정. MariaDB reservations 저장, 토큰 무효화, 매진 체크. `paymentMethod=vbank`이면 24시간 이내 입금 확인이 필요하다는 무통장 입금 접수 메일을, 그 외에는 예매 확정 메일을 자동 발송 |
-| `POST /seats/cancel` | 좌석 취소. available 복구, B팀 재판매 트리거. 성공 시 사용자 이메일로 취소 및 환불 안내 메일 자동 발송 |
+| `POST /seats/cancel` | MariaDB의 최신 `CONFIRMED` 예약을 기준으로 본인 소유권을 검증하고, 예약 `CANCELLED` 변경과 좌석 `AVAILABLE` 복구를 한 트랜잭션으로 처리. 이후 Redis 상태와 실시간 이벤트를 동기화하고 B팀 재판매 이벤트를 발행. 동일 요청 재시도는 멱등 성공으로 응답하며 환불 메일을 중복 발송하지 않음 |
 | `POST /seats/release` | 좌석 해제 + standby 자동 배정 |
 | `GET /seats/timer/:seatId` | 남은 결제 시간 조회 |
 | `GET /seats/sold-out` | 매진 여부 확인 |
@@ -417,7 +417,7 @@ Redis Hash 기반 좌석 상태 머신.
 **주요 함수:**
 - `holdSeat()`: Admission Token 검증 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작 → 입장 제한시간(admission deadline) 취소(seat timer가 이어받음). 토큰은 무효화하지 않음(좌석 변경 허용)
 - `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → admitted에서 제거(`COMPLETED`) → 빈 슬롯 backfill → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분)
-- `cancelSeat()`: 예약을 CANCELLED로 기록하고 좌석을 available로 복구한 뒤 B파트용 SQS 취소 이벤트만 발행
+- `cancelSeat()`: Redis 상태와 무관하게 MariaDB 최신 확정 예약을 기준으로 환불 권한을 검증하고, DB 트랜잭션이 완료된 뒤 Redis 좌석·카운터·매진 플래그를 동기화한다. Redis 동기화가 일시 실패해도 MariaDB의 취소 결과를 유지하며, 최초 처리에서만 B파트용 SQS 취소 이벤트를 발행한다.
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
 - `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 + 인덱스 Set 일괄 삭제
 - `getAllSeats()`: 좌석 인덱스 Set(SMEMBERS) + pipeline HMGET으로 좌석 조회. 1.5초 TTL 인메모리 캐시를 적용하여 동시 다수 요청 시 Redis 왕복을 1회로 축소. 좌석 상태 변경(hold/confirm/cancel/release) 시 해당 eventId 캐시를 즉시 무효화. 회차 컨텍스트가 있으면 해당 회차만 필터링. eventId 없이 호출 시에만 SCAN 폴백
@@ -688,7 +688,9 @@ MariaDB 테이블 생성 및 reservations CRUD.
 
 현재 운영 스키마에서 `cancel_allocations.allocation_id`는 정수 `AUTO_INCREMENT` PK이며, `seat_id`는 NULL을 허용한다. `cancellation_link`는 B파트가 관리하는 테이블로 A파트의 초기화 대상이 아니다.
 
-reservations CRUD 함수: `saveReservation()`, `getReservations()`, `getReservationBySeat()`
+reservations CRUD 함수: `saveReservation()`, `getReservationsBySeat()`, `getAllReservations()`, `getReservationsByUser()`, `cancelReservation()`
+
+`saveReservation()`은 INSERT 결과의 `insertId`를 `reservationId`로 반환한다. `cancelReservation()`은 트랜잭션과 행 잠금(`FOR UPDATE`)을 사용한다. `CONFIRMED`, `RESERVED`, `PAID` 상태를 활성 예약으로 보고 현재 예약자가 요청 사용자와 일치할 때만 `reservations.status='CANCELLED'` 및 `seats.status='AVAILABLE'`을 함께 반영한다. 이미 취소된 동일 예약은 `idempotent: true`로 반환해 좌석 재판매 이후의 상태를 다시 덮어쓰거나 이메일·SQS 이벤트를 중복 생성하지 않는다.
 
 ---
 

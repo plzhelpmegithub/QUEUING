@@ -113,7 +113,7 @@ async function seatRoutes(fastify) {
     );
     const statusCode = result.success ? 200 : 409;
 
-    if (result.success) {
+    if (result.success && !result.idempotent) {
       try {
         const ctx = await getEmailContext(seatId, userId, eventId, sessionDate, sessionTime);
         if (ctx) {
@@ -178,7 +178,8 @@ async function seatRoutes(fastify) {
     );
     const statusCode = result.success ? 200 : 409;
 
-    if (result.success) {
+    // 재시도된 동일 환불 요청은 성공으로 응답하되 안내 메일은 한 번만 보낸다.
+    if (result.success && !result.idempotent) {
       try {
         const ctx = await getEmailContext(seatId, userId);
         if (ctx) {
