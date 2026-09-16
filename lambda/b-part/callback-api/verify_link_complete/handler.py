@@ -1,19 +1,28 @@
 """
-POST /b-callback/verify-link/complete  (ALB 타겟그룹 — A파트가 좌석 선택 완료 시 호출)
+POST /b-callback/verify-link/complete  (ALB 타겟그룹 — A파트가 좌석·결제 확정 시 호출)
 
-[2026-09-14 ALB 형식 대응] common.alb 사용.
+[2026-09-16 patch] 요청 필드를 token/seatId 기반에서 A파트 최종 확정 스펙
+(user_id/event_id/seat_id/allocation_id, token 없음) 기준으로 변경.
 
-입력: token, seatId
+함께 고친 두 가지 (원인 분석 결과):
+1. cancellation_link.status ENUM은 ('unused','in_progress','completed','expired')뿐이고
+   'used'는 없음. 그런데 update_allocation_status.py가 완료 시 'used'로 UPDATE하고
+   있어서, 이 핸들러가 'completed'로 체크해도 절대 안 맞았음.
+   → update_allocation_status.py의 _LINK_STATUS_MAP을 "COMPLETED": "used" 에서
+     "COMPLETED": "completed" 로 같이 고쳐야 함 (별도 파일, 이 patch 범위 밖).
+2. cancellation_link는 allocation_id에 유니크 제약이 없어 재시도마다 새 행이
+   쌓일 수 있음 → allocation_id로 조회할 때 반드시 ORDER BY issued_at DESC
+   LIMIT 1로 최신 행만 집어야 함 (FOR UPDATE로 잠그기 위해 서브쿼리 사용).
 
-책임 범위: seat_id 확정 + SendTaskSuccess만. status 갱신은 SFN의
-MarkCompleted → UpdateAllocationStatus가 전담 (중복 쓰기 방지, 2026-09-14 확정).
+역할 분리는 기존과 동일하게 유지: 이 핸들러는 seat_id 확정(재검증+저장)만
+책임지고, cancel_allocations/cancellation_link의 status 갱신은 SFN의
+MarkCompleted → UpdateAllocationStatus가 전담한다.
 """
 
 import json
 import os
 
 import boto3
-import jwt as pyjwt
 
 from common.auth import verify_callback_secret, UnauthorizedError
 from common.alb import parse_json_body, alb_response
@@ -21,14 +30,20 @@ from common.db import db_transaction
 
 sfn_client = boto3.client("stepfunctions")
 
+# allocation_id로 최신 cancellation_link 행 1개를 잠그고, 매칭되는
+# cancel_allocations의 event_id/user_id도 같이 가져온다.
 FIND_LINK_SQL = """
-    SELECT token, status, task_token
-    FROM cancellation_link
-    WHERE token = %s
+    SELECT cl.token, cl.status AS link_status, cl.task_token,
+           ca.event_id, ca.user_id
+    FROM cancellation_link cl
+    JOIN cancel_allocations ca ON ca.allocation_id = cl.allocation_id
+    WHERE cl.allocation_id = %s
+    ORDER BY cl.issued_at DESC
+    LIMIT 1
     FOR UPDATE
 """
 
-RESEAT_CHECK_SQL = """
+SEAT_AVAILABLE_SQL = """
     SELECT s.seat_id
     FROM seats s
     JOIN reservations r ON r.seat_id = s.seat_id AND r.event_id = s.event_id
@@ -40,13 +55,13 @@ RESEAT_CHECK_SQL = """
 UPDATE_ALLOCATION_SEAT_SQL = """
     UPDATE cancel_allocations
     SET seat_id = %s
-    WHERE event_id = %s AND user_id = %s AND status = 'LINK_SENT'
+    WHERE allocation_id = %s AND status = 'LINK_SENT'
 """
 
 UPDATE_LINK_SEAT_SQL = """
     UPDATE cancellation_link
     SET seat_id = %s
-    WHERE token = %s
+    WHERE allocation_id = %s
 """
 
 
@@ -58,54 +73,67 @@ def handler(event, context):
         return alb_response(401, {"success": False, "reason": "unauthorized"})
 
     body = parse_json_body(event)
-    token = body.get("token")
-    seat_id = body.get("seatId")
+    allocation_id = body.get("allocation_id")
+    event_id_req = body.get("event_id")
+    seat_id = body.get("seat_id")
 
-    if not token or not seat_id:
+    if not allocation_id or not event_id_req or not seat_id:
         return alb_response(400, {"success": False, "reason": "missing_fields"})
 
-    try:
-        claims = pyjwt.decode(
-            token, os.environ["JWT_SECRET"], algorithms=["HS256"],
-            options={"verify_exp": False},
-        )
-    except pyjwt.InvalidTokenError:
-        return alb_response(401, {"success": False, "reason": "invalid_token"})
-
-    event_id = claims.get("event_id")
-    user_id = claims.get("user_id")
-    if not event_id or not user_id:
-        return alb_response(401, {"success": False, "reason": "token_missing_claims"})
-
     with db_transaction() as cur:
-        cur.execute(FIND_LINK_SQL, (token,))
+        cur.execute(FIND_LINK_SQL, (allocation_id,))
         link = cur.fetchone()
 
         if link is None:
-            return alb_response(404, {"success": False, "reason": "link_not_found"})
-        if link["status"] == "completed":
+            return alb_response(404, {"success": False, "reason": "allocation_not_found"})
+
+        # ENUM 값 'completed' 기준 (update_allocation_status.py 매핑 수정 후 유효)
+        if link["link_status"] == "completed":
             return alb_response(200, {"success": True, "reason": "already_completed"})
-        if link["status"] not in ("unused", "in_progress"):
+        if link["link_status"] not in ("unused", "in_progress"):
             return alb_response(410, {"success": False, "reason": "link_invalid_state"})
 
-        cur.execute(RESEAT_CHECK_SQL, (event_id, seat_id))
+        cur.execute(SEAT_AVAILABLE_SQL, (event_id_req, seat_id))
         if cur.fetchone() is None:
             return alb_response(409, {"success": False, "reason": "seat_no_longer_available"})
 
-        cur.execute(UPDATE_ALLOCATION_SEAT_SQL, (seat_id, event_id, user_id))
+        cur.execute(UPDATE_ALLOCATION_SEAT_SQL, (seat_id, allocation_id))
         if cur.rowcount == 0:
             return alb_response(409, {"success": False, "reason": "allocation_state_conflict"})
 
-        cur.execute(UPDATE_LINK_SEAT_SQL, (seat_id, token))
+        cur.execute(UPDATE_LINK_SEAT_SQL, (seat_id, allocation_id))
 
         task_token = link["task_token"]
+        token = link["token"]
+        event_id = link["event_id"]
+        user_id = link["user_id"]
 
     if not task_token:
+        # 좌석은 확정됐는데 SFN을 깨울 수 없는 상태 — 즉시 500으로 드러낸다.
         return alb_response(500, {"success": False, "reason": "task_token_missing"})
 
-    sfn_client.send_task_success(
-        taskToken=task_token,
-        output=json.dumps({"event_id": event_id, "user_id": user_id, "seat_id": seat_id}),
-    )
+    # ASL의 MarkCompleted가 $.event_id/$.user_id/$.token을 그대로 참조하므로
+    # (SendTaskSuccess output이 다음 상태 입력 전체를 대체함) 반드시 포함시킨다.
+    try:
+        sfn_client.send_task_success(
+            taskToken=task_token,
+            output=json.dumps({
+                "event_id": event_id,
+                "user_id": user_id,
+                "token": token,
+                "seat_id": seat_id,
+                "allocation_id": allocation_id,
+            }),
+        )
+    except sfn_client.exceptions.TaskDoesNotExist:
+        return alb_response(200, {"success": True, "reason": "already_completed"})
+    except sfn_client.exceptions.InvalidToken:
+        return alb_response(200, {"success": True, "reason": "already_completed"})
 
-    return alb_response(200, {"success": True, "eventId": event_id, "userId": user_id, "seatId": seat_id})
+    return alb_response(200, {
+        "success": True,
+        "eventId": event_id,
+        "userId": user_id,
+        "seatId": seat_id,
+        "allocationId": allocation_id,
+    })
