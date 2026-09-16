@@ -1,21 +1,19 @@
 {
-  "Comment": "QUEUING B-part - resale ticket sequential allocation workflow. FunctionName 값들은 팀장이 terraform으로 실제 Lambda를 만들 때 실제 이름/ARN으로 바꿔야 함 (지금은 논리적 이름).",
+  "Comment": "QUEUING B-part - resale ticket sequential allocation workflow.",
   "StartAt": "GetNextUser",
   "States": {
     "GetNextUser": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "GetNextUser",
+        "FunctionName": "arn:aws:lambda:ap-northeast-2:230790682749:function:queuing-b-get-next-user",
         "Payload": {
           "event_id.$": "$.event_id"
         }
       },
       "ResultSelector": {
         "has_candidate.$": "$.Payload.has_candidate",
-        "event_id.$": "$.Payload.event_id",
-        "user_id.$": "$.Payload.user_id",
-        "queue_index.$": "$.Payload.queue_index"
+        "candidate.$": "$.Payload"
       },
       "Retry": [
         {
@@ -48,11 +46,11 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "GenerateSignedLink",
+        "FunctionName": "arn:aws:lambda:ap-northeast-2:230790682749:function:queuing-b-generate-signed-link",
         "Payload": {
-          "event_id.$": "$.event_id",
-          "user_id.$": "$.user_id",
-          "queue_index.$": "$.queue_index"
+          "event_id.$": "$.candidate.event_id",
+          "user_id.$": "$.candidate.user_id",
+          "queue_index.$": "$.candidate.queue_index"
         }
       },
       "ResultSelector": {
@@ -75,12 +73,12 @@
     },
 
     "SendEmailAndWait": {
-      "Comment": "waitForTaskToken: 이 Lambda가 이메일을 보내고 리턴해도 상태는 끝나지 않는다. /verify-link API가 SendTaskSuccess를 부르거나, TimeoutSecondsPath만큼 지나면 States.Timeout으로 자동 종료된다. /verify-link/expire API가 SendTaskFailure(error='UserExpired')를 부르면 조기 만료로 처리된다.",
+      "Comment": "waitForTaskToken: response does not end the state; /verify-link calls SendTaskSuccess, or TimeoutSecondsPath elapses -> States.Timeout, or /verify-link/expire calls SendTaskFailure(error='UserExpired').",
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
       "TimeoutSecondsPath": "$.hold_duration_seconds",
       "Parameters": {
-        "FunctionName": "SendEmailViaSES",
+        "FunctionName": "arn:aws:lambda:ap-northeast-2:230790682749:function:queuing-b-send-email-via-ses",
         "Payload": {
           "event_id.$": "$.event_id",
           "user_id.$": "$.user_id",
@@ -123,7 +121,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "UpdateAllocationStatus",
+        "FunctionName": "arn:aws:lambda:ap-northeast-2:230790682749:function:queuing-b-update-allocation-status",
         "Payload": {
           "event_id.$": "$.event_id",
           "user_id.$": "$.user_id",
@@ -138,7 +136,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "UpdateAllocationStatus",
+        "FunctionName": "arn:aws:lambda:ap-northeast-2:230790682749:function:queuing-b-update-allocation-status",
         "Payload": {
           "event_id.$": "$.event_id",
           "user_id.$": "$.user_id",
@@ -156,7 +154,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "PushToDLQ",
+        "FunctionName": "arn:aws:lambda:ap-northeast-2:230790682749:function:queuing-b-push-to-dlq",
         "Payload": {
           "event_id.$": "$.event_id",
           "user_id.$": "$.user_id",
