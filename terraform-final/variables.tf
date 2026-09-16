@@ -41,12 +41,6 @@ variable "dcloud_db_user" {
   default     = "team2"
 }
 
-variable "dcloud_db_password" {
-  description = "D-Cloud DB 비밀번호 — use_rds = false 로 D-Cloud 를 계속 쓸 때만 필요하다"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
 
 # ── NAT ──
 
@@ -339,30 +333,8 @@ variable "redis_num_replicas" {
 #   export TF_VAR_smtp_pass='...'
 # ──────────────────────────────────────────────
 
-variable "smtp_user" {
-  description = "발신용 Gmail 주소. Grafana 알림·예매 확인 메일 발송에 쓴다."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
 
-variable "smtp_pass" {
-  description = <<-DESC
-    Gmail 앱 비밀번호 16자리. 계정 로그인 비밀번호가 아니다.
-    2단계 인증이 켜져 있어야 발급 메뉴가 보이고, 공백은 제거해서 넣는다.
-    (온프레미스 Grafana SMTP 설정에서 이것 때문에 한 번 막혔다)
-  DESC
-  type        = string
-  default     = ""
-  sensitive   = true
-}
 
-variable "recaptcha_secret_key" {
-  description = "Google reCAPTCHA v3 서버 시크릿 키. 프론트엔드(찬규님) 쪽에서 쓴다."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
 
 # ──────────────────────────────────────────────
 # VPC Flow Logs

@@ -36,7 +36,6 @@
 #   C파트 업그레이드가 조용히 실패   -> 모니터링(ServiceMonitor CRD)을 앱보다 먼저 설치한다
 #   D파트 차트 경로 한 겹 남음      -> "브랜치:경로" zip 으로 받아 벗겨낼 필요 자체를 없앴다
 #   한글 파일명 추출 실패            -> tar 대신 zip (dry-run 으로 발견)
-#   KEDA/워커 IRSA 누락             -> KEDA·A파트는 helm 값으로, 워커는 설치 직후 붙인다
 #   Flow Log 로그 그룹 재생성        -> down 에서 Flow Log 먼저 지우고, up 전에 남은 그룹을 정리한다
 #   reCAPTCHA 키 붙여넣기 오류       -> 40자인지 검사하고 틀리면 다시 묻는다
 #   Role 이 네임스페이스 자체를 지움 -> RBAC 에서 namespaces 를 빼고 그룹을 열거한다
@@ -49,7 +48,7 @@
 #   terraform output -json 해석 실패로 3단계에서 멈춤 -> 외부 명령 출력을 UTF-8 로 읽는다
 #   B파트(건아) Step Functions + Lambda 5개           -> apply 전에 건아님 브랜치에서 패키지를 만들고,
 #                                                       DB 비밀번호는 apply 동안만 TF_VAR 로 넘기고,
-#                                                       queuing-b 에 ConfigMap/Secret b-part-workflow 를 만든다
+#                                                       콜백 API Lambda 3종 zip 도 같이 만든다 (2026-09-16)
 #     (한국어 윈도우 콘솔 기본 cp949 에서만 난다. UTF-8 콘솔에서는 재현되지 않아 dry-run 이 놓쳤다)
 #   예지님 Grafana(EC2) B안                          -> 클러스터 안 Grafana 를 내리고 Prometheus 를
 #                                                       NodePort 로 열어 NLB 대상 상태를 본다
@@ -302,7 +301,7 @@ function Get-TeamRbacYaml([string]$AccountId) {
         "persistentvolumeclaims", "replicationcontrollers", "podtemplates", "events", "limitranges", "resourcequotas")
     # "*" 를 쓰면 core("") 까지 포함되어 위의 제한이 무력화된다. 반드시 열거한다.
     $groups = & $q @("apps", "batch", "autoscaling", "networking.k8s.io", "policy", "rbac.authorization.k8s.io",
-        "discovery.k8s.io", "events.k8s.io", "coordination.k8s.io", "monitoring.coreos.com", "keda.sh", "argoproj.io")
+        "discovery.k8s.io", "events.k8s.io", "coordination.k8s.io", "monitoring.coreos.com", "argoproj.io")
 
     $docs = New-Object System.Collections.Generic.List[string]
     foreach ($m in $Team) {
@@ -312,9 +311,6 @@ function Get-TeamRbacYaml([string]$AccountId) {
         # A파트 차트의 templates/namespace.yaml 때문에 helm 이 Namespace 라벨을 써야 한다. 삭제는 주지 않는다.
         if ($u -eq "chan") {
             $extra = "`n  - apiGroups: [`"`"]`n    resources: [`"namespaces`"]`n    resourceNames: [`"queuing-a`"]`n    verbs: [`"patch`", `"update`"]"
-        }
-        if ($u -eq "geonah") {
-            $extra = "`n  - apiGroups: [`"keda.sh`"]`n    resources: [`"*`"]`n    verbs: [`"get`", `"list`", `"watch`"]"
         }
         $docs.Add(@"
 apiVersion: rbac.authorization.k8s.io/v1
