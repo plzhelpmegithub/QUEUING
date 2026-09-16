@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: queuing-observability
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: queuing.slow-requests
+      interval: 30s
+      rules:
+        - record: queuing:slow_requests:rate5m
+          labels:
+            part: D
+          expr: >
+            sum by (path) (label_replace(
+              sum by (uri) (rate(http_server_requests_seconds_count{job="backend-counter-service", uri!~"/actuator.*"}[5m]))
+              - sum by (uri) (rate(http_server_requests_seconds_bucket{job="backend-counter-service", uri!~"/actuator.*", le="1.0"}[5m])),
+              "path", "$1", "uri", "(.*)"))
+        - record: queuing:slow_requests:rate5m
+          labels:
+            part: A
+          expr: >
+            sum by (path) (label_replace(
+              sum by (route) (rate(queuing_http_request_duration_seconds_count{job="api", route!~"unknown|/health|/metrics"}[5m]))
+              - sum by (route) (rate(queuing_http_request_duration_seconds_bucket{job="api", route!~"unknown|/health|/metrics", le="1.0"}[5m])),
+              "path", "$1", "route", "(.*)"))
