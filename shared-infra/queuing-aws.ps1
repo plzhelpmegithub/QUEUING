@@ -90,12 +90,11 @@ $script:Warnings = New-Object System.Collections.Generic.List[string]
 # 고정값 — 바꿀 일이 생기면 여기만 고친다
 # ══════════════════════════════════════════════
 $Versions = @{
-    Keda          = "2.20.2"
     Monitoring    = "88.6.0"   # 릴리즈 이름 monitoring 과 함께 고정 (ServiceMonitor 선택 라벨)
     MetricsServer = "v0.9.0"
     ClusterAutoscaler = "9.53.0"   # 차트 9.53.0 = 앱 v1.34.2. 쿠버네티스 마이너 버전(1.34)과 맞춘다. EKS 를 올리면 같이 올린다
 }
-$Namespaces = @("queuing-a", "queuing-b", "queuing-c", "queuing-d", "realtime", "redis", "monitoring", "keda", "argocd")
+$Namespaces = @("queuing-a", "queuing-b", "queuing-d", "realtime", "redis", "monitoring", "argocd")
 $FlowLogGroup = "/aws/vpc-flow-logs/queuing"
 $Endpoints = @("https://api.queuing.kr/health", "https://api.queuing.kr/healthz", "https://queuing.kr/events")
 # 인터넷에서 403 이어야 하는 경로 (terraform-final/alb.tf block_internal)
@@ -482,6 +481,26 @@ function Build-BPartWorkflow {
     $zipBase = Join-Path $BPart.BuildDir "lambda"
     if (-not (Invoke-Native "Lambda zip" "python" @("-c", "import shutil,sys; shutil.make_archive(sys.argv[1], 'zip', root_dir=sys.argv[2])", $zipBase, $pkg))) { return $false }
     Copy-Item $asl (Join-Path $BPart.BuildDir "resale-workflow.asl.json") -Force
+    # 콜백 API 3종은 함수마다 zip 을 따로 만든다 (handler.py 이름이 셋 다 같아 한 zip 에 못 넣는다).
+    #   내용 = 공용 의존성(pip 결과) + 그 함수의 handler.py + common/ 3개 파일 (건아님 요청, 2026-09-15)
+    $cb = Join-Path $Work "bpart-cb"
+    if (Export-FromGit $BPart.Branch "$($BPart.LambdaPath)/callback-api" $cb) {
+        foreach ($fn in @("verify_link", "verify_link_complete", "verify_link_expire")) {
+            $h = Join-Path $cb "$fn\handler.py"
+            if (-not (Test-Path $h)) { Warn "콜백 함수 코드가 없다: callback-api/$fn/handler.py"; continue }
+            $d = Join-Path $Work "bpart-cb-$fn"
+            if (Test-Path $d) { Remove-Item -Recurse -Force $d }
+            Copy-Item $pkg $d -Recurse
+            # 워크플로용 .py 는 콜백 zip 에 필요 없다
+            Get-ChildItem $src -Filter *.py | ForEach-Object { Remove-Item (Join-Path $d $_.Name) -Force -ErrorAction SilentlyContinue }
+            Copy-Item $h $d
+            Copy-Item (Join-Path $cb "common") $d -Recurse
+            $z = Join-Path $BPart.BuildDir "callback-$fn"
+            if (-not (Invoke-Native "콜백 zip ($fn)" "python" @("-c", "import shutil,sys; shutil.make_archive(sys.argv[1], 'zip', root_dir=sys.argv[2])", $z, $d))) { return $false }
+        }
+        Ok "콜백 API zip 3개"
+    }
+    else { Warn "콜백 API 코드를 꺼내지 못했다 - terraform 이 콜백 Lambda 를 만들지 못한다" }
     Ok ("Lambda 패키지 {0:N1}MB, ASL 복사 -> {1}" -f ((Get-Item "$zipBase.zip").Length / 1MB), $BPart.BuildDir)
     return $true
 }
@@ -506,7 +525,7 @@ function Show-Health([int]$WaitSeconds = 0) {
     $rel = Read-Native "helm" @("list", "-A", "--no-headers")
     $rel | ForEach-Object { if ($_ -notmatch "\sdeployed\s") { Warn "helm 릴리즈 상태 이상: $_" } }
     $names = @($rel | ForEach-Object { ($_ -split "\s+")[0] })
-    foreach ($r in @("keda", "monitoring", "counter", "realtime-ws", "api", "worker")) {
+    foreach ($r in @("monitoring", "counter", "realtime-ws", "api")) {
         if ($names -notcontains $r) { Warn "helm 릴리즈 없음: $r" }
     }
 
@@ -686,6 +705,10 @@ function Invoke-Up {
         if (-not (Build-BPartWorkflow)) { Die "B파트 Lambda 패키지를 만들지 못했다. 위 에러를 확인한다 (급하면 terraform.tfvars 에 b_resale_workflow = false 로 끄고 진행)" }
         # D-Cloud DB 비밀번호는 terraform 파일·tfvars 에 두지 않는다. 이 terraform 실행 동안만 환경변수로 넘기고 바로 지운다.
         $tfExit = 0
+        # A↔B 콜백 공유 비밀값. Secrets Manager 에만 두고 tfvars·state 에는 넣지 않는다.
+        $cbSecret = Read-Native "aws" @("secretsmanager", "get-secret-value", "--region", $Region, "--secret-id", "queuing-persistent/b-callback-secret", "--query", "SecretString", "--output", "text")
+        if ($script:ReadExit -eq 0 -and "$cbSecret".Trim()) { $env:TF_VAR_b_callback_secret = "$cbSecret".Trim() }
+        else { Warn "queuing-persistent/b-callback-secret 을 읽지 못했다 - B 콜백 API 가 X-Callback-Secret 검증에 실패한다" }
         $env:TF_VAR_b_lambda_db_password = $S.Db
         try {
             if ($DryRun) {
@@ -696,7 +719,7 @@ function Invoke-Up {
                 & terraform "-chdir=$TfDir" apply
                 $tfExit = $LASTEXITCODE
             }
-        } finally { Remove-Item Env:TF_VAR_b_lambda_db_password -ErrorAction SilentlyContinue }
+        } finally { Remove-Item Env:TF_VAR_b_lambda_db_password, Env:TF_VAR_b_callback_secret -ErrorAction SilentlyContinue; $cbSecret = $null }
         if ($tfExit -ne 0) { Die "terraform apply 실패. 에러를 고친 뒤 다시 실행한다" }
     }
 
@@ -705,7 +728,7 @@ function Invoke-Up {
     Connect-Cluster
     if (-not (Invoke-Native "노드 Ready 대기" "kubectl" @("wait", "--for=condition=Ready", "nodes", "--all", "--timeout=600s"))) { Die "노드가 Ready 가 되지 않았다" }
     $tf = (Read-Native "terraform" @("-chdir=$TfDir", "output", "-json")) | Out-String | ConvertFrom-Json
-    foreach ($k in @("redis_endpoint", "sqs_queue_url", "keda_role_arn", "worker_b_role_arn", "ses_send_role_arn")) {
+    foreach ($k in @("redis_endpoint", "ses_send_role_arn")) {
         if (-not $tf.$k.value) { Die "terraform output $k 가 없다" }
     }
     Ok "ElastiCache $($tf.redis_endpoint.value)"
@@ -727,48 +750,27 @@ function Invoke-Up {
     Set-K8sSecret "queuing-a"  "mariadb-credentials"    ([ordered]@{ MARIADB_ROOT_PASSWORD = $S.Db })
     Set-K8sSecret "queuing-a"  "auth-credentials"       ([ordered]@{ JWT_AUTH_SECRET = $S.JwtAuth; JWT_SECRET = $S.JwtAdmit })
     Set-K8sSecret "queuing-a"  "recaptcha-credentials"  ([ordered]@{ RECAPTCHA_SECRET_KEY = $S.Recap3; RECAPTCHA_V2_SECRET_KEY = $S.Recap2 })
-    Set-K8sSecret "queuing-b"  "mysql-secret"           ([ordered]@{ password = $S.Db })
     Set-K8sSecret "queuing-d"  "backend-counter-secret" ([ordered]@{ "db-password" = $S.Db; "redis-password" = $S.Redis })
     Set-K8sSecret "redis"      "redis-counter-secret"   ([ordered]@{ password = $S.Redis })
     Set-K8sSecret "realtime"   "stats-redis-secret"     ([ordered]@{ password = $S.Redis })
+    # A파트 파드가 B 콜백을 부를 때 보내는 헤더 값. Lambda 쪽 B_CALLBACK_SECRET 과 같아야 한다.
+    # 이 Secret 이 없으면 A 차트의 bCallbackAuth 때문에 파드가 뜨지 않는다 (2026-09-15 실제로 멈췄다).
+    $cbk = Read-Native "aws" @("secretsmanager", "get-secret-value", "--region", $Region, "--secret-id", "queuing-persistent/b-callback-secret", "--query", "SecretString", "--output", "text")
+    if ($script:ReadExit -eq 0 -and "$cbk".Trim()) { Set-K8sSecret "queuing-a" "b-callback-credentials" ([ordered]@{ B_CALLBACK_SECRET = "$cbk".Trim() }) }
+    else { Warn "queuing-persistent/b-callback-secret 을 읽지 못했다 - A파트 파드가 뜨지 않는다" }
+    $cbk = $null
     $S = $null
-
-    # B파트 워크플로 값. 건아님 앱이 envFrom 으로 읽는다 (차트가 --set 을 받지 않아도 된다).
-    #   Secret    JWT_SECRET_KEY            — Lambda GenerateSignedLink 와 같은 링크 서명 키 (app.py 가 이 이름을 읽는다)
-    #   ConfigMap RESALE_STATE_MACHINE_ARN  — StartExecution 대상
-    #             RESALE_DLQ_URL, AWS_REGION
-    if ($tf.b_link_jwt_secret_id.value) {
-        $jwt = Read-Native "aws" @("secretsmanager", "get-secret-value", "--region", $Region, "--secret-id", $tf.b_link_jwt_secret_id.value, "--query", "SecretString", "--output", "text")
-        if ($script:ReadExit -eq 0 -and "$jwt".Trim()) { Set-K8sSecret "queuing-b" "b-part-workflow" ([ordered]@{ JWT_SECRET_KEY = "$jwt".Trim() }) }
-        else { Warn "B파트 링크 서명 키를 Secrets Manager 에서 읽지 못했다 ($($tf.b_link_jwt_secret_id.value))" }
-        $jwt = $null
-        $cm = @"
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: b-part-workflow
-  namespace: queuing-b
-data:
-  RESALE_STATE_MACHINE_ARN: "$($tf.b_resale_state_machine_arn.value)"
-  RESALE_DLQ_URL: "$($tf.b_resale_dlq_url.value)"
-  AWS_REGION: "$Region"
-"@
-        if (Kube "ConfigMap queuing-b/b-part-workflow" @("apply", "-f", "-") $cm) { Ok "ConfigMap queuing-b/b-part-workflow (RESALE_STATE_MACHINE_ARN, RESALE_DLQ_URL, AWS_REGION)" }
-    } else { Info "B파트 워크플로 출력 없음 (terraform apply 전이거나 b_resale_workflow = false)" }
 
     # ── 6. 팀원 RBAC ──
     Step 6 "팀원 RBAC"
     if (Kube "팀원 RBAC" @("apply", "-f", "-") (Get-TeamRbacYaml $acct)) { Ok "chan · geonah · yeji" }
 
-    # ── 7. 클러스터 공용 (KEDA · 모니터링) — 앱보다 먼저 ──
-    # 앱 차트의 ServiceMonitor(C·D파트)와 ScaledObject(B파트)는 이 둘이 만드는 CRD 가 있어야 설치된다.
+    # ── 7. 클러스터 공용 (모니터링 · 노드 자동 증설) — 앱보다 먼저 ──
+    # 앱 차트의 ServiceMonitor(A·C·D파트)는 모니터링이 만드는 CRD 가 있어야 설치된다.
     # 2026-09-11 에 C파트가 모니터링보다 먼저 배포되어 업그레이드가 조용히 실패했다.
-    Step 7 "KEDA · 모니터링"
-    [void](Invoke-Native "helm repo add kedacore" "helm" @("repo", "add", "kedacore", "https://kedacore.github.io/charts", "--force-update"))
+    # KEDA 는 B파트 email-worker 전용이라 2026-09-15 에 뺐다.
+    Step 7 "모니터링 · Cluster Autoscaler"
     [void](Invoke-Native "helm repo add prometheus-community" "helm" @("repo", "add", "prometheus-community", "https://prometheus-community.github.io/helm-charts", "--force-update"))
-    # KEDA 오퍼레이터 IRSA 를 설치할 때 넣는다. identityOwner=operator 라서 오퍼레이터 신분으로 SQS 를 읽는다.
-    if (Helm-Release "KEDA" "keda" "keda" "kedacore/keda" @("--version", $Versions.Keda,
-            "--set-string", "serviceAccount.operator.annotations.eks\.amazonaws\.com/role-arn=$($tf.keda_role_arn.value)") -Wait) { Ok "KEDA $($Versions.Keda)" }
     $mv = Join-Path $Work "monitoring-values.yaml"
     [IO.File]::WriteAllText($mv, $MonitoringValues, (New-Object System.Text.UTF8Encoding $false))
     if (Helm-Release "모니터링" "monitoring" "monitoring" "prometheus-community/kube-prometheus-stack" @("--version", $Versions.Monitoring, "-f", $mv)) { Ok "kube-prometheus-stack $($Versions.Monitoring)" }
@@ -797,9 +799,9 @@ data:
     # ── 8. 앱 차트 가져오기 ──
     Step 8 "앱 차트"
     [void](Invoke-Native "git fetch" "git" @("-C", $RepoDir, "fetch", "origin", "--quiet"))
-    $charts = @{ a = Join-Path $Work "chart-a"; b = Join-Path $Work "chart-b"; d = Join-Path $Work "chart-d" }
-    $src = @{ a = @("origin/feature/chan", "redis-api-chart"); b = @("origin/feature/geonah", "queuing-chart"); d = @("origin/yeji/aws-migration", "k8s/queuing-chart") }
-    foreach ($p in @("a", "b", "d")) {
+    $charts = @{ a = Join-Path $Work "chart-a"; d = Join-Path $Work "chart-d" }
+    $src = @{ a = @("origin/feature/chan", "redis-api-chart"); d = @("origin/yeji/aws-migration", "k8s/queuing-chart") }
+    foreach ($p in @("a", "d")) {
         if ((Export-FromGit $src[$p][0] $src[$p][1] $charts[$p]) -and (Test-Path (Join-Path $charts[$p] "Chart.yaml"))) { Ok "$p <- $($src[$p][0]):$($src[$p][1])" }
         else { Warn "$p파트 차트를 꺼내지 못했다 ($($src[$p][0]):$($src[$p][1]))"; $charts[$p] = $null }
     }
@@ -821,20 +823,14 @@ data:
 
     # A (찬규) — www 포함 (SITE_URL 이 www 라 없으면 reCAPTCHA 403). 콤마는 \, 로 이스케이프.
     #   SES 발송 IRSA 는 차트의 serviceAccount.annotations 로 넣는다 (설치 후 재시작 불필요).
-    if ($charts.a -and (Helm-Release "A파트 api" "queuing-a" "api" $charts.a @(
-            "--set", "recaptcha.allowedHostnames=queuing.kr\,www.queuing.kr",
-            "--set-string", "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$($tf.ses_send_role_arn.value)") -Wait)) { Ok "A api" }
+    $aArgs = @(
+        "--set", "recaptcha.allowedHostnames=queuing.kr\,www.queuing.kr",
+        "--set-string", "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$($tf.ses_send_role_arn.value)")
+    # B파트 콜백 API 주소. terraform 이 콜백 Lambda 를 만들었을 때만 값이 있다.
+    if ($tf.b_callback_base_url.value) { $aArgs += @("--set", "env.bCallbackBaseUrl=$($tf.b_callback_base_url.value)") }
+    if ($charts.a -and (Helm-Release "A파트 api" "queuing-a" "api" $charts.a $aArgs -Wait)) { Ok "A api" }
 
-    # B (건아) — 차트가 ServiceAccount 어노테이션을 받지 않아서 설치 후 붙인다.
-    #   차트 주석: "대장님이 IRSA 어노테이션을 나중에 덮어씌워 주실 겁니다"
-    if ($charts.b -and (Helm-Release "B파트 worker" "queuing-b" "worker" $charts.b @(
-            "--set", "aws.queueURL=$($tf.sqs_queue_url.value)", "--set", "aws.region=$Region", "--set", "keda.identityOwner=operator"))) {
-        if (Kube "email-worker IRSA" @("-n", "queuing-b", "annotate", "serviceaccount", "email-worker", "eks.amazonaws.com/role-arn=$($tf.worker_b_role_arn.value)", "--overwrite")) {
-            # IRSA 는 파드 생성 시점에 붙는다. 큐가 비어 0개면 아무 일도 없고, 나중에 뜨는 파드는 자동으로 받는다.
-            [void](Invoke-Native "email-worker 재시작" "kubectl" @("-n", "queuing-b", "rollout", "restart", "deploy", "email-worker") -SkipInDryRun)
-            Ok "B worker (+IRSA)"
-        }
-    }
+    # B (건아) — email-worker 는 Step Functions 워크플로로 대체되어 배포하지 않는다 (2026-09-15 건아님 확인)
 
     Show-Health -WaitSeconds 180
     Test-AccountGuards
@@ -845,7 +841,6 @@ data:
  매일 확인할 것
    - JWT 키는 저장소 값을 계속 쓴다. 로그인 세션은 클러스터가 다시 떠도 유지된다.
    - 예지님 Grafana 의 Prometheus 데이터소스: $promUrl
-   - 건아님 앱이 읽을 값: queuing-b 의 ConfigMap/Secret b-part-workflow
    - 내리기 전에: .\queuing-aws.ps1 down
 "@ -ForegroundColor Gray
 }

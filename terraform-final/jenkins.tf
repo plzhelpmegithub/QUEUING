@@ -8,17 +8,13 @@
 # Jenkins 컨트롤러(2Gi+)를 얹으면 빠듯하다.
 #
 # 온프레미스에서 마스터 노드에 Docker 로 띄워둔 것(192.168.0.192:8081)과
-# 같은 형태다. 그때와 달라지는 건 이미지를 Docker Hub 가 아니라 ECR 로 올린다는 것뿐.
+# 같은 형태다. 이미지도 온프레미스와 똑같이 Docker Hub 로 올린다.
+# (2026-09-15: ECR 을 쓰지 않기로 해 ECR 저장소와 젠킨스 ECR 권한을 뺐다)
 #
 # ■ 액세스 키를 만들지 않는다
-# EC2 인스턴스 프로파일로 ECR push 권한을 준다. 젠킨스 안에 AWS 키를 넣을
-# 필요가 없고, 유출될 키 자체가 존재하지 않는다.
-#
-#   aws ecr get-login-password --region ap-northeast-2 | docker login \
-#     --username AWS --password-stdin <계정ID>.dkr.ecr.ap-northeast-2.amazonaws.com
-#
-#   이 명령이 인스턴스 프로파일 자격증명을 자동으로 집어간다.
-#   terraform output ecr_login_command 로 완성된 명령을 얻을 수 있다.
+# EC2 인스턴스 프로파일로 필요한 AWS 권한(SSM 접속, 프론트엔드 S3 배포)을 준다.
+# 젠킨스 안에 AWS 키를 넣을 필요가 없고, 유출될 키 자체가 존재하지 않는다.
+# Docker Hub·GitHub 토큰은 Jenkins Credentials 에만 둔다.
 #
 # ■ 퍼블릭 서브넷에 두는 이유
 # 깃허브 웹훅을 받아야 하고, 관리자가 웹 UI 에 접속해야 한다. 프라이빗에 두면
@@ -49,46 +45,6 @@ resource "aws_iam_role" "jenkins" {
   })
 
   tags = { Name = "${var.project}-jenkins-role" }
-}
-
-# ECR 로그인 + push/pull.
-#
-# GetAuthorizationToken 은 계정 범위 동작이라 특정 저장소로 좁힐 수 없다.
-# 나머지 push/pull 동작은 우리 저장소 4개로만 제한한다 — 계정에 다른 저장소가
-# 생겨도 젠킨스가 건드리지 못한다.
-resource "aws_iam_role_policy" "jenkins_ecr" {
-  count = var.jenkins_enabled ? 1 : 0
-
-  name = "ecr-push"
-  role = aws_iam_role.jenkins[0].id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "ECRLogin"
-        Effect   = "Allow"
-        Action   = ["ecr:GetAuthorizationToken"]
-        Resource = "*"
-      },
-      {
-        Sid    = "ECRPushPull"
-        Effect = "Allow"
-        Action = [
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage",
-          "ecr:InitiateLayerUpload",
-          "ecr:UploadLayerPart",
-          "ecr:CompleteLayerUpload",
-          "ecr:PutImage",
-          "ecr:DescribeImages",
-          "ecr:ListImages",
-        ]
-        Resource = [for r in aws_ecr_repository.part : r.arn]
-      },
-    ]
-  })
 }
 
 # ── 프론트엔드 배포 권한 (S3 + CloudFront) ──
@@ -215,7 +171,9 @@ data "aws_ami" "al2023" {
 resource "aws_instance" "jenkins" {
   count = var.jenkins_enabled ? 1 : 0
 
-  ami                  = data.aws_ami.al2023[0].id
+  # jenkins_ami_id 를 주면 destroy 전에 떠둔 백업 AMI 로 만든다 (잡·플러그인·자격증명·swap 이 그대로 있다).
+  # 비워두면 최신 Amazon Linux 2023 으로 새로 설치한다.
+  ami                  = var.jenkins_ami_id != "" ? var.jenkins_ami_id : data.aws_ami.al2023[0].id
   instance_type        = var.jenkins_instance_type
   subnet_id            = aws_subnet.public[0].id
   iam_instance_profile = aws_iam_instance_profile.jenkins[0].name
@@ -253,7 +211,9 @@ resource "aws_instance" "jenkins" {
   # set -e 를 쓰지 않는다. 한 줄이 실패해도 나머지를 계속 시도하고, set -x 로
   # 모든 명령이 로그에 남게 한다. 중간에 죽어서 아무 흔적 없이 8080 이 비어
   # 있는 것보다 낫다.
-  user_data = <<-SCRIPT
+  # 백업 AMI 로 만들 때는 설치 스크립트를 돌리지 않는다. 이미 설치돼 있고,
+  # dnf update 가 Jenkins 를 새 버전으로 올려 플러그인이 안 맞을 수 있어서다.
+  user_data = var.jenkins_ami_id != "" ? null : <<-SCRIPT
     #!/bin/bash
     set -x
 
@@ -309,4 +269,10 @@ resource "aws_eip" "jenkins" {
   instance = aws_instance.jenkins[0].id
 
   tags = { Name = "${var.project}-jenkins-eip" }
+}
+
+variable "jenkins_ami_id" {
+  description = "비워두면 새로 설치, AMI ID 를 넣으면 그 백업으로 Jenkins 를 만든다 (destroy 전에 aws ec2 create-image 로 뜬 것)."
+  type        = string
+  default     = ""
 }

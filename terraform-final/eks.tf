@@ -330,22 +330,3 @@ resource "aws_eks_addon" "coredns" {
 
   tags = { Name = "${var.project}-addon-coredns" }
 }
-
-# ──────────────────────────────────────────────
-# 애플리케이션 로그 그룹 (찬규 안에서 가져옴)
-#
-# 파드 stdout 을 CloudWatch 로 보내려면 이 그룹 + Fluent Bit(DaemonSet)가
-# 필요하다. 그룹만 만들어두고 Fluent Bit 는 Helm 으로 따로 깐다.
-#
-# ■ 왜 필요한가
-# 지금은 kubectl logs 로만 본다. 파드가 재시작되면 이전 로그가 사라져서,
-# 9/4 에 A파트가 "Connection is closed" 로 죽었을 때 재현 전 로그를 볼 수
-# 없었다. CloudWatch 로 보내두면 파드가 죽어도 남는다.
-# ──────────────────────────────────────────────
-
-resource "aws_cloudwatch_log_group" "app" {
-  name              = "/eks/${var.project}/app"
-  retention_in_days = 14
-
-  tags = { Name = "${var.project}-app-logs" }
-}

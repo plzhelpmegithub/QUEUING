@@ -258,39 +258,6 @@ resource "aws_sfn_state_machine" "b_resale" {
   }
 }
 
-# ── B파트 앱(EKS, email-worker IRSA)이 워크플로를 시작하고 재개하는 권한 ──
-# worker_b 역할에 정책을 하나 더 붙인다 (sqs.tf 의 기존 정책은 그대로).
-resource "aws_iam_role_policy" "worker_b_resale_workflow" {
-  count = local.b_wf
-  name  = "${var.project}-worker-b-resale-workflow"
-  role  = aws_iam_role.worker_b.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "StartAndInspect"
-        Effect   = "Allow"
-        Action   = ["states:StartExecution", "states:DescribeStateMachine", "states:ListExecutions"]
-        Resource = aws_sfn_state_machine.b_resale[0].arn
-      },
-      {
-        Sid      = "InspectExecutions"
-        Effect   = "Allow"
-        Action   = ["states:DescribeExecution", "states:StopExecution"]
-        Resource = "arn:aws:states:${var.region}:${data.aws_caller_identity.current.account_id}:execution:${aws_sfn_state_machine.b_resale[0].name}:*"
-      },
-      {
-        # /verify-link 가 사용자 확인 후 대기 중인 워크플로를 재개한다.
-        # 이 세 API 는 실행 단위가 아니라 task token 으로 대상을 고르므로 * 로 준다 (토큰은 추측할 수 없다).
-        Sid      = "ResumeByTaskToken"
-        Effect   = "Allow"
-        Action   = ["states:SendTaskSuccess", "states:SendTaskFailure", "states:SendTaskHeartbeat"]
-        Resource = "*"
-      },
-    ]
-  })
-}
-
 # ── 트리거: SQS queuing-cancellation-events → StartExecution ──
 
 data "aws_sqs_queue" "b_cancellation_events" {

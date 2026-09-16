@@ -15,16 +15,12 @@
 #
 #   AWS 콘솔 → SES → Account dashboard → Request production access
 #
-# ■ 도메인 인증이 더 낫다 (선택)
-# 주소 하나만 인증하면 그 주소로만 보낼 수 있다. queuing.kr 도메인을 인증하면
-# noreply@queuing.kr, alert@queuing.kr 처럼 자유롭게 쓸 수 있고 수신측 신뢰도도
-# 올라간다. Route 53 을 쓰고 있으니 DKIM 레코드 자동 등록도 가능하다.
-# 지금은 예지 안의 주소 인증 방식을 유지한다.
+# ■ 도메인 인증을 쓴다 (2026-09-15)
+# queuing.kr 도메인 인증(DKIM)은 terraform 밖에서 유지한다. 매일 destroy 에도 남아야 해서다.
+# 발신 주소는 noreply@queuing.kr 이다 (A파트 차트 fromEmail, B파트 Lambda SES_SENDER_EMAIL).
+# 예지 안의 개인 주소 인증(aws_ses_email_identity)은 쓰는 곳이 없고 apply 할 때마다
+# 인증 메일만 새로 보내서 뺐다.
 # ──────────────────────────────────────────────
-
-resource "aws_ses_email_identity" "sender" {
-  email = var.ses_sender_email
-}
 
 # ── SMTP 자격증명 ──
 #

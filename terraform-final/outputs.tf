@@ -53,16 +53,6 @@ output "cloudfront_url" {
   value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
 }
 
-output "ecr_repositories" {
-  description = "파트별 ECR 주소. 각 Helm values.yaml 의 image.repository 에 넣는다."
-  value       = { for k, r in aws_ecr_repository.part : k => r.repository_url }
-}
-
-output "ecr_login_command" {
-  description = "도커 로그인 (젠킨스와 로컬 모두 동일)"
-  value       = "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com"
-}
-
 output "redis_endpoint" {
   description = "ElastiCache Redis 엔드포인트"
   value       = aws_elasticache_replication_group.redis.primary_endpoint_address
@@ -210,7 +200,7 @@ output "monthly_cost_estimate" {
     "CloudWatch 로그" = "~$3    (EKS 컨트롤플레인 audit 이 대부분)"
     "RDS"           = var.use_rds ? "~$15   (${var.db_instance_class})" : "$0   (use_rds = false — 외부 D-Cloud 사용)"
     "Route 53"      = "~$0.50 (ACM 인증서는 무료)"
-    "기타"            = "~$6    (ECR, S3, SQS, DynamoDB, SES, Secrets Manager)"
+    "기타"            = "~$6    (S3, SQS, SES, Secrets Manager)"
     "합계"            = "약 $256/월  (기본 설정 기준, 데이터 전송료 별도)"
 
     "비용을_줄이려면" = join(" / ", [
@@ -230,21 +220,6 @@ output "rds_endpoint" {
   description = "RDS MariaDB 주소 — 앱의 DB_HOST 에 이 값을 넣는다"
   # use_rds = false(지금 기본값)에서 [0] 이면 터진다. 스플랫 + join 으로 바꿨다.
   value = var.use_rds ? join("", aws_db_instance.mariadb[*].address) : "(use_rds=false — D-Cloud ${var.dcloud_host} 사용)"
-}
-
-output "sqs_queue_url" {
-  description = "B파트 재판매 큐 — KEDA ScaledObject 의 queueURL 에 넣는다"
-  value       = aws_sqs_queue.resale.url
-}
-
-output "keda_role_arn" {
-  description = "KEDA 오퍼레이터용 IAM 역할 — 아래 어노테이션으로 연결한다"
-  value       = aws_iam_role.keda.arn
-}
-
-output "worker_b_role_arn" {
-  description = "B파트 워커용 IAM 역할 (SQS 소비 + DynamoDB)"
-  value       = aws_iam_role.worker_b.arn
 }
 
 output "ses_send_role_arn" {
@@ -267,16 +242,6 @@ output "ses_smtp_password" {
 output "irsa_setup_commands" {
   description = "클러스터 생성 후 ServiceAccount 에 IAM 역할을 연결하는 명령"
   value       = <<-GUIDE
-  # KEDA — SQS 큐 길이 조회 (온프레미스의 TriggerAuthentication + Secret 을 대체한다)
-  kubectl -n keda annotate sa keda-operator \
-    eks.amazonaws.com/role-arn=${aws_iam_role.keda.arn} --overwrite
-  kubectl -n keda rollout restart deploy keda-operator
-
-  # B파트 워커 — SQS 소비 + DynamoDB
-  kubectl -n queuing-b create sa email-worker --dry-run=client -o yaml | kubectl apply -f -
-  kubectl -n queuing-b annotate sa email-worker \
-    eks.amazonaws.com/role-arn=${aws_iam_role.worker_b.arn} --overwrite
-
   # A파트 — SES 발송
   kubectl -n queuing-a annotate sa default \
     eks.amazonaws.com/role-arn=${aws_iam_role.ses_send.arn} --overwrite
@@ -295,13 +260,9 @@ output "post_apply_checklist" {
      없으면 모든 HPA 가 <unknown> 이고 오토스케일링이 전혀 동작하지 않는다.
      kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 
-  ■ 3. KEDA — B파트 ScaledObject 에 필요하다
-     helm repo add kedacore https://kedacore.github.io/charts
-     helm -n keda upgrade --install keda kedacore/keda --create-namespace
+  ■ 3. IRSA 연결 — terraform output irsa_setup_commands
 
-  ■ 4. IRSA 연결 — terraform output irsa_setup_commands
-
-  ■ 5. 각 파트 차트를 AWS 용으로 고쳐야 한다 (⚠️ 실제로 여기서 막혔다)
+  ■ 4. 각 파트 차트를 AWS 용으로 고쳐야 한다 (⚠️ 실제로 여기서 막혔다)
      온프레미스 전용 설정이 코드와 차트에 박혀 있어 --set 으로 못 넘긴다.
      파트 담당자가 직접 고쳐야 한다.
 
@@ -311,30 +272,22 @@ output "post_apply_checklist" {
               첫 줄이라 그대로 프로세스가 죽는다(Exit 1). DB 접속까지 가지도 못한다.
               그 값은 elasticache.tf 의 파라미터 그룹에 이미 설정되어 있다.
 
-       B파트  templates/scaled-object.yaml, deployment.yaml, trigger-auth.yaml
-              LocalStack 주소와 더미 키(test/test)가 템플릿에 하드코딩되어 있다.
-              queueURL 을 실제 SQS 로, awsEndpoint/키/authenticationRef 는 제거,
-              IRSA 로 대체해야 한다.
-                terraform output -raw sqs_queue_url
-                terraform output -raw keda_role_arn
-                terraform output -raw worker_b_role_arn
-
        C파트  --set env.redisHost=<ElastiCache> 로 넘어간다. 코드 수정 불필요.
               (키 이름이 config.redisHost 가 아니라 env.redisHost 다)
 
        D파트  차트가 자체 Redis 를 포함한다. nodePort 30083 은 ALB 타겟그룹이
               없으니 외부 노출이 필요하면 alb.tf 에 추가해야 한다.
 
-  ■ 6. DB 비밀번호 Secret — 키 이름이 차트마다 다르다
+  ■ 5. DB 비밀번호 Secret — 키 이름이 차트마다 다르다
      A파트는 mariadb-credentials 의 MARIADB_ROOT_PASSWORD 를 참조한다.
      password 로 만들면 조용히 빈 값이 들어간다. 반드시 확인할 것.
        kubectl -n queuing-a get deploy api -o jsonpath='{.spec.template.spec.containers[0].env}'
        kubectl -n queuing-a describe secret mariadb-credentials
 
-  ■ 7. SES 프로덕션 액세스 신청 — 승인에 1~2일
+  ■ 6. SES 프로덕션 액세스 신청 — 승인에 1~2일
      샌드박스에서는 인증된 주소로만 메일이 나간다.
 
-  ■ 8. 확인
+  ■ 7. 확인
      curl -i https://${local.api_domain}/healthz     # C파트
      curl -i https://${local.api_domain}/health      # A파트
      curl -I https://${local.frontend_domain}        # 프론트엔드
@@ -353,7 +306,6 @@ output "cloudwatch_log_groups" {
   description = "로그를 볼 위치. aws logs tail <이름> --follow"
   value = {
     eks_control_plane = aws_cloudwatch_log_group.eks_cluster.name
-    application       = aws_cloudwatch_log_group.app.name
   }
 }
 
@@ -409,12 +361,6 @@ output "jenkins_url" {
     join("", aws_instance.jenkins[*].id)
   ) : "Jenkins 꺼짐 (jenkins_enabled = false)"
 }
-
-output "argocd_image_updater_role_arn" {
-  description = "ArgoCD Image Updater ServiceAccount 에 붙일 역할 ARN"
-  value       = aws_iam_role.argocd_image_updater.arn
-}
-
 
 output "frontend_deploy_guide" {
   description = "프론트엔드 빌드 결과를 S3 에 올리는 방법 (찬규님 전달용)"

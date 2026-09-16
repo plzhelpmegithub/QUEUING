@@ -209,7 +209,7 @@ variable "team_members" {
     #
     # ⚠️ 이 사람이 terraform apply 를 실행하면 아래 Access Entry 에서 제외된다.
     #    terraform_operator_username 설명 참고.
-    { username = "choi", part = "c", namespaces = ["realtime", "queuing-c", "argocd"] },
+    { username = "choi", part = "c", namespaces = ["realtime", "argocd"] },
 
     # 최예지 — D파트 (관측성/카운터)
     # monitoring : Prometheus·Alertmanager·ServiceMonitor
@@ -286,16 +286,6 @@ variable "db_password" {
   type        = string
   default     = ""
   sensitive   = true
-}
-
-# ── SES (예지 안에서 가져옴) ──
-
-variable "ses_sender_email" {
-  description = <<-DESC
-    발신용 이메일 주소. SES 가 인증 메일을 보내며, 그 링크를 눌러야 발송이 가능해진다.
-    샌드박스 상태에서는 인증된 주소로만 보낼 수 있으므로 프로덕션 액세스를 미리 신청할 것.
-  DESC
-  default     = "chlwldp02naver@gmail.com"
 }
 
 # ── EKS 노드 디스크 ──
