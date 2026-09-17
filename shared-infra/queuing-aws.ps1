@@ -107,7 +107,7 @@ $SecretId = "queuing-persistent/app-secrets"   # 비밀값 원본. terraform 밖
 # B파트(건아) 취소표 순차 배정. terraform-final/b_part_resale_workflow.tf 와 이름·경로가 맞아야 한다.
 # 코드는 건아님 브랜치에서 읽기만 한다.
 $BPart = @{
-    Branch       = "origin/geonah/aws-migration"
+    Branch       = "origin/geonah/migration"   # 2026-09-16: 건아님이 새 브랜치로 옮김 (allocation_id 기반 콜백)
     LambdaPath   = "lambda/b-part"
     AslPath      = "step-functions/b-part"
     BuildDir     = (Join-Path $TfDir ".terraform\queuing-build\b-part")   # .terraform/ 은 깃에 안 올라간다
