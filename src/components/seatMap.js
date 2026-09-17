@@ -160,6 +160,7 @@ function showTooltip(tooltipEl, e, seat, secLabel) {
     holding: '다른 사용자 선택 중',
     mine: '내 좌석',
     available: '선택 가능',
+    disabled: '배정되지 않은 좌석',
   };
   const grade = secLabel || seat.label || seat.grade;
   const block = seat._block ? ` (${seat._block})` : '';
@@ -511,7 +512,15 @@ function findSeatAtLayout(grid, layoutSeats, lx, ly) {
 }
 
 // ── Mount (Canvas 2D) ──────────────────────────────────────────────
-export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = false, readOnly = false, venue }) {
+export function mountSeatMap(el, {
+  sections,
+  seats,
+  onSeatClick,
+  cancelMode = false,
+  readOnly = false,
+  selectionOnly = false,
+  venue,
+}) {
   const isOlympicHall = venue === '올림픽홀';
   const layout = isOlympicHall ? computeOlympicHallLayout(sections, seats) : computeLayout(sections, seats);
   const idToSeat = new Map();
@@ -534,6 +543,10 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
 
   const statusChips = readOnly
     ? `<span class="vm-legend__item"><span class="vm-legend__dot" style="background:${SEAT_FILL};border-color:${SEAT_BORDER}"></span>좌석 배치도</span>`
+    : selectionOnly
+      ? `<span class="vm-legend__item"><span class="vm-legend__dot" style="background:${SEAT_FILL};border-color:${SEAT_BORDER}"></span>서버 배정 좌석만 선택 가능</span>
+         <span class="vm-legend__item"><span class="vm-legend__dot" style="background:#BCBCBC;border-color:#999"></span>선택 불가/매진</span>
+         <span class="vm-legend__item"><span class="vm-legend__dot" style="background:${MINE_FILL};border-color:${MINE_BORDER}"></span>선점 완료</span>`
     : `<span class="vm-legend__item">선택 가능 (구역별 색상은 우측 목록 참고)</span>
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:${MINE_FILL};border-color:${MINE_BORDER}"></span>내 좌석</span>
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:#F0A030;border-color:#C88010"></span>선택중</span>
@@ -665,6 +678,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     const soldArr = [];
     const holdArr = [];
     const mineArr = [];
+    const disabledArr = [];
     // byColor only used for non-OH mode
     const byColor = {};
 
@@ -675,6 +689,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
       if (status === 'sold') { soldArr.push(ls); continue; }
       if (status === 'holding') { holdArr.push(ls); continue; }
       if (status === 'mine') { mineArr.push(ls); continue; }
+      if (seat && seat.selectable === false) { disabledArr.push(ls); continue; }
       if (isOH) {
         availArr.push(ls);
       } else {
@@ -725,6 +740,15 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
         ctx.globalAlpha = 0.55 + 0.45 * Math.abs(Math.sin(holdingPhase));
         for (let i = 0; i < holdArr.length; i++) {
           drawOHCircle(holdArr[i], '#F0A030', '#C88010', 2);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // 취소표 화면에서 서버가 배정하지 않은 좌석 — 배치도에는 남기되 선택은 막는다.
+      if (disabledArr.length) {
+        ctx.globalAlpha = 0.65;
+        for (let i = 0; i < disabledArr.length; i++) {
+          drawOHCircle(disabledArr[i], '#BCBCBC', '#999', 1.5);
         }
         ctx.globalAlpha = 1;
       }
@@ -816,6 +840,23 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
         ctx.globalAlpha = 1;
       }
 
+      // 취소표 화면에서 서버가 배정하지 않은 좌석 — 배치도에는 남기되 선택은 막는다.
+      if (disabledArr.length) {
+        ctx.globalAlpha = 0.65;
+        ctx.fillStyle = '#BCBCBC';
+        ctx.beginPath();
+        for (let i = 0; i < disabledArr.length; i++) {
+          const s = disabledArr[i];
+          ctx.moveTo(s._x + r, s._y);
+          ctx.arc(s._x, s._y, r, 0, 6.2832);
+        }
+        ctx.fill();
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
       // Mine — enlarged circle with checkmark
       for (let i = 0; i < mineArr.length; i++) {
         const s = mineArr[i];
@@ -857,7 +898,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     if (showSeats && hoveredSeat) {
       const seat = idToSeat.get(hoveredSeat.id);
       const st = seat ? seat.status : 'available';
-      if (st !== 'sold' && st !== 'holding' && st !== 'mine') {
+      if (st !== 'sold' && st !== 'holding' && st !== 'mine' && seat?.selectable !== false) {
         ctx.save();
         if (isOH) {
           const hw = (hoveredSeat._sw || 10) + 2, hh = (hoveredSeat._sh || 10) + 2;
@@ -1011,7 +1052,9 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
             || sections.find((s) => s.grade === (seatData?.grade || hit.grade));
           showTooltip(tooltipEl, e, { ...hit, ...seatData }, sec?.label);
           const st = seatData?.status;
-          viewport.style.cursor = st === 'sold' ? 'not-allowed' : st === 'holding' ? 'wait' : 'pointer';
+          viewport.style.cursor = seatData?.selectable === false
+            ? 'not-allowed'
+            : st === 'sold' ? 'not-allowed' : st === 'holding' ? 'wait' : 'pointer';
         } else {
           hideTooltip(tooltipEl);
           viewport.style.cursor = 'grab';
@@ -1040,7 +1083,7 @@ export function mountSeatMap(el, { sections, seats, onSeatClick, cancelMode = fa
     if (!readOnly && dragging && !dragMoved && downSeat && seatsVisible) {
       const seatData = idToSeat.get(downSeat.id);
       const st = seatData ? seatData.status : 'available';
-      if (st !== 'sold' && st !== 'holding') {
+      if (st !== 'sold' && st !== 'holding' && seatData?.selectable !== false) {
         onSeatClick(downSeat.id);
       }
     }

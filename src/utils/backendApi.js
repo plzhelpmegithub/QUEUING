@@ -12,8 +12,14 @@ async function getJson(path) {
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(path, { headers: { ...authHeaders() }, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = new Error(data.message || `HTTP ${res.status}`);
+      error.status = res.status;
+      error.code = data.code || '';
+      throw error;
+    }
+    return data;
   } finally {
     clearTimeout(timer);
   }
@@ -52,6 +58,12 @@ export async function fetchCancelQueueStatus(eventId, userId, context = {}) {
   const params = new URLSearchParams(context);
   const suffix = params.toString() ? `?${params.toString()}` : '';
   return getJson(`/cancel-queue/status/${encodeURIComponent(eventId)}/${encodeURIComponent(userId)}${suffix}`);
+}
+
+// 마이페이지용 취소표 대기열 목록. 서버가 인증 토큰에서 사용자를 확인하므로
+// userId를 URL에 노출하거나 브라우저의 임시 상태만으로 목록을 만들지 않는다.
+export async function fetchMyCancelQueues() {
+  return getJson('/cancel-queue/mine');
 }
 
 export async function fetchCancelPool(eventId, context = {}) {
@@ -94,6 +106,20 @@ export function releaseSeatBeacon(userId, seatId) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ userId, seatId }),
+    keepalive: true,
+  }).catch(() => {});
+  return true;
+}
+
+// POST /queue/leave via keepalive — 대기열 페이지를 닫거나 이탈할 때
+// 로그인한 사용자를 서버의 waiting/standby 집합에서 제거한다.
+// pagehide에서는 sendBeacon에 Bearer 헤더를 붙일 수 없어 keepalive fetch를 사용한다.
+export function leaveQueueBeacon(userId, context = {}) {
+  if (!userId) return false;
+  fetch('/queue/leave', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ userId, ...context }),
     keepalive: true,
   }).catch(() => {});
   return true;

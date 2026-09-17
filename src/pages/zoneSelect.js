@@ -20,7 +20,7 @@ import { openModal, closeModal } from '../components/modal.js';
 import { connectSeats } from '../services/realtimeIntegration.js';
 import { generateEventSessions, formatStoredSessions, getVenueZoneLayout } from '../data/concerts.js';
 import { fetchWithRecaptcha } from '../utils/recaptcha.js';
-import { authHeaders } from '../utils/authToken.js';
+import { leaveQueueBeacon, releaseSeatBeacon } from '../utils/backendApi.js';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
@@ -42,15 +42,11 @@ function zoneColor(z, i) {
   return z.color || GRADE_COLOR[z.grade] || GRADE_COLOR[z.name] || FALLBACK_PALETTE[i % FALLBACK_PALETTE.length];
 }
 
-// Releases a held-but-unpaid seat back to the backend — fire-and-forget, since
-// the seat also auto-releases via the backend's own hold-duration timer either way.
+// Releases a held-but-unpaid seat back to the backend. The keepalive request is
+// safe during pagehide/beforeunload; the backend hold timer remains the final
+// fallback if the browser or network disappears without notice.
 function releaseHeldSeat({ seatId, userId }) {
-  if (!seatId || !userId) return;
-  fetch('/seats/release', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ userId, seatId }),
-  }).catch(() => {});
+  releaseSeatBeacon(userId, seatId);
 }
 
 // 구역 선택 화면과 좌석 선택 화면을 하나로 합친 것 — 예전엔 구역을 고르면
@@ -66,11 +62,72 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
   let seatMapApiRef = null;
   let seatConn = null;
   let wsReconnectTimer = null;
+  let bookingTransition = false;
+  let abandonSent = false;
+  let queueContext = { eventId, sessionDate: '', sessionTime: '' };
   // Tracks every seat currently held-but-unpaid on the backend (up to
   // MAX_SEATS), so the page-unmount cleanup below can release all of them if
   // the user navigates away without completing payment. Cleared right before
   // handing off to payment.js.
   const activeHolds = [];
+
+  // An admitted user must not occupy one of the fixed admission slots while
+  // abandoning the seat flow. /queue/leave removes the admitted member and
+  // backfills one waiting user on the server.
+  function notifyBookingAbandon() {
+    if (bookingTransition || abandonSent) return;
+    const userId = getState().user?.userId || getState().user?.email;
+    if (!userId) return;
+    abandonSent = true;
+    activeHolds.forEach((hold) => releaseHeldSeat(hold));
+    leaveQueueBeacon(userId, queueContext);
+  }
+
+  window.addEventListener('pagehide', notifyBookingAbandon);
+  window.addEventListener('beforeunload', notifyBookingAbandon);
+
+  // 공연 삭제와 좌석 매진은 서로 다른 상태다. 관리자 화면에서 공연이
+  // 삭제되면 좌석 데이터도 함께 정리되므로, 좌석이 0개라는 이유만으로
+  // 매진 모달을 띄우면 삭제된 공연이 일반 사용자에게 매진으로 오인된다.
+  function renderEventUnavailable(title = '공연을 찾을 수 없습니다', description = '해당 공연이 삭제되었거나 더 이상 운영되지 않습니다.') {
+    if (destroyed) return;
+    destroyed = true;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    if (holdTimer) clearInterval(holdTimer);
+    holdTimer = null;
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+    if (seatConn) {
+      seatConn.close();
+      seatConn = null;
+    }
+    closeModal();
+    container.innerHTML = `
+      <div class="container" style="padding:60px 0;text-align:center;">
+        <div class="soldout-panel">
+          <div class="soldout-title">${title}</div>
+          <div class="soldout-desc">${description}</div>
+          <button class="btn btn-primary mt-24" data-go-concerts>공연 목록으로</button>
+        </div>
+      </div>
+    `;
+    container.querySelector('[data-go-concerts]')?.addEventListener('click', () => navigate('concerts'));
+  }
+
+  // 좌석이 사라진 순간에만 최신 공연 목록을 확인한다. 일시적인 API 오류는
+  // 삭제로 간주하지 않아, 네트워크 장애 때문에 매진/삭제 화면이 잘못 뜨지
+  // 않도록 한다.
+  async function verifyEventStillExists() {
+    try {
+      const response = await fetch('/events', { cache: 'no-store' });
+      if (!response.ok) return true;
+      const latest = await response.json();
+      return (latest.events || []).some((candidate) => candidate.eventId === eventId);
+    } catch (_) {
+      return true;
+    }
+  }
 
   fetch('/events')
     .then((r) => r.json())
@@ -103,7 +160,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       if (destroyed) return;
       const c = (eventsData.events || []).find((e) => e.eventId === eventId);
       if (!c) {
-        container.innerHTML = '<div class="center-state"><div class="center-state__title">공연을 찾을 수 없습니다</div></div>';
+        renderEventUnavailable();
         return;
       }
 
@@ -132,6 +189,11 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         : storedLayout;
       let session = selectedSession || getSelectedSession(c.eventId);
       const eventSessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
+      queueContext = {
+        eventId: c.eventId,
+        sessionDate: session?.date || '',
+        sessionTime: session?.time || '',
+      };
 
       const myBookings = getState().bookings.filter(
         (b) => b.concertId === c.eventId && (b.status === 'confirmed' || b.status === 'unpaid')
@@ -226,6 +288,14 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
           });
         });
       });
+
+      // 삭제된 공연 또는 아직 좌석 데이터가 생성되지 않은 공연은 매진으로
+      // 처리하지 않는다. 실제 매진은 좌석 레코드가 존재하고 그 좌석들이
+      // 모두 SOLD/HELD 상태인 경우에만 아래에서 처리한다.
+      if (flatSeats.length === 0) {
+        renderEventUnavailable('좌석 정보를 찾을 수 없습니다', '해당 공연의 좌석 데이터가 삭제되었거나 아직 준비되지 않았습니다.');
+        return;
+      }
 
       if (totalAvailable === 0) {
         container.innerHTML = `
@@ -344,6 +414,8 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             activeHolds.length = 0;
           }
           session = { date: s.date, time: s.time };
+          queueContext.sessionDate = s.date;
+          queueContext.sessionTime = s.time;
           setSelectedSession(c.eventId, session);
           showToast({ title: '공연 일정이 변경되었습니다', body: s.label, type: 'success' });
           // 회차마다 별도 좌석 inventory를 사용하므로 탭을 바꾸면 해당
@@ -605,6 +677,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         orderBox.querySelector('[data-next]').addEventListener('click', () => {
           const deadline = holdDeadline;
           clearHold();
+          bookingTransition = true;
           // Handing the held seats off to payment.js — the page-unmount cleanup
           // below must not release them now that we're headed to pay for them.
           activeHolds.length = 0;
@@ -651,6 +724,7 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       const seatIndex = new Map(flatSeats.map((s) => [s.id, s]));
       const mySeatIds = new Set();
       let allSoldOutShown = false;
+      let eventCheckInFlight = false;
       function pollSeats() {
         const seatQuery = new URLSearchParams({ eventId: c.eventId });
         if (session?.date) seatQuery.set('sessionDate', session.date);
@@ -681,13 +755,31 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
             }
             mySeatIds.clear();
             if (changed) seatMapApi.updateStatuses(flatSeats);
-            const remain = seats2.filter((s) => zoneNames.includes(s.section) && belongsToThisEvent(s) && s.status === 'AVAILABLE').length;
+            const eventSeats2 = seats2.filter((s) => zoneNames.includes(s.section) && belongsToThisEvent(s));
+            const remain = eventSeats2.filter((s) => s.status === 'AVAILABLE').length;
             const remainEl = container.querySelector('[data-remaining]');
             if (remainEl) remainEl.textContent = `${formatNumber(remain)}석`;
             if (!allSoldOutShown && remain === 0) {
-              allSoldOutShown = true;
-              stopPolling();
-              showSoldOutModal(c.eventId);
+              // 삭제 시에는 /seats 응답이 비거나 이전 좌석 레코드가 잠시
+              // 남아 있을 수 있다. 최신 /events에서 공연 존재 여부를 먼저
+              // 확인하고, 실제 이벤트 좌석이 있을 때만 매진 모달을 띄운다.
+              if (!eventCheckInFlight) {
+                eventCheckInFlight = true;
+                verifyEventStillExists()
+                  .then((exists) => {
+                    if (!exists) {
+                      renderEventUnavailable();
+                      return;
+                    }
+                    if (eventSeats2.length === 0) return;
+                    allSoldOutShown = true;
+                    stopPolling();
+                    showSoldOutModal(c.eventId);
+                  })
+                  .finally(() => {
+                    eventCheckInFlight = false;
+                  });
+              }
             }
           })
           .catch(() => {});
@@ -702,12 +794,14 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
     });
 
   return () => {
+    notifyBookingAbandon();
     destroyed = true;
     if (pollTimer) clearInterval(pollTimer);
     if (holdTimer) clearInterval(holdTimer);
     if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
     if (seatConn) seatConn.close();
-    activeHolds.forEach((h) => releaseHeldSeat(h));
+    window.removeEventListener('pagehide', notifyBookingAbandon);
+    window.removeEventListener('beforeunload', notifyBookingAbandon);
     seatMapApiRef?.destroy();
   };
 }

@@ -839,15 +839,18 @@ function initDummyPanel(container) {
   });
 }
 
-function initSimulationPanel(container) {
-  const panel = container.querySelector('[data-sim-panel]');
+function initSimulationPanel(container, options = {}) {
+  const panel = container.querySelector(options.panelSelector || '[data-sim-panel]');
   if (!panel) return;
+
+  const apiBase = options.apiBase || '/admin/simulation';
+  const isLocal = options.mode === 'local';
+  const simulationFetch = (path, body) => simFetch(`${apiBase}${path}`, body);
 
   const toggleBtn = panel.querySelector('[data-sim-toggle]');
   const body = panel.querySelector('[data-sim-body]');
   const eventSelect = panel.querySelector('[data-sim-event]');
   const sessionSelect = panel.querySelector('[data-sim-session]');
-  const realEmailInput = panel.querySelector('[data-sim-real-email]');
   const dummyCountInput = panel.querySelector('[data-sim-dummy-count]');
   const cancelCountInput = panel.querySelector('[data-sim-cancel-count]');
   const statusArea = panel.querySelector('[data-sim-status]');
@@ -882,13 +885,21 @@ function initSimulationPanel(container) {
     currentStage = stage || null;
     const manualActionDisabled = !eventSelect.value || actionInProgress;
 
-    // 수동 실행 모드에서는 현재 단계와 관계없이 원하는 작업을 직접 실행한다.
-    // API가 각 작업의 필수 선행조건을 최종 검증하며, 요청 중에는 중복 실행만 막는다.
-    btnSellout.disabled = manualActionDisabled;
-    btnClose.disabled = manualActionDisabled;
-    btnCancel.disabled = manualActionDisabled;
-    // 취소표 순차 배정과 Secret Link 발급은 B파트 Step Functions가 담당한다.
-    btnLinks.disabled = true;
+    // 단계3을 단계2보다 먼저 실행하면 본 대기열은 열린 상태인데 취소표
+    // 좌석만 풀리는 불일치가 생긴다. UI에서도 권장 순서를 강제하고,
+    // API가 동일한 순서를 최종 검증한다.
+    const canSellout = currentStage === 'initialized';
+    const canClose = currentStage === 'sold_out';
+    const canCancel = currentStage === 'closed' || currentStage === 'seats_cancelled';
+    const canIssueLinks = currentStage === 'seats_cancelled' || currentStage === 'link_requested';
+
+    btnSellout.disabled = manualActionDisabled || !canSellout;
+    btnClose.disabled = manualActionDisabled || !canClose;
+    btnCancel.disabled = manualActionDisabled || !canCancel;
+    // 취소표 순차 배정·Secret Link 발급은 B파트가 담당한다.
+    // 실제 사용자는 사이트에서 직접 standby에 들어오며, 단계4는
+    // 현재 대기열의 최상위 활성 멤버십 사용자 기준으로 이벤트를 전달한다.
+    btnLinks.disabled = manualActionDisabled || !canIssueLinks;
     btnInit.disabled = actionInProgress;
     btnCleanup.disabled = actionInProgress;
   }
@@ -901,7 +912,12 @@ function initSimulationPanel(container) {
     }
     const s = data.seats || {};
     const q = data.queue || {};
+    const cancellation = data.cancellation || {};
     const ru = data.realUser;
+    const deliveryLabel = isLocal ? '로컬 SMTP' : 'B파트 연동';
+    const deliveryMessage = isLocal
+      ? 'API 서버가 Gmail SMTP로 대상 사용자에게 5분 제한 Secret Link를 발급합니다.'
+      : 'B파트가 멤버십 대기자를 확인해 Secret Link와 이메일을 발급합니다.';
     let html = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px;">
         <div><b>단계</b><br/><span class="badge badge-blue">${data.stage}</span></div>
@@ -917,28 +933,43 @@ function initSimulationPanel(container) {
         <div><b>일반 대기</b><br/>${(q.waiting || 0).toLocaleString()}명</div>
       </div>`;
 
+    if (cancellation.prepared || data.stage === 'link_requested') {
+      html += `<div style="padding:10px;background:rgba(39,174,96,0.08);border-radius:6px;border:1px solid rgba(39,174,96,0.35);margin-bottom:12px;">
+        <b>${deliveryLabel}</b> · 준비 ${Number(cancellation.prepared || 0).toLocaleString()}건 · 전송 ${Number(cancellation.published || 0).toLocaleString()}건 · 재시도 큐 ${Number(cancellation.outboxed || 0).toLocaleString()}건
+        ${data.stage === 'link_requested' ? `<br/><span style="color:#27ae60;">${deliveryMessage}</span>` : ''}
+      </div>`;
+    }
+
     if (ru) {
       html += `<div style="padding:10px;background:var(--color-bg);border-radius:6px;border:1px solid var(--color-border);">
-        <b>실제 유저: ${ru.email}</b><br/>`;
-      if (ru.standbyPosition) html += `취소표 대기 <b>${ru.standbyPosition}번째</b> · `;
+        <b>현재 대상 멤버십 사용자: ${ru.email}</b><br/>`;
+      if (ru.standbyPosition) html += `취소표 대기 <b>${ru.memberStandbyPosition || ru.standbyPosition}번째</b> · `;
       if (ru.isAdmitted) html += '<span style="color:#27ae60;">입장 허용됨</span> · ';
       if (ru.hasAllocation) {
-        html += `<span style="color:#8e44ad;">시크릿 링크 발급됨</span> (좌석: ${ru.allocation.seatId}, 만료: ${new Date(ru.allocation.expiresAt).toLocaleTimeString('ko-KR')})`;
+        const allocatedSeat = ru.allocation.seatId || '좌석 선택 전';
+        const expiresAt = ru.allocation.expiresAt ? new Date(ru.allocation.expiresAt).toLocaleTimeString('ko-KR') : '-';
+        html += `<span style="color:#8e44ad;">시크릿 링크 발급됨</span> (좌석: ${allocatedSeat}, 만료: ${expiresAt})`;
       }
       if (!ru.standbyPosition && !ru.isAdmitted && !ru.hasAllocation) {
         html += '<span style="color:var(--color-text-secondary);">아직 대기열에 진입하지 않음</span>';
       }
       html += '</div>';
+    } else {
+      html += `<div style="padding:10px;background:var(--color-bg);border-radius:6px;border:1px solid var(--color-border);color:var(--color-text-secondary);">
+        단계1 완료 후 실제 멤버십 계정으로 사이트에서 취소표 대기열에 직접 진입하면 단계4 대상자로 표시됩니다.
+      </div>`;
     }
 
     if (data.allocations && data.allocations.length > 0) {
       html += '<div style="margin-top:12px;"><b>최근 취소표 할당 내역</b></div>';
       html += '<table class="qtable" style="font-size:12px;margin-top:4px;"><thead><tr><th>유저</th><th>좌석</th><th>상태</th><th>시간</th></tr></thead><tbody>';
       for (const a of data.allocations.slice(0, 10)) {
-        const isSim = a.userId.startsWith('sim-user-');
+        const allocationUserId = String(a.userId || '알 수 없는 유저');
+        const allocationSeatId = a.seatId ? String(a.seatId).split(':').pop() : '좌석 선택 전';
+        const isSim = allocationUserId.startsWith('sim-user-');
         html += `<tr${isSim ? '' : ' style="background:rgba(142,68,173,0.08);"'}>
-          <td>${isSim ? a.userId.slice(0, 15) + '...' : '<b>' + a.userId + '</b>'}</td>
-          <td>${a.seatId.split(':').pop()}</td>
+          <td>${isSim ? allocationUserId.slice(0, 15) + '...' : '<b>' + allocationUserId + '</b>'}</td>
+          <td>${allocationSeatId}</td>
           <td><span class="badge ${a.status === 'RESPONDED' ? 'badge-green' : a.status === 'LINK_SENT' ? 'badge-blue' : 'badge-outline'}">${a.status}</span></td>
           <td>${new Date(a.createdAt).toLocaleTimeString('ko-KR')}</td>
         </tr>`;
@@ -951,7 +982,7 @@ function initSimulationPanel(container) {
   }
 
   function loadSimEvents() {
-    simFetch('/admin/simulation/events').then((data) => {
+    simulationFetch('/events').then((data) => {
       simEventsCache = data.events || [];
       eventSelect.innerHTML = '<option value="">— 공연을 선택하세요 —</option>' +
         simEventsCache.map((e) =>
@@ -972,7 +1003,7 @@ function initSimulationPanel(container) {
     ).join('');
 
     const eventId = ev.eventId;
-    simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(eventId)}`)
+    simulationFetch(`/status?eventId=${encodeURIComponent(eventId)}`)
       .then(renderStatus)
       .catch(() => {});
   });
@@ -990,19 +1021,17 @@ function initSimulationPanel(container) {
   btnInit.addEventListener('click', () => {
     const params = getSimParams();
     if (!params.eventId) { showToast({ title: '공연을 선택해주세요' }); return; }
-    const email = realEmailInput.value.trim();
-    if (!email) { showToast({ title: '실제 유저 이메일을 입력해주세요' }); return; }
     const count = parseInt(dummyCountInput.value, 10) || 10000;
     actionInProgress = true;
     updateButtons();
     btnInit.textContent = '초기화 중...';
     logMsg(`초기화 시작 — ${params.eventId}, 더미 ${count.toLocaleString()}명`);
-    simFetch('/admin/simulation/init', { ...params, realUserEmail: email, dummyCount: count })
+    simulationFetch('/init', { ...params, dummyCount: count })
       .then((r) => {
         if (r.error) { showToast({ title: '초기화 실패', body: r.error }); return; }
         showToast({ title: '시뮬레이션 초기화 완료', body: r.message, type: 'success' });
         logMsg(r.message);
-        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
       .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '초기화 오류', body: e.message }))
@@ -1021,12 +1050,12 @@ function initSimulationPanel(container) {
     updateButtons();
     btnSellout.textContent = '매진 처리 중...';
     logMsg('단계1: 매진 연출 시작');
-    simFetch('/admin/simulation/sellout', params)
+    simulationFetch('/sellout', params)
       .then((r) => {
         if (r.error) { showToast({ title: '매진 연출 실패', body: r.error }); return; }
         showToast({ title: '매진 연출 완료', body: r.message, type: 'success' });
         logMsg(r.message);
-        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
       .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '매진 연출 오류', body: e.message }))
@@ -1040,17 +1069,17 @@ function initSimulationPanel(container) {
   btnClose.addEventListener('click', () => {
     const params = getSimParams();
     if (!params.eventId) return;
-    if (!confirm('티켓팅을 즉시 마감하고 멤버십/대기열 유지 검증을 실행할까요?')) return;
+    if (!confirm('티켓팅을 즉시 마감할까요? 실제 멤버십 사용자가 사이트에서 직접 들어온 standby 대기열은 유지됩니다.')) return;
     actionInProgress = true;
     updateButtons();
     btnClose.textContent = '마감 처리 중...';
     logMsg('단계2: 조기 마감 시작');
-    simFetch('/admin/simulation/close', params)
+    simulationFetch('/close', params)
       .then((r) => {
         if (r.error) { showToast({ title: '마감 실패', body: r.error }); return; }
         showToast({ title: '티켓팅 마감 완료', body: r.message, type: 'success' });
         logMsg(r.message);
-        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
       .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '마감 오류', body: e.message }))
@@ -1070,18 +1099,55 @@ function initSimulationPanel(container) {
     updateButtons();
     btnCancel.textContent = '좌석 취소 중...';
     logMsg(`단계3: 더미 좌석 ${count}석 취소 시작`);
-    simFetch('/admin/simulation/cancel-seats', { ...params, count })
+    simulationFetch('/cancel-seats', { ...params, count })
       .then((r) => {
         if (r.error) { showToast({ title: '좌석 취소 실패', body: r.error }); return; }
         showToast({ title: '좌석 취소 완료', body: r.message, type: 'success' });
         logMsg(r.message);
-        return simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}`);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
       .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '좌석 취소 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnCancel.textContent = '단계3: 취소표 생성';
+        updateButtons();
+      });
+  });
+
+  btnLinks.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    const deliveryLabel = isLocal ? 'Gmail SMTP' : 'B파트';
+    if (!confirm(`현재 standby 대기열의 최상위 활성 멤버십 사용자를 대상으로 ${deliveryLabel} 링크 발급을 요청할까요?`)) return;
+    actionInProgress = true;
+    updateButtons();
+    btnLinks.textContent = isLocal ? 'SMTP 발송 중...' : 'B파트 전송 중...';
+    logMsg(`단계4: 기존 멤버십 standby 대기자 기준 ${deliveryLabel} 링크 발급 요청 시작`);
+    simulationFetch('/issue-links', params)
+      .then((r) => {
+        if (!r.success) {
+          showToast({ title: `${deliveryLabel} 링크 발급 실패`, body: r.message || r.error || `${deliveryLabel} 발송에 실패했습니다.` });
+          logMsg(r.message || r.error || `${deliveryLabel} 링크 발급 실패`);
+          return null;
+        }
+        const sent = Number(r.eventsPublished || 0);
+        const queued = Number(r.eventsOutboxed || 0);
+        showToast({
+          title: r.idempotent ? '이미 링크 발급 요청됨' : `${deliveryLabel} 링크 발급 완료`,
+          body: r.message,
+          type: 'success',
+        });
+        logMsg(isLocal
+          ? `Gmail SMTP 발송 완료 — ${Number(r.linksSent ?? (r.emailSent ? 1 : 0))}명 발송${Number(r.eventsFailed || 0) ? `, ${Number(r.eventsFailed)}명 실패` : ''}, 5분 제한 링크`
+          : `B파트 전송 완료 — 즉시 전송 ${sent}건, 재시도 큐 ${queued}건`);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: `${deliveryLabel} 링크 발급 오류`, body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnLinks.textContent = isLocal ? '단계4: Gmail SMTP 링크 발급' : '단계4: B파트 링크 발급';
         updateButtons();
       });
   });
@@ -1094,7 +1160,7 @@ function initSimulationPanel(container) {
     updateButtons();
     btnCleanup.textContent = '삭제 중...';
     logMsg('시뮬레이션 데이터 삭제 시작');
-    simFetch('/admin/simulation/cleanup', params)
+    simulationFetch('/cleanup', params)
       .then((r) => {
         if (r.error) { showToast({ title: '삭제 실패', body: r.error }); return; }
         showToast({ title: '시뮬레이션 데이터 삭제 완료', body: r.message, type: 'success' });
@@ -1112,7 +1178,7 @@ function initSimulationPanel(container) {
   btnRefresh.addEventListener('click', () => {
     const params = getSimParams();
     if (!params.eventId) { showToast({ title: '공연을 선택해주세요' }); return; }
-    simFetch(`/admin/simulation/status?eventId=${encodeURIComponent(params.eventId)}&sessionDate=${params.sessionDate}&sessionTime=${params.sessionTime}`)
+    simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}&sessionDate=${params.sessionDate}&sessionTime=${params.sessionTime}`)
       .then(renderStatus)
       .catch((e) => showToast({ title: '상태 조회 오류', body: e.message }));
   });
@@ -1376,6 +1442,9 @@ export const adminPage = {
               <button type="button" class="admin-nav-item" data-admin-section="simulation" tabindex="-1">
                 <span class="admin-nav-item__index">04</span><span>취소표 시뮬레이션</span>
               </button>
+              <button type="button" class="admin-nav-item" data-admin-section="local-simulation" tabindex="-1">
+                <span class="admin-nav-item__index">05</span><span>취소표 시뮬레이션 (Local)</span>
+              </button>
             </nav>
             <div class="admin-sidebar__footer">
               <span class="admin-live-indicator" aria-hidden="true"></span>
@@ -1485,11 +1554,7 @@ export const adminPage = {
                       </select>
                     </div>
                   </div>
-                  <div class="admin-form-grid admin-form-grid--wide">
-                    <div class="field">
-                      <label>실제 멤버십 유저 이메일</label>
-                      <input type="email" data-sim-real-email placeholder="test@example.com" />
-                    </div>
+                  <div class="admin-form-grid">
                     <div class="field">
                       <label>더미 유저 수</label>
                       <input type="number" data-sim-dummy-count value="10000" min="100" max="50000" />
@@ -1497,7 +1562,7 @@ export const adminPage = {
                   </div>
 
                   <p class="text-secondary admin-panel__description">
-                    수동 실행 모드: 공연을 선택하면 각 단계 버튼을 원하는 시점에 직접 실행할 수 있습니다. 권장 순서는 초기화 → 매진 → 마감 → 취소표 생성입니다. 취소표 배정과 링크 발급은 B파트 파이프라인이 처리합니다.
+                    수동 실행 모드: 공연을 선택하면 각 단계 버튼을 원하는 시점에 직접 실행할 수 있습니다. 권장 순서는 초기화 → 매진 → 실제 멤버십 계정으로 사이트에서 취소표 대기열 진입 → 마감 → 취소표 생성 → B파트 링크 발급입니다. 단계4는 기존 standby 대기열의 활성 멤버십 사용자를 기준으로 취소 이벤트를 B파트 SQS에 전달합니다.
                   </p>
 
                   <div class="admin-action-row admin-action-row--simulation">
@@ -1519,6 +1584,53 @@ export const adminPage = {
 
                   <div data-sim-log class="admin-log-box">
                   </div>
+                </div>
+              </section>
+
+              <section class="admin-panel admin-panel--wide" data-local-sim-panel data-admin-focus="local-simulation">
+                <div class="mchart__head admin-panel__head">
+                  <div>
+                    <span class="admin-panel__eyebrow">ON-PREMISE / SMTP</span>
+                    <span class="mchart__title">취소표 시뮬레이션 (Local)</span>
+                  </div>
+                  <button type="button" class="btn btn-outline btn-sm" data-sim-toggle>펼치기</button>
+                </div>
+                <div data-sim-body style="display:none;">
+                  <div class="admin-form-grid admin-form-grid--two">
+                    <div class="field">
+                      <label>공연 선택</label>
+                      <select data-sim-event><option value="">불러오는 중...</option></select>
+                    </div>
+                    <div class="field">
+                      <label>회차 선택</label>
+                      <select data-sim-session><option value="">공연을 먼저 선택하세요</option></select>
+                    </div>
+                  </div>
+                  <div class="admin-form-grid">
+                    <div class="field">
+                      <label>더미 유저 수</label>
+                      <input type="number" data-sim-dummy-count value="10000" min="100" max="50000" />
+                    </div>
+                  </div>
+                  <p class="text-secondary admin-panel__description">
+                    온프레미스 테스트용 수동 실행 모드입니다. 권장 순서는 초기화 → 매진 → 실제 멤버십 계정으로 사이트에서 취소표 대기열 진입 → 마감 → 취소표 생성 → Gmail SMTP 링크 발급입니다. 단계4는 B파트 SQS를 사용하지 않고 API 서버가 5분 제한 Secret Link를 Gmail SMTP로 발송합니다.
+                  </p>
+                  <div class="admin-action-row admin-action-row--simulation">
+                    <button type="button" class="btn btn-primary btn-sm" data-sim-init>로컬 시뮬레이션 초기화</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-sellout disabled style="border-color:#e74c3c;color:#e74c3c;">단계1: 매진 연출</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-close disabled style="border-color:#e67e22;color:#e67e22;">단계2: 조기 마감</button>
+                    <div class="admin-inline-action">
+                      <input type="number" data-sim-cancel-count value="5" min="1" max="100" aria-label="취소표 생성 수" />
+                      <button type="button" class="btn btn-outline btn-sm" data-sim-cancel disabled style="border-color:#8e44ad;color:#8e44ad;">단계3: 취소표 생성</button>
+                    </div>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-links disabled style="border-color:#27ae60;color:#27ae60;">단계4: Gmail SMTP 링크 발급</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-cleanup style="border-color:#95a5a6;color:#95a5a6;">데이터 삭제</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-refresh>상태 새로고침</button>
+                  </div>
+                  <div data-sim-status class="admin-result-box admin-result-box--large">
+                    <p class="text-secondary">로컬 시뮬레이션을 초기화하면 여기에 진행 상태가 표시됩니다.</p>
+                  </div>
+                  <div data-sim-log class="admin-log-box"></div>
                 </div>
               </section>
             </div>
@@ -1544,6 +1656,11 @@ export const adminPage = {
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
     initDummyPanel(container);
     initSimulationPanel(container);
+    initSimulationPanel(container, {
+      panelSelector: '[data-local-sim-panel]',
+      apiBase: '/admin/local-simulation',
+      mode: 'local',
+    });
     const cleanupAdminInteractions = initAdminInteractions(container);
     const cleanupCommandPalette = initAdminCommandPalette(container);
 

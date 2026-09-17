@@ -17,6 +17,7 @@ import { bookingCompletePage } from './pages/bookingComplete.js';
 import { membershipPage } from './pages/membership.js';
 import { membershipCheckoutPage } from './pages/membershipCheckout.js';
 import { privateLinkPage } from './pages/privateLink.js';
+import { verifyLinkPage } from './pages/verifyLink.js';
 import { cancelSeatSelectPage } from './pages/cancelSeatSelect.js';
 import { myPage } from './pages/mypage.js';
 import { loginPage } from './pages/login.js';
@@ -36,14 +37,15 @@ registerRoute(/^zones\/(?<id>[\w-]+)$/, zoneSelectPage);
 registerRoute(/^seats\/(?<id>[\w-]+)\/(?<zoneId>[\w-]+)$/, seatSelectPage);
 registerRoute(/^payment\/(?<type>regular|cancel)$/, paymentPage);
 registerRoute(/^complete\/(?<id>[\w-]+)$/, bookingCompletePage);
-// 이전 취소표 상세 URL은 마이페이지의 취소표 대기열 상세 화면으로 호환 이동한다.
+// 이전 취소표 상세 URL도 마이페이지의 읽기 전용 대기열 목록으로만 이동한다.
 registerRoute(/^cancel-queue\/(?<id>[\w-]+)$/, {
   render(_, params) {
-    nav(`mypage/cancel-queue?eventId=${encodeURIComponent(params.id)}`);
+    nav('mypage/cancel-queue');
   },
 });
 registerRoute(/^membership$/, membershipPage);
 registerRoute(/^membership-checkout\/(?<plan>monthly|yearly)$/, membershipCheckoutPage);
+registerRoute(/^verify-link$/, verifyLinkPage);
 registerRoute(/^private-link\/(?<id>[\w-]+)$/, privateLinkPage);
 registerRoute(/^cancel-seats\/(?<id>[\w-]+)$/, cancelSeatSelectPage);
 registerRoute(/^mypage(?:\/(?<section>[\w-]+))?$/, myPage);

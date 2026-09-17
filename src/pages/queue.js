@@ -7,6 +7,7 @@ import { navigate } from '../router.js';
 import { getSelectedSession, getState, hasMembership, setAdmissionToken, setSelectedSession } from '../state/store.js';
 import { fetchWithRecaptcha } from '../utils/recaptcha.js';
 import { authHeaders } from '../utils/authToken.js';
+import { leaveQueueBeacon } from '../utils/backendApi.js';
 
 const POSITION_POLL_MS = 1000;
 
@@ -97,6 +98,8 @@ export const queuePage = {
         let recovering = false; // guards against firing multiple concurrent re-entries below
         let admissionRequestRunning = false; // prevents duplicate token requests while admission is being finalized
         let standbyPollTick = 0;
+        let queueLeaveSent = false;
+        let currentQueueType = '';
 
         function clearTimers() {
           if (positionPollTimer) clearInterval(positionPollTimer);
@@ -104,6 +107,29 @@ export const queuePage = {
           positionPollTimer = null;
           redirectTimer = null;
         }
+
+        function notifyQueueLeave() {
+          // A normal transition to the seat page sets settled first, so it is
+          // not mistaken for abandonment. This handler is for closing,
+          // refreshing, or navigating away while still waiting. standby는
+          // 취소표 대기 자격을 유지해야 하므로 브라우저 이탈만으로
+          // LEFT 처리하지 않는다.
+          if (settled || queueLeaveSent || destroyed) return;
+          // 응답을 받기 전에는 유형을 알 수 없으므로 이탈 요청을 보내지
+          // 않는다. 그래야 조기마감 시뮬레이션으로 이미 standby에 등록된
+          // 사용자가 페이지를 여는 순간 대기열에서 제거되지 않는다.
+          if (currentQueueType !== 'eligible') return;
+          queueLeaveSent = true;
+          leaveQueueBeacon(userId, queueContext);
+        }
+
+        function removeLifecycleListeners() {
+          window.removeEventListener('pagehide', notifyQueueLeave);
+          window.removeEventListener('beforeunload', notifyQueueLeave);
+        }
+
+        window.addEventListener('pagehide', notifyQueueLeave);
+        window.addEventListener('beforeunload', notifyQueueLeave);
 
         function enterConfirmed() {
           if (settled) return;
@@ -126,6 +152,7 @@ export const queuePage = {
 
         function renderWaitingState(pos) {
           const isStandby = pos.type === 'standby';
+          currentQueueType = isStandby ? 'standby' : 'eligible';
           const rawPosition = isStandby ? pos.standbyPosition : pos.position;
           const rawTotal = isStandby ? pos.totalStandby : pos.totalWaiting;
           const position = Number(rawPosition);
@@ -240,6 +267,9 @@ export const queuePage = {
 
         function showClosedUI() {
           if (settled) return;
+          // 조기마감 후 standby 사용자는 취소표 대기열에 남아야 한다.
+          // 여기서 /queue/leave를 호출하면 waiting_queue가 LEFT로 바뀌어
+          // 마이페이지에서 취소표 대기 공연이 사라진다.
           settled = true;
           clearTimers();
           statusEl.textContent = '마감';
@@ -261,7 +291,11 @@ export const queuePage = {
             const memberContent = isMember
               ? `<p style="font-size:15px;font-weight:700;margin-bottom:8px;color:var(--color-text);">취소표 발생 시 시크릿 링크로 안내해드리겠습니다.</p>
                  <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:20px;">멤버십 회원이시므로 취소표 발생 시 등록하신 이메일로 시크릿 링크가 발송됩니다.</p>
-                 <button class="btn btn-outline" data-go-home>메인 페이지로 돌아가기</button>
+                 <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:18px;">마이페이지에서 취소표 대기열과 현재 순번을 확인할 수 있습니다.</p>
+                 <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+                   <button class="btn btn-primary" data-go-cancel-queue>마이페이지 취소표 대기열 확인</button>
+                   <button class="btn btn-outline" data-go-home>메인 페이지로 돌아가기</button>
+                 </div>
                  <div style="font-size:12px;color:var(--color-text-secondary);margin-top:16px;"><span class="num-mono">${timeStr}</span> 후 메인 페이지로 이동합니다</div>`
               : `<p style="font-size:15px;font-weight:700;margin-bottom:8px;color:var(--color-text);">멤버십을 가입하시면 취소표가 나오면 시크릿 링크로 안내해드립니다.</p>
                  <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:16px;">멤버십 가입 후 취소표 발생 시 이메일로 시크릿 링크를 받으실 수 있습니다.</p>
@@ -282,6 +316,11 @@ export const queuePage = {
               clearInterval(countdownTimer);
               if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
               navigate('');
+            });
+            overlay.querySelector('[data-go-cancel-queue]')?.addEventListener('click', () => {
+              clearInterval(countdownTimer);
+              if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+              navigate('mypage/cancel-queue');
             });
             overlay.querySelector('[data-join-membership]')?.addEventListener('click', () => {
               clearInterval(countdownTimer);
@@ -362,7 +401,10 @@ export const queuePage = {
 
         enterQueue();
 
-        cleanupFn = clearTimers;
+        cleanupFn = () => {
+          clearTimers();
+          removeLifecycleListeners();
+        };
       })
       .catch(() => {
         if (!destroyed) {

@@ -28,7 +28,16 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-function sessionForEvent(event) {
+function sessionForEvent(event, requested = {}) {
+  if (requested.date || requested.time) {
+    const requestedSession = {
+      date: requested.date || '',
+      time: requested.time || '',
+    };
+    setSelectedSession(event.eventId, requestedSession);
+    return requestedSession;
+  }
+
   let session = getSelectedSession(event.eventId);
   if (!session && Array.isArray(event.sessions) && event.sessions[0]) {
     session = {
@@ -217,13 +226,11 @@ export const cancelQueuePage = {
       const myNum = container.querySelector('[data-mynum]');
       const myNumLabel = container.querySelector('[data-mynum-label]');
       const totalEl = container.querySelector('[data-total]');
-      const etaEl = container.querySelector('[data-eta]');
       const statusEl = container.querySelector('[data-status]');
       if (myNum) myNum.textContent = position ? `${formatNumber(position)}번` : '-';
       if (myNumLabel) myNumLabel.textContent = numbers.standby ? '취소표 대기번호' : '내 대기번호';
       if (totalEl) totalEl.textContent = total ? `${formatNumber(total)}명` : '-';
       if (statusEl) statusEl.textContent = snapshot.secretLink?.active ? 'Secret Link 발급됨' : numbers.standby ? '취소표 대기 중' : queue.status || '대기 중';
-      if (etaEl) etaEl.textContent = numbers.standby ? '취소표 발생 시 안내' : position ? `약 ${Math.max(1, Math.ceil(position / 100))}초` : '-';
       const memberNum = container.querySelector('[data-m-num]');
       if (memberNum) memberNum.textContent = position ? `${formatNumber(position)}번` : '-';
       const nonMemberNum = container.querySelector('[data-nonmember-position]');
@@ -263,8 +270,8 @@ export const cancelQueuePage = {
               <div class="queue-mynum-label" style="margin-top:22px;" data-mynum-label>취소표 대기번호</div>
               <div class="queue-mynum num-mono" style="font-size:64px;" data-mynum>-</div>
               <div class="divider"></div>
-              <div class="kv-row"><span>전체 대기자</span><b class="num-mono" data-total>-</b></div>
-              <div class="kv-row"><span>예상 대기시간</span><b class="num-mono" data-eta>-</b></div>
+              <div class="kv-row"><span>전체 멤버십 대기자</span><b class="num-mono" data-total>-</b></div>
+              <div class="kv-row"><span>안내</span><b>취소표 발생 시 5분 제한 Secret Link 발급</b></div>
             </div>
             <div class="card mt-24" style="padding:28px;" data-membership-card></div>
           </div>
@@ -302,7 +309,10 @@ export const cancelQueuePage = {
           return;
         }
 
-        currentSession = sessionForEvent(event);
+        currentSession = sessionForEvent(event, {
+          date: params.sessionDate || '',
+          time: params.sessionTime || '',
+        });
         const context = contextFor(eventId, currentSession);
         const [entered, pool] = await Promise.all([
           joinCancelQueueApi(userId, context),

@@ -1,4 +1,5 @@
 import { setTokens, clearTokens, authHeaders } from '../utils/authToken.js';
+import { fetchMyCancelQueues } from '../utils/backendApi.js';
 
 const listeners = new Set();
 
@@ -496,6 +497,34 @@ export function setCancelQueueEntry(concertId, entry) {
   };
   emit();
   return state.cancelQueues[concertId];
+}
+
+// 마이페이지 진입 시 서버의 waiting_queue를 기준으로 취소표 대기열을
+// 복원한다. 기존 브라우저 메모리는 새로고침하면 사라지므로, 목록의 원본은
+// 항상 API이며 현재 페이지에서 갱신한 표시값만 state에 캐시한다.
+export function loadCancelQueuesFromServer() {
+  const userId = state.user?.userId;
+  if (!userId) return Promise.resolve({ queues: [], count: 0 });
+
+  return fetchMyCancelQueues()
+    .then((data) => {
+      if (state.user?.userId !== userId) return data;
+
+      const next = {};
+      (data.queues || []).forEach((queue) => {
+        if (!queue.eventId) return;
+        next[queue.eventId] = {
+          ...queue,
+          myNumber: Number(queue.myNumber || 0),
+          total: Number(queue.total || 0),
+          joinedAt: queue.joinedAt ? new Date(queue.joinedAt).getTime() : Date.now(),
+          status: queue.queueStatus || queue.status || 'waiting',
+        };
+      });
+      state.cancelQueues = next;
+      emit();
+      return data;
+    });
 }
 
 export function ensureCancelPool(concertId) {

@@ -9,7 +9,7 @@ import { getState, clearCurrentOrder, addBooking, clearSeatSelectTimer, updatePr
 import { showToast } from '../components/toast.js';
 import { navigate } from '../router.js';
 import { fetchWithRecaptcha } from '../utils/recaptcha.js';
-import { expireCancelAllocation, releaseSeatApi, releaseSeatBeacon } from '../utils/backendApi.js';
+import { expireCancelAllocation, leaveQueueBeacon, releaseSeatApi, releaseSeatBeacon } from '../utils/backendApi.js';
 
 const CANCEL_DEADLINE_MS = 5 * 60 * 1000;
 const HOLD_MS = 8 * 60 * 1000 + 42 * 1000; // fallback if an order ever arrives without holdDeadline
@@ -117,12 +117,36 @@ export const paymentPage = {
     // 경우(백엔드 TTL로 이미 자동 해제됨)는 다시 해제 요청을 보낼 필요가 없으므로
     // settled로 막는다.
     let settled = false;
+    let admissionAbandonSent = false;
     const realSeats = seats.filter((s) => typeof s.id === 'string' && s.id.includes(':'));
+
+    const queueContext = {
+      eventId: c.eventId,
+      sessionDate: order.session?.date || '',
+      sessionTime: order.session?.time || '',
+    };
+
+    function abandonAdmission({ waitForRelease = false } = {}) {
+      if (admissionAbandonSent) return Promise.resolve();
+      admissionAbandonSent = true;
+      const currentUserId = getState().user?.userId || getState().user?.email;
+      if (!currentUserId) return Promise.resolve();
+
+      if (!waitForRelease) {
+        realSeats.forEach((seat) => releaseSeatBeacon(currentUserId, seat.id));
+        if (type === 'regular') leaveQueueBeacon(currentUserId, queueContext);
+        return Promise.resolve();
+      }
+
+      const releasePromises = realSeats.map((seat) => releaseSeatApi(currentUserId, seat.id).catch(() => null));
+      return Promise.all(releasePromises).finally(() => {
+        if (type === 'regular') leaveQueueBeacon(currentUserId, queueContext);
+      });
+    }
+
     function onPageHide() {
-      if (settled || !realSeats.length) return;
-      const user = getState().user;
-      if (!user) return;
-      realSeats.forEach((s) => releaseSeatBeacon(user.userId, s.id));
+      if (settled) return;
+      abandonAdmission();
     }
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('beforeunload', onPageHide);
@@ -291,10 +315,8 @@ export const paymentPage = {
               payBtn.disabled = true;
               agreeBox.disabled = true;
               const currentUserId = getState().user?.userId || getState().user?.email;
-              const releasePromises = currentUserId
-                ? realSeats.map((s) => releaseSeatApi(currentUserId, s.id).catch(() => null))
-                : [];
-              const expirePromise = Promise.all(releasePromises).then(() => (
+              const releasePromise = abandonAdmission({ waitForRelease: true });
+              const expirePromise = releasePromise.then(() => (
                 type === 'cancel' && currentUserId && order.cancelAllocation
                   ? expireCancelAllocation(currentUserId, c.eventId, order.cancelAllocation.seatId, {
                       sessionDate: order.cancelAllocation.sessionDate || order.session?.date || '',
@@ -366,8 +388,12 @@ export const paymentPage = {
         confirmCall
           .then(({ ok, data }) => {
             if (!ok || !data.success) {
-              payBtn.disabled = false;
-              showToast({ title: '결제를 완료하지 못했습니다', body: data.message || '좌석 선점이 만료되었을 수 있습니다. 다시 선택해주세요.', type: 'default' });
+              abandonAdmission({ waitForRelease: true }).finally(() => {
+                clearCurrentOrder();
+                clearSeatSelectTimer();
+                showToast({ title: '결제를 완료하지 못했습니다', body: data.message || '좌석 선점이 만료되어 입장 슬롯을 반납했습니다. 다시 시도해주세요.', type: 'default' });
+                navigate(`zones/${c.eventId}`);
+              });
               return;
             }
 
@@ -392,12 +418,26 @@ export const paymentPage = {
             navigate(`complete/${bookingId}`);
           })
           .catch(() => {
-            payBtn.disabled = false;
-            showToast({ title: '결제 요청에 실패했습니다', body: '네트워크 상태를 확인하고 다시 시도해주세요.', type: 'default' });
+            abandonAdmission({ waitForRelease: true }).finally(() => {
+              clearCurrentOrder();
+              clearSeatSelectTimer();
+              showToast({ title: '결제 요청에 실패했습니다', body: '좌석과 입장 슬롯을 반납했습니다. 다시 시도해주세요.', type: 'default' });
+              navigate(`zones/${c.eventId}`);
+            });
           });
       };
 
       const savedPhone = formatPhone(getState().user?.phone || '');
+      // 취소표 Secret Link 세션은 좌석 선점·결제만 허용하고 회원정보 수정은
+      // 의도적으로 차단한다. 취소표 결제에서 전화번호가 회원정보와 다르다는
+      // 이유로 updateProfileOnServer()를 호출하면 scoped JWT가 403을 반환해
+      // 결제 자체가 진행되지 않으므로, 전화번호 형식 검증만 통과시키고
+      // 회원정보 저장 없이 기존 결제 흐름으로 진행한다.
+      if (type === 'cancel') {
+        continueToPayment();
+        return;
+      }
+
       if (savedPhone !== buyerPhone) {
         let confirmed = false;
         const phoneChangeModal = openModal({
@@ -442,10 +482,7 @@ export const paymentPage = {
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('beforeunload', onPageHide);
       stopCountdown();
-      if (!settled && realSeats.length) {
-        const user = getState().user;
-        if (user) realSeats.forEach((s) => releaseSeatApi(user.userId, s.id).catch(() => {}));
-      }
+      if (!settled) abandonAdmission();
     };
     }
   },

@@ -8,12 +8,12 @@ import { openModal, closeModal } from '../components/modal.js';
 import { showToast } from '../components/toast.js';
 import { authHeaders } from '../utils/authToken.js';
 import { calcCancelFeeRate } from '../data/refundPolicy.js';
-import { cancelQueuePage } from './cancelQueue.js';
 import {
   getState,
   isLoggedIn,
   setReturnTo,
   hasMembership,
+  loadCancelQueuesFromServer,
   isInterested,
   toggleInterest,
   requestRefund,
@@ -29,6 +29,29 @@ import {
 } from '../state/store.js';
 
 const PHONE_RE = /^01[016789]-\d{3,4}-\d{4}$/;
+const CANCEL_QUEUE_SYNC_MS = 5000;
+const REFUND_REQUEST_TIMEOUT_MS = 8000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url, options = {}, { retries = 1 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REFUND_REQUEST_TIMEOUT_MS);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries) await sleep(300);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+  throw lastError || new Error('요청 응답이 없습니다.');
+}
 
 function formatPhone(raw) {
   const digits = String(raw || '').replace(/\D/g, '').slice(0, 11);
@@ -110,6 +133,39 @@ function daysUntilShow(b, meta) {
   return Math.round((showDate - todayMid) / 86400000);
 }
 
+async function fetchServerReservations(userId) {
+  const response = await fetchWithTimeout(`/reservations/user/${encodeURIComponent(userId)}`, {
+    headers: { ...authHeaders() },
+  }, { retries: 1 });
+  const raw = await response.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch (_) { data = { message: raw }; }
+  if (!response.ok) {
+    throw new Error(data.message || data.error || `HTTP ${response.status}`);
+  }
+  return Array.isArray(data.reservations) ? data.reservations : [];
+}
+
+function recoverServerSeatIds(booking, reservations, knownSeatIds = []) {
+  const known = [...new Set(knownSeatIds.filter(Boolean))];
+  if (known.length) return known;
+
+  const active = reservations.filter((r) => String(r.status || '').toUpperCase() !== 'CANCELLED');
+  const eventMatches = active.filter((r) => String(r.eventId || '') === String(booking.concertId || ''));
+  const sessionDate = booking.session?.date || '';
+  const sessionTime = booking.session?.time || '';
+  const sessionMatches = sessionDate
+    ? eventMatches.filter((r) => String(r.sessionDate || '') === String(sessionDate)
+      && (!sessionTime || String(r.sessionTime || '') === String(sessionTime)))
+    : eventMatches;
+
+  // 회차 정보가 없는 상태에서 같은 공연의 예약이 여러 건이면 어느 예약을
+  // 취소할지 추측하지 않는다. 사용자가 다시 진입해 최신 예약 데이터를
+  // 읽어오도록 하여 다른 예약을 잘못 환불하는 일을 방지한다.
+  if (sessionMatches.length !== 1) return [];
+  return sessionMatches[0].seatId ? [sessionMatches[0].seatId] : [];
+}
+
 function openRefundConfirm(b, meta) {
   const isUnpaid = b.status === 'unpaid';
   const days = daysUntilShow(b, meta);
@@ -138,7 +194,7 @@ function openRefundConfirm(b, meta) {
     `,
   });
 
-  document.querySelector('[data-confirm-refund]')?.addEventListener('click', () => {
+  document.querySelector('[data-confirm-refund]')?.addEventListener('click', async () => {
     const confirmBtn = document.querySelector('[data-confirm-refund]');
     if (confirmBtn) confirmBtn.disabled = true;
 
@@ -159,28 +215,76 @@ function openRefundConfirm(b, meta) {
     // backend counterpart, so just flip the local status straight away.
     const userId = getState().user?.userId || getState().user?.email;
     const bookingSeats = b.seats && b.seats.length ? b.seats : b.seat ? [b.seat] : [];
-    const realSeats = bookingSeats.filter((s) => typeof s.id === 'string' && s.id.includes(':'));
-    if (realSeats.length && userId) {
+    // 실제 이벤트의 좌석 ID는 보통 evt-... 접두사를 가지지만, 구버전 좌석
+    // 데이터에는 ':'가 없는 경우도 있다. eventId가 실제 이벤트 형식이면
+    // 좌석 ID의 모양만 보고 환불 API 호출을 생략하지 않는다.
+    const isBackendBooking = String(b.concertId || '').startsWith('evt-')
+      || bookingSeats.some((s) => typeof s.id === 'string' && s.id.includes(':'));
+    let serverSeatIds = isBackendBooking
+      ? [...new Set(bookingSeats.filter((s) => s && s.id).map((s) => s.id))]
+      : [];
+
+    if (isBackendBooking && !userId) {
+      if (confirmBtn) confirmBtn.disabled = false;
+      showToast({ title: '로그인이 필요합니다', body: '로그인 정보를 확인한 후 다시 시도해주세요.', type: 'default' });
+      return;
+    }
+
+    // 브라우저 상태에 좌석 ID가 없으면 서버 예약 내역을 한 번 더 조회한다.
+    // 조회 실패 또는 모호한 결과에서는 로컬 상태만 환불 완료로 바꾸지 않는다.
+    if (isBackendBooking && serverSeatIds.length === 0) {
+      try {
+        const reservations = await fetchServerReservations(userId);
+        serverSeatIds = recoverServerSeatIds(b, reservations);
+      } catch (err) {
+        if (confirmBtn) confirmBtn.disabled = false;
+        console.error('[Refund] 서버 예약 내역 재조회 실패:', err);
+        showToast({ title: '예약 정보를 불러오지 못했습니다', body: '잠시 후 다시 환불을 시도해주세요.', type: 'default' });
+        return;
+      }
+    }
+
+    if (isBackendBooking && serverSeatIds.length === 0) {
+      if (confirmBtn) confirmBtn.disabled = false;
+      showToast({ title: '환불할 예약 정보를 찾지 못했습니다', body: '마이페이지를 새로고침한 후 다시 시도해주세요.', type: 'default' });
+      return;
+    }
+
+    if (isBackendBooking && serverSeatIds.length && userId) {
       Promise.all(
-        realSeats.map((s) =>
-          fetch('/seats/cancel', {
+        serverSeatIds.map((seatId) =>
+          fetchWithTimeout('/seats/cancel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ userId, seatId: s.id }),
-          }).then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+            body: JSON.stringify({
+              userId,
+              seatId,
+              eventId: b.concertId || '',
+              sessionDate: b.session?.date || '',
+              sessionTime: b.session?.time || '',
+            }),
+          }, { retries: 1 }).then(async (r) => {
+            const raw = await r.text();
+            let data = {};
+            try { data = raw ? JSON.parse(raw) : {}; } catch (_) { data = { message: raw }; }
+            return { ok: r.ok, status: r.status, data };
+          })
         )
       )
         .then((results) => {
           const failed = results.find((r) => !r.ok || !r.data.success);
           if (failed) {
             if (confirmBtn) confirmBtn.disabled = false;
-            showToast({ title: '환불 처리에 실패했습니다', body: failed.data.message || '잠시 후 다시 시도해주세요.', type: 'default' });
+            const detail = failed.data.message || failed.data.error || `HTTP ${failed.status}`;
+            console.error('[Refund] /seats/cancel 실패:', failed.status, failed.data);
+            showToast({ title: '환불 처리에 실패했습니다', body: detail, type: 'default' });
             return;
           }
           finish();
         })
-        .catch(() => {
+        .catch((err) => {
           if (confirmBtn) confirmBtn.disabled = false;
+          console.error('[Refund] /seats/cancel 요청 실패:', err);
           showToast({ title: '환불 요청에 실패했습니다', body: '네트워크 상태를 확인하고 다시 시도해주세요.', type: 'default' });
         });
     } else {
@@ -190,14 +294,13 @@ function openRefundConfirm(b, meta) {
 }
 
 export const myPage = {
-  render(container, params, query = {}) {
+  render(container, params, _query = {}) {
     if (!isLoggedIn()) {
       setReturnTo('mypage');
       navigate('login');
       return;
     }
     const section = params.section || '';
-    const cancelQueueEventId = query.eventId || '';
     const { user, bookings, interests, cancelQueues } = getState();
 
     container.innerHTML = `
@@ -225,18 +328,27 @@ export const myPage = {
     // (대기열~결제 플로우가 실제 API로 붙어있음) 캘린더/관심공연 목록에서 같이 보여주기 위해
     // 한 번만 받아와서 섹션 전환 시 재사용
     let realEventsCache = null;
+    let realEventsRequest = null;
     function withRealEvents(cb) {
       if (realEventsCache) {
         cb(realEventsCache);
         return;
       }
-      fetch('/events')
-        .then((res) => res.json())
-        .then((data) => {
-          realEventsCache = data.events || [];
-          cb(realEventsCache);
-        })
-        .catch(() => cb([]));
+      // 공연 목록 요청이 지연되어도 취소표 대기열 화면 전체가
+      // 빈 상태로 멈추지 않도록 동일 요청을 공유한다.
+      if (!realEventsRequest) {
+        realEventsRequest = fetch('/events')
+          .then((res) => res.json())
+          .then((data) => {
+            realEventsCache = data.events || [];
+            return realEventsCache;
+          })
+          .catch(() => {
+            realEventsCache = [];
+            return realEventsCache;
+          });
+      }
+      realEventsRequest.then(cb);
     }
 
     // 예매/취소 내역은 그동안 브라우저 메모리(state.bookings)에만 있어서 새로고침하면
@@ -302,6 +414,8 @@ export const myPage = {
     }
     syncBookingsFromServer();
 
+    let cancelQueueLoadError = '';
+
     function renderCurrentSection() {
       if (section === 'bookings') renderBookings();
       else if (section === 'cancel-queue') renderCancelQueue();
@@ -315,10 +429,37 @@ export const myPage = {
     }
     renderCurrentSection();
 
+    // 시뮬레이션 마감 또는 실제 취소표 대기 등록 직후에도 새로고침 없이
+    // 서버의 waiting_queue를 읽어 마이페이지의 읽기 전용 목록에 반영한다.
+    let cancelQueueSyncTimer = null;
+    let cancelQueueSyncRunning = false;
+    const syncCancelQueueList = () => {
+      if (cancelQueueSyncRunning) return;
+      cancelQueueSyncRunning = true;
+      loadCancelQueuesFromServer()
+        .then(() => {
+          if (getState().user?.userId !== user?.userId) return;
+          cancelQueueLoadError = '';
+          if (section === 'cancel-queue') renderCancelQueue();
+          else if (section === '') renderOverview();
+        })
+        .catch((err) => {
+          cancelQueueLoadError = err?.message || '취소표 대기열 정보를 불러오지 못했습니다.';
+          if (section === 'cancel-queue') renderCancelQueue();
+        })
+        .finally(() => {
+          cancelQueueSyncRunning = false;
+        });
+    };
+    syncCancelQueueList();
+    if (section === '' || section === 'cancel-queue') {
+      cancelQueueSyncTimer = setInterval(syncCancelQueueList, CANCEL_QUEUE_SYNC_MS);
+    }
+
     // Refund status flips from "처리 중" to "완료" a few seconds after the user
     // confirms — re-render the booking list/overview so that shows up live.
     const cleanup = subscribe(() => {
-      if (section === 'bookings' || section === '' || section === 'refunds') renderCurrentSection();
+      if (section === 'bookings' || section === '' || section === 'refunds' || section === 'cancel-queue') renderCurrentSection();
     });
 
     function renderOverview() {
@@ -326,7 +467,7 @@ export const myPage = {
         (b) => b.status !== 'cancelled' && b.status !== 'refunded' && b.status !== 'refund_pending'
       );
       const interestCount = interests.size;
-      const cancelQueueCount = Object.keys(cancelQueues).length;
+      const cancelQueueCount = Object.keys(getState().cancelQueues).length;
       const membershipActive = hasMembership();
       withRealEvents((realEvents) => {
         content.innerHTML = `
@@ -370,39 +511,56 @@ export const myPage = {
       });
     }
 
-    let nestedSectionCleanup = null;
-
     function renderCancelQueue() {
-      if (nestedSectionCleanup) {
-        nestedSectionCleanup();
-        nestedSectionCleanup = null;
-      }
-
-      // 취소표 상세 화면은 별도 페이지가 아니라 마이페이지 안에 표시한다.
-      // 실제 순번·멤버십·Secret Link 상태는 기존 cancelQueuePage가 서버에서 조회한다.
-      if (cancelQueueEventId) {
-        nestedSectionCleanup = cancelQueuePage.render(content, { id: cancelQueueEventId }) || null;
+      if (cancelQueueLoadError) {
+        content.innerHTML = `
+          <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
+          <div class="card" role="alert" style="padding:40px;text-align:center;color:var(--color-disabled);font-size:13.5px;">
+            취소표 대기열 정보를 불러오지 못했습니다.<br>
+            <span class="text-secondary" style="font-size:12px;">잠시 후 다시 시도해주세요. (${escapeAttr(cancelQueueLoadError)})</span>
+          </div>
+        `;
         return;
       }
 
-      const entries = Object.entries(cancelQueues);
-      withRealEvents((realEvents) => {
+      if (!hasMembership()) {
+        content.innerHTML = `
+          <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
+          ${emptyRow('취소표 대기열은 활성 멤버십 회원만 이용할 수 있습니다.')}
+        `;
+        return;
+      }
+
+      const entries = Object.entries(getState().cancelQueues);
+      const renderRows = (realEvents) => {
         const rows = entries
           .map(([concertId, q]) => {
-            const c = resolveConcert(concertId, realEvents);
+            // /events가 늦거나 일시적으로 실패해도 /cancel-queue/mine가
+            // 반환한 공연 정보를 이용해 DB 대기열 행을 숨기지 않는다.
+            const c = resolveConcert(concertId, realEvents) || (q.eventName || q.title ? {
+              name: q.eventName || q.title || concertId,
+              dateStart: q.eventDate || null,
+              venue: q.venue || '',
+              image: getConcertImage(q.eventName || q.title || concertId),
+            } : null);
             if (!c) return '';
             const total = Number(q.total || 0);
             const position = Number(q.myNumber || 0);
-            const eta = total && position ? Math.max(1, Math.round((position / total) * 210)) : '-';
+            const sessionLabel = [q.sessionDate, q.sessionTime].filter(Boolean).join(' ');
+            const poster = c.image || getConcertImage(c.name || concertId);
             return `
-              <div class="ticket-row" data-open="${escapeAttr(concertId)}" style="cursor:pointer;">
-                <div>
-                  <div class="ticket-row__concert">${escapeAttr(c.name)}</div>
-                  <div class="ticket-row__meta">전체 대기자 ${total ? formatNumber(total) : '-'}명 · 예상 대기시간 약 ${eta === '-' ? '-' : `${eta}분`}</div>
+              <div class="ticket-row">
+                <div class="ticket-row__main">
+                  <img class="ticket-row__poster" src="${escapeAttr(poster)}" alt="${escapeAttr(c.name)} 포스터" loading="lazy" />
+                  <div class="ticket-row__info">
+                    <div class="ticket-row__concert">${escapeAttr(c.name)}</div>
+                    <div class="ticket-row__meta">${sessionLabel ? `${escapeAttr(sessionLabel)} · ` : ''}전체 멤버십 대기자 ${total ? formatNumber(total) : '-'}명</div>
+                    <div class="ticket-row__meta">취소표 발생 시 5분 제한 Secret Link 발급</div>
+                  </div>
                 </div>
                 <div style="text-align:right;">
                   <div class="ticket-row__price num-mono text-red">${position ? formatNumber(position) : '-'}번</div>
-                  <div class="ticket-row__meta">${q.status === 'allocated' ? 'Secret Link 발급됨' : hasMembership() ? '멤버십 대기 중' : '멤버십 필요'}</div>
+                  <div class="ticket-row__meta">${q.status === 'allocated' || q.allocation?.active ? 'Secret Link 발급됨' : '취소표 대기 중'}</div>
                 </div>
               </div>`;
           })
@@ -411,10 +569,17 @@ export const myPage = {
           <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
           ${rows || emptyRow('취소표 대기열에 참여 중인 공연이 없습니다.')}
         `;
-        content.querySelectorAll('[data-open]').forEach((el) => {
-          el.addEventListener('click', () => navigate(`mypage/cancel-queue?eventId=${encodeURIComponent(el.dataset.open)}`));
-        });
-      });
+      };
+
+      // /events 응답을 기다리지 않고 먼저 DB에서 복원된 대기열을 표시한다.
+      // 공연 API가 늦으면 q.eventName 등의 서버 응답 정보로 계속 표시하고,
+      // 공연 정보가 도착하면 포스터·공연명을 보완해 다시 렌더링한다.
+      if (realEventsCache) {
+        renderRows(realEventsCache);
+      } else {
+        renderRows([]);
+        withRealEvents(renderRows);
+      }
     }
 
     function renderMembership() {
@@ -798,7 +963,7 @@ export const myPage = {
     }
 
     return () => {
-      if (nestedSectionCleanup) nestedSectionCleanup();
+      if (cancelQueueSyncTimer) clearInterval(cancelQueueSyncTimer);
       cleanup();
     };
   },
