@@ -146,6 +146,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `PATCH /event/update` | 공연 정보 수정 + 알림 발송 |
 | `POST /event/cancel` | 공연 취소. 좌석 전체 정리, 대기열 초기화, 취소 알림 |
 | `GET /events` | 이벤트 목록 조회 (MariaDB 폴백) |
+| `GET /events/:eventId/sessions` | 특정 공연의 회차 목록 조회. Redis 이벤트 카드의 `sessions`를 우선 사용하고, 없으면 MariaDB `seats.session_date/session_time`에서 복원. 응답: `{ eventId, eventName, eventDate, sessions: [{ date, time, ... }], count, source }` |
 | `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정/해제. Redis 이벤트 카드(`events:list`)와 MariaDB `events.ticket_open_at`에 함께 저장. 전역 `event:ticketing-status`나 스케줄 타이머를 변경하지 않음 — 대기열 진입 시 `enter()` 함수가 해당 이벤트 카드의 `ticketOpenAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
 | `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제. 이벤트 카드(`events:list`)에만 저장하며 전역 `event:ticketing-status`를 변경하지 않음 — `enter()` 함수가 해당 이벤트 카드의 `ticketCloseAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
 | `DELETE /events/:eventId` | 이벤트 삭제 |
@@ -182,9 +183,12 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 ### src/routes/simulationRoutes.js — 취소표 시뮬레이션
 
-- `POST /admin/simulation/init`에서 지정한 실제 유저 이메일은 시뮬레이션 대상 계정과 멤버십만 준비한다.
+- `POST /admin/simulation/init`은 공연·회차와 더미 유저 수만 받아 시뮬레이션 메타데이터와 더미 사용자를 준비한다. 실제 사용자 이메일이나 멤버십을 관리자 입력으로 받지 않는다.
 - `POST /admin/simulation/sellout`은 더미 좌석을 매진 처리하고 더미 standby 대기자 및 `sold_out` 상태를 만든다.
-- `POST /admin/simulation/close`는 `simulation:{eventId}`에 저장된 `realUserEmail`을 현재 회차의 Redis standby와 MariaDB `waiting_queue`에 멱등 등록한다. 따라서 조기 마감 후 실제 사용자의 마이페이지에서 취소표 대기 공연을 복원할 수 있다.
+- 실제 멤버십 사용자는 단계1 이후 일반 서비스와 동일하게 프론트엔드에서 `POST /cancel-queue/join`을 호출한다. API가 활성 멤버십과 동일 공연·회차의 본 티켓팅 참여 이력을 함께 검증하고 Redis standby와 MariaDB `waiting_queue`를 함께 기록한다.
+- `POST /admin/simulation/close`는 ticketing 상태만 `closed`로 변경하고, 이미 직접 진입한 현재 시뮬레이션의 멤버십 standby 대기자를 집계한다. 특정 이메일을 자동 등록하거나 순번을 변경하지 않는다.
+- `POST /admin/simulation/issue-links`는 현재 회차의 `waiting_queue`에서 직접 진입한 활성 멤버십 standby 대기자를 `queue_index` 순으로 확인한 뒤, 준비된 취소 이벤트를 SQS로 전달한다. A가 임의 사용자를 standby 최우선으로 올리지 않으며 B파트가 대기열 정책에 따라 Secret Link 대상을 처리한다.
+- 동일한 흐름을 온프레미스에서 검증할 수 있도록 `/admin/local-simulation/*`를 별도 제공한다. 초기화·매진·마감·취소표 생성은 기존 시뮬레이션과 같은 Redis/MariaDB 흐름을 사용하고, 단계3은 단계2 조기 마감 이후에만 허용한다. 단계4만 B파트 SQS 대신 A 서버의 Gmail SMTP로 준비된 취소 좌석과 활성 멤버십 대기자를 `queue_index` 순서로 1:1 매칭해 각각 5분 제한 A파트 Secret Link를 발송한다. 이미 유효한 할당은 재발송하지 않고, 만료된 할당은 다음 발급에서 재사용한다.
 
 ### src/services/admissionWorker.js — 자동 승인 워커
 
@@ -199,7 +203,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 - Admission Token 발급과 함께 생성된 `admission:deadline:*` 키를 주기적으로 확인한다.
 - 제한시간(기본 420초/7분)이 지나면 해당 사용자를 `admitted`에서 제거하고 토큰을 무효화하며 MariaDB `waiting_queue.status`를 `EXPIRED`로 갱신한다.
-- 만료로 빈 슬롯이 생기면 eligible 대기열에서 정확히 한 명을 backfill하여 Admission Token을 발급한다. standby는 B파트 취소표 흐름과 분리한다.
+- 만료로 빈 슬롯이 생기면 eligible 대기열에서 정확히 한 명을 backfill하여 Admission Token을 발급한다. 오픈 중이고 eligible 대기자가 없을 때만 본 대기열 참여 표식이 있는 standby를 승격하며, 마감 후 standby는 B파트 취소표 흐름과 분리한다.
 - `POST /queue/leave`에서 admitted 사용자가 명시적으로 이탈한 경우에도 동일한 슬롯 재충원이 실행된다. 예매 확정 시에는 상태를 `COMPLETED`로 기록한 뒤 슬롯을 반납한다.
 - 여러 API 파드가 동시에 실행되어도 admission 워커와 동일한 회차별 Redis 분산 락을 사용한다.
 
@@ -222,7 +226,7 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 | `POST /seats/init` | 좌석 초기화 (Redis Hash 생성) |
 | `POST /seats/hold` | reCAPTCHA v3와 좌석 ID에 포함된 회차·Admission Token을 검증한 뒤 분산 락·타이머 시작 |
 | `POST /seats/confirm` | reCAPTCHA v3 검증 후 결제 확정. MariaDB reservations 저장, 토큰 무효화, 매진 체크. `paymentMethod=vbank`이면 24시간 이내 입금 확인이 필요하다는 무통장 입금 접수 메일을, 그 외에는 예매 확정 메일을 자동 발송 |
-| `POST /seats/cancel` | MariaDB의 최신 `CONFIRMED` 예약을 기준으로 본인 소유권을 검증하고, 예약 `CANCELLED` 변경과 좌석 `AVAILABLE` 복구를 한 트랜잭션으로 처리. 이후 Redis 상태와 실시간 이벤트를 동기화하고 B팀 재판매 이벤트를 발행. 동일 요청 재시도는 멱등 성공으로 응답하며 환불 메일을 중복 발송하지 않음 |
+| `POST /seats/cancel` | MariaDB의 최신 `CONFIRMED` 예약을 기준으로 본인 소유권을 검증하고, 예약 `CANCELLED` 변경과 좌석 `AVAILABLE` 복구를 한 트랜잭션으로 처리. 본 티켓팅 중이면 다음 본 대기열 참여자를 일반 입장으로 재충원하고, 마감 후에만 B팀 재판매 이벤트를 발행. 동일 요청 재시도는 멱등 성공으로 응답하며 환불 메일을 중복 발송하지 않음 |
 | `POST /seats/release` | 좌석 해제 + standby 자동 배정 |
 | `GET /seats/timer/:seatId` | 남은 결제 시간 조회 |
 | `GET /seats/sold-out` | 매진 여부 확인 |
@@ -271,15 +275,15 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /cancel-queue/join` | 로그인 사용자 Bearer JWT로 일반 예매 대기/입장 상태를 정리하고 회차별 standby 취소표 대기열에 등록 |
-| `GET /cancel-queue/status/:eventId/:userId` | 로그인 사용자 JWT 또는 유효한 본인용 linkToken으로 사용자 취소표 대기 종합 상태 조회 (대기 순번 + 멤버십 + Secret Link) |
-| `GET /cancel-queue/mine` | 로그인한 사용자의 MariaDB `waiting_queue` 중 현재 `standby`·`WAITING` 상태인 취소표 대기 공연 목록 조회. 대기 행이 `PASSED`로 바뀌어도 활성 `cancel_allocations`가 있으면 목록에 유지하며, Redis가 살아 있으면 현재 순번과 전체 대기자 수를 보정 |
+| `POST /cancel-queue/join` | 동일 공연·회차의 본 티켓팅 대기열 참여 이력이 있는 활성 멤버십 회원만 Bearer JWT로 standby 취소표 대기열에 등록. 멤버십만 있고 본 대기열에 참여하지 않은 사용자는 `main_queue_required`, 비멤버십 사용자는 `membership_required`로 거부 |
+| `GET /cancel-queue/status/:eventId/:userId` | 동일 공연·회차의 본 티켓팅 참여 이력이 있는 활성 멤버십 회원의 취소표 대기 종합 상태 조회. 대기 순번·전체 인원은 활성 멤버십 대기자만 집계하며 Secret Link 상태를 함께 반환 |
+| `GET /cancel-queue/mine` | 활성 멤버십 회원의 MariaDB `waiting_queue` 중 `queue_type = 'standby'`인 행과 동일 공연·회차의 본 티켓팅 참여 이력을 함께 확인해 취소표 대기 공연 목록 조회. `waiting_queue` 핵심 조회와 `events`, `cancel_allocations` 부가 조회를 분리해 부가 테이블의 스키마 차이가 목록 전체를 500으로 만들지 않도록 하며, `status = 'WAITING'` 또는 활성 할당이 있는 행을 반환한다. 비멤버십 사용자와 본 대기열 미참여 사용자는 빈 목록을 반환한다. 전체 대기자·순번은 MariaDB에서 현재 활성 멤버십인 standby 대기자만 집계하며 Redis 전체 standby 수를 대신 사용하지 않는다. |
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
-| `POST /cancel-queue/hold` | 배정된 좌석을 Admission Token으로 선점. B파트 NULL seat_id 할당 시 사용자가 선택한 좌석을 허용 |
+| `POST /cancel-queue/hold` | 취소표 좌석 선점. `allocation.seat_id`가 있으면 해당 좌석만 허용하고, `NULL`이면 요청 좌석이 같은 공연·회차의 `AVAILABLE`인지 확인한 뒤 `cancel_allocations.seat_id`에 원자적으로 기록하고 홀드한다. `verify-link`로 발급된 취소표 전용 세션은 allocation 범위를 검증한 뒤 일반 Admission Token 없이 처리 |
 | `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/expire`로 포워드 |
 | `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/complete`로 포워드 |
-| `POST /verify-link` | 이메일 Secret Link 랜딩 — `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임하고, 미설정 시 로컬 개발용 A파트 JWT를 검증한 뒤 할당 정보 + 선택 가능 좌석 목록 반환 |
+| `POST /verify-link` | 이메일 Secret Link 랜딩 — A파트가 발급한 Local SMTP JWT를 먼저 검증하고, 유효하지 않은 경우 `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임한 뒤 할당 정보 + 선택 가능 좌석 목록 반환 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
 | `GET /cancel-queue/history/:eventId` | 이벤트별 할당 내역 조회 |
@@ -295,24 +299,30 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 | 엔드포인트 | 설명 |
 |---|---|
 | `GET /admin/simulation/events` | DB 등록 공연 목록 조회 (드롭다운용) |
-| `POST /admin/simulation/init` | 시뮬레이션 초기화 — 더미 유저 생성 + 실제 멤버십 유저 계정/멤버십 자동 등록 |
+| `POST /admin/simulation/init` | 시뮬레이션 초기화 — 더미 유저 생성. 실제 사용자 입력·계정·멤버십 자동 등록 없음 |
 | `POST /admin/simulation/sellout` | [단계1] 매진 연출 — 전체 좌석 더미 점유(SOLD) + 잔여를 standby 큐 등록. 실제 유저는 이후 직접 진입 |
-| `POST /admin/simulation/close` | [단계2] 조기 마감 — ticketing 상태 closed + 지정한 실제 사용자를 해당 회차 standby와 MariaDB `waiting_queue`에 등록 |
-| `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 더미 좌석 랜덤 취소(AVAILABLE 복원) 및 B파트 전송용 이벤트 준비 |
-| `POST /admin/simulation/issue-links` | [단계4] 실제 멤버십 유저를 standby 최우선에 등록한 뒤 준비된 취소 이벤트를 B파트 SQS로 전송 |
-| `POST /admin/simulation/cleanup` | 시뮬레이션 데이터 일괄 삭제 (더미 유저·좌석·대기열·예약·멤버십) |
+| `POST /admin/simulation/close` | [단계2] 조기 마감 — ticketing 상태 closed + 현재 시뮬레이션에서 직접 진입한 활성 멤버십 standby 대기자 집계 |
+| `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 단계2 `closed` 이후에만 더미 좌석 랜덤 취소(AVAILABLE 복원) 및 B파트 전송용 이벤트 준비 |
+| `POST /admin/simulation/issue-links` | [단계4] 기존 standby 대기열의 최상위 활성 멤버십 사용자를 확인한 뒤 준비된 취소 이벤트를 B파트 SQS로 전송 |
+| `POST /admin/simulation/cleanup` | 시뮬레이션 데이터 일괄 삭제 (더미 유저·좌석·대기열·예약 및 시뮬레이션 중 직접 진입한 standby 행, 실제 계정 자체는 유지) |
 | `GET /admin/simulation/status` | 현재 시뮬레이션 단계·좌석·대기열·실제유저 상태 조회 |
 
+`/admin/local-simulation/events`, `/init`, `/sellout`, `/close`, `/cancel-seats`, `/issue-links`, `/cleanup`, `/status`도 같은 요청 형식과 관리자 인증을 사용한다. 단계3 `cancel-seats`는 `closed` 또는 이미 `seats_cancelled`인 경우에만 허용되며, 단계2 이전 요청은 `409 simulation_stage_order`로 거부한다. 로컬 단계4는 `SMTP_USER`·`SMTP_PASS`와 32자 이상의 `JWT_SECRET`이 필요하며, `LOCAL_FRONTEND_BASE_URL`(미설정 시 `http://localhost:5173`)을 링크의 프론트 주소로 사용한다. 발송 성공 후 allocation은 `LINK_SENT`로 저장되고, 로컬 시뮬레이션 정리 시 아직 사용되지 않은 해당 할당은 `EXPIRED`로 마감한다.
+
 **Redis 키:**
-- `simulation:{eventId}` (Hash) — 시뮬레이션 메타데이터 (stage, realUserEmail, dummyCount 등)
+- `simulation:{eventId}` (Hash) — 시뮬레이션 메타데이터 (stage, dummyCount, 대상 사용자 등)
+- `simulation:{eventId}:standby-users` (Set) — 시뮬레이션이 활성화된 뒤 일반 `POST /cancel-queue/join`으로 직접 진입한 사용자 ID 추적
+- `simulation:local:{eventId}` (Hash), `simulation:local:{eventId}:standby-users` (Set) — B파트 SQS와 분리된 온프레미스 SMTP 시뮬레이션 상태와 실제 대기 사용자 추적
 
 **시뮬레이션 단계 흐름:**
-1. `initialized` → 더미 유저 + 실제 유저 준비 완료
+1. `initialized` → 더미 유저 준비 완료
 2. `sold_out` → 전석 SOLD + standby 대기열 구성
-3. `closed` → 티켓팅 마감 + 지정 실제 유저를 standby에 멱등 등록 + 멤버십 검증
-4. `seats_cancelled` → 더미 좌석 일부 취소 및 취소 이벤트 준비
-5. 단계4 → 활성 멤버십 실제 유저를 standby에 등록하고 B파트 SQS로 이벤트 전송
-6. B파트 Step Functions가 SQS 이벤트를 소비해 순차 배정·Secret Link 이메일 발급
+3. 단계1 이후 본 티켓팅에 참여한 실제 멤버십 계정만 일반 취소표 대기열 진입 가능. 단계2 마감 뒤에도 기존 standby 상태가 유지되어 `/queue/enter` 재호출로 대기 화면이 종료되지 않음
+4. `closed` → 티켓팅 마감 + 직접 진입한 멤버십 standby 대기자 집계
+5. `seats_cancelled` → 단계2 이후 더미 좌석 일부 취소 및 취소 이벤트 준비. 단계2보다 먼저 호출하면 `409`로 거부
+6. 단계4(B 모드) → 기존 standby 최상위 활성 멤버십 사용자를 확인하고 B파트 SQS로 이벤트 전송
+7. 단계4(Local 모드) → 준비된 취소 좌석과 활성 멤버십 대기자를 순서대로 1:1 매칭하고, 좌석별 할당을 A파트 `cancel_allocations`에 기록한 뒤 Gmail SMTP로 사용자별 5분 제한 링크 발송
+8. B 모드는 B파트 Step Functions가 후속 배정하고, Local 모드는 A파트 `/verify-link`가 A파트 Secret Link를 직접 검증
 
 ---
 
@@ -365,14 +375,19 @@ Redis 기반 대기열 관리의 핵심 로직.
 |---|---|---|
 | `queue:waiting` | Sorted Set | 예매 가능 대기열 (eligible). score = 순번 |
 | `queue:standby` | Sorted Set | 취소표 대기열 |
+| `queue:main-participants` | Set | 본 티켓팅 참여 이력. 취소표 직접 진입 자격 및 오픈 중 standby→일반 입장 승격 확인용 |
 | `queue:admitted` | Set | 입장 허용된 사용자 |
 | `queue:counter` | String | 대기 번호 카운터 |
 | `event:ticketing-status` | String | 이벤트 ID가 없는 레거시 요청용 전역 티켓팅 상태 (open/sold_out/closed). 이벤트별 요청은 `event:ticketing-status:<eventId>:<sessionKey>` 사용 |
 | `event:schedule` | Hash | 예약 오픈 시각과 자동 마감 설정 |
 
 **주요 함수:**
-- `enter()`: 대기열 진입. 티켓팅 상태에 따라 eligible 또는 standby 배정. 멤버십 레벨당 score -50 우선순위 부여. 중복 진입 방지. 이미 admitted인데 토큰이 없으면 admitted 상태를 유지한 채 Admission Token을 재발급하며, 일시적으로 발급할 수 없을 때는 `admitting` 상태를 반환한다.
-- `enterStandby()`: 매진 후 사용자를 일반 예매 상태에서 회차별 standby 취소표 대기열로 이동시키고 MariaDB 동기화. standby 접수 마감 후에도 이미 등록된 사용자의 재조회는 허용하고 신규 등록만 차단
+- `enter()`: 멤버십 여부와 무관하게 Redis `INCR` 값을 그대로 Sorted Set score로 사용해 완전 선착순으로 대기열에 등록한다. 멤버십 score 보정은 하지 않는다. 참여 표식은 Redis `queue:main-participants`와 MariaDB `waiting_queue`에 남겨 취소표 자격 확인에 사용한다. 이미 standby에 등록된 사용자가 조기 마감 뒤 재요청하면 대기열 데이터를 유지하면서 `status: 'closed'`, `type: 'standby'`, `preserveStandby: true`를 반환해 프론트 마감 안내를 표시한다.
+- `enterStandby()`: 활성 멤버십과 동일 공연·회차의 본 대기열 참여 이력을 모두 확인한 뒤에만 standby 취소표 대기열로 이동시키고 MariaDB에 동기화한다. 멤버십만으로 직접 진입할 수 없으며, 본 티켓팅 마감 후에도 참여 이력이 있는 사용자의 등록 요청은 허용한다.
+- `backfillOne()`: 입장 슬롯이 비면 먼저 일반 eligible 대기자를 승격한다. 본 티켓팅이 열려 있고 일반 대기자가 없을 때만 `main-participants` 표식이 있는 standby 사용자를 일반 Admission Token 대상으로 승격하며, 마감 후 standby는 B파트 Secret Link 흐름으로 남긴다.
+- `getStandbyMemberStats()`: MariaDB의 `waiting_queue`와 활성 `memberships`를 조인해 회차별 멤버십 대기자 순번·전체 인원을 계산한다. 과거 테스트에서 Redis에 남은 비회원 ID는 표시용 수치에서 제외한다.
+- `getStandbyMemberCount()`: 관리자 통계의 standby 수치를 활성 멤버십 대기자 기준으로 계산한다.
+- `recordSimulationStandbyUser()`: 시뮬레이션 Hash가 존재하는 동안 일반 `enterStandby()`로 성공 진입한 사용자만 별도 Redis Set에 기록한다. 단계4 대상 확인과 시뮬레이션 정리에 사용하며, 기록 실패가 실제 대기열 진입을 막지는 않는다.
 - `admitBatch()`: admitted 현재 인원을 먼저 확인해 빈 슬롯만큼 eligible 상위 사용자를 선택하고, JWT Admission Token을 먼저 발급·저장한 뒤 admitted로 이동하여 승인 상태가 토큰보다 먼저 노출되는 경쟁 상태를 방지한다. 기본 최대 admitted 수는 `BATCH_SIZE=100`이며 MariaDB의 `status`를 `ADMITTED`로 동기화한다.
 - `scheduleTicketing()`: 자동 오픈/마감 타이머 설정
 - `restoreTicketingSchedule()`: Redis 초기화·복구 후 저장된 오픈 시각을 기준으로 스케줄과 메모리 타이머를 재등록. 이미 오픈 시각이 지났으면 즉시 `open` 상태로 복구
@@ -415,7 +430,7 @@ Redis Hash 기반 좌석 상태 머신.
 한 공연에 여러 `sessions`가 있으면 동일한 배치를 회차별로 반복 생성한다. 따라서 올림픽홀 3,322석 공연이 2회차이면 Redis와 MariaDB에 6,644석이 생성되고, 각 회차의 `/seats` 조회는 선택한 날짜·시간의 3,322석만 반환한다.
 
 **주요 함수:**
-- `holdSeat()`: Admission Token 검증 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작 → 입장 제한시간(admission deadline) 취소(seat timer가 이어받음). 토큰은 무효화하지 않음(좌석 변경 허용)
+- `holdSeat()`: 일반 흐름은 Admission Token과 admitted 상태를 검증하고, 취소표 Secret Link 흐름은 라우트에서 검증한 allocation 범위 안에서 일반 Admission Token 검사 없이 처리 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작. 일반 흐름에서만 입장 제한시간(admission deadline)을 취소하며, 기존 좌석 예매 흐름의 토큰은 무효화하지 않음
 - `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → admitted에서 제거(`COMPLETED`) → 빈 슬롯 backfill → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분)
 - `cancelSeat()`: Redis 상태와 무관하게 MariaDB 최신 확정 예약을 기준으로 환불 권한을 검증하고, DB 트랜잭션이 완료된 뒤 Redis 좌석·카운터·매진 플래그를 동기화한다. Redis 동기화가 일시 실패해도 MariaDB의 취소 결과를 유지하며, 최초 처리에서만 B파트용 SQS 취소 이벤트를 발행한다.
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
@@ -572,7 +587,7 @@ prom-client 기반 Prometheus 메트릭 수집. `/metrics` 엔드포인트에서
 |---|---|
 | `queuing_http_request_duration_seconds` | HTTP 응답 시간 (method/route/status별, 10ms~5s 구간). route 라벨은 Fastify 등록 라우트 패턴(`request.routeOptions.url`)을 사용하며, 미등록 경로(봇 요청 등)는 `unknown`으로 통합하여 라벨 카디널리티 폭발을 방지 |
 
-`updateGauges()`: Prometheus scrape 시 Redis의 `seat:metrics:aggregate` 집계 해시와 대기열 집합을 읽어 Gauge를 갱신한다. 좌석 개별 키에 대한 `SCAN`/개별 `HGET`은 실행하지 않으므로 좌석 수가 증가해도 scrape 시간이 좌석 수에 비례해 늘어나지 않는다.
+`updateGauges()`: Prometheus scrape 시 Redis의 `seat:metrics:aggregate` 집계 해시와 대기열 키를 읽어 Gauge를 갱신한다. 대기열은 기본 키(`queue:waiting`, `queue:standby`, `queue:admitted`)와 회차별 키(`queue:*:{eventId}:{sessionKey}`)를 함께 찾아 각 키의 `ZCARD`/`SCARD`를 합산한다. 사용자 목록 자체는 읽지 않고 cardinality만 pipeline으로 조회하므로, `queuing_queue_eligible` 등 기존 메트릭 이름과 Grafana 쿼리를 유지하면서 회차별 대기열도 포함한다. 좌석 개별 키에 대한 scrape 시 `SCAN`은 실행하지 않는다.
 
 좌석 집계 해시는 `src/services/seatService.js`가 좌석 상태 변경 시 `HINCRBY`로 유지한다. `initializeSeatMetricAggregate()`는 구버전 Redis에 전역 집계 키가 없을 때만 서버 시작 과정에서 기존 회차별 `seat:counter:*` 해시를 한 번 읽어 초기화한다. 집계 정합성 보정은 기존 `POST /seats/reconcile`를 사용한다.
 
@@ -593,6 +608,7 @@ Server-Sent Events로 브라우저에 실시간 이벤트 푸시 (서버 → 클
 이메일(SES 또는 SMTP) / SMS(SNS) 듀얼 모드 클라이언트.
 
 - `sendEmail()`: `SMTP_USER`/`SMTP_PASS` 환경변수가 있으면 nodemailer SMTP로 발송, 없으면 AWS SES로 발송
+- `isSmtpConfigured()`: 로컬 SMTP 시뮬레이션에서 Gmail SMTP 전송 설정 여부를 확인
 - `sendSMS()`: AWS SNS로 SMS 발송
 - `notifyEventCancellation()`: 공연 취소 알림 (사용자 목록에게 일괄 발송)
 - `notifyEventUpdate()`: 공연 정보 변경 알림
@@ -614,7 +630,7 @@ MariaDB 기반 멤버십 CRUD.
 - `subscribe()`: 멤버십 가입. tier_name(MONTHLY/ANNUAL)에 따라 만료일 계산. 중복 가입 방지
 - `getMembership()`: 멤버십 조회. 만료 여부 포함
 - `cancelMembership()`: 멤버십 해지 (DB 레코드 삭제)
-- `isPriorityUser()`: priority_level 반환 (대기열 우선순위 산정에 사용)
+- `isPriorityUser()`: 기존 호환용 멤버십 등급 조회. 현재 본 티켓팅 대기열의 순번(score)에는 사용하지 않으며, 멤버십/취소표 정책에서만 필요할 때 사용할 수 있다.
 
 ---
 
@@ -644,7 +660,7 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 
 ### src/services/cancelAllocationService.js — 취소표 할당 서비스
 
-취소표 할당 기록을 조회·만료 처리한다. 다음 대기자 선택과 Secret Link 발급은 B파트 파이프라인이 담당한다. 실제 테이블의 `allocation_id`를 기준으로 할당을 찾고, B파트가 `seat_id = NULL`로 생성한 행도 처리할 수 있도록 모든 상태 UPDATE를 `allocation_id` 기준으로 수행한다 (SQL `WHERE seat_id = NULL`은 항상 0건 매칭되는 버그 방지).
+취소표 할당 기록을 조회·만료 처리한다. [보존] B파트가 별도 취소표 사이트를 제공하더라도 A파트 local SMTP/fallback 흐름을 삭제하지 않는다. 다음 대기자 선택과 Secret Link 발급은 B파트 파이프라인이 담당한다. 실제 테이블의 `allocation_id`를 기준으로 할당을 찾고, B파트가 `seat_id = NULL`로 생성한 행도 처리할 수 있도록 모든 상태 UPDATE를 `allocation_id` 기준으로 수행한다 (SQL `WHERE seat_id = NULL`은 항상 0건 매칭되는 버그 방지).
 
 - `markRespondedById(allocationId, seatId)`: allocation_id로 직접 RESPONDED 상태 변경. seatId가 있으면 함께 업데이트
 - `markResponded(userId, seatId, eventId)`: 사용자 처리 대상 할당을 조회한 뒤 `markRespondedById()`로 위임
@@ -656,6 +672,8 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 - `markRespondedById()` / `markExpiredById()`: 조건부 UPDATE의 영향 행이 0이어도 현재 상태를 재조회하여 같은 terminal 상태면 멱등 성공 결과를 반환
 - `expireAllOverdue()`: 단일 `UPDATE ... WHERE status='LINK_SENT' AND expires_at < UTC_TIMESTAMP()` 쿼리로 만료 할당 일괄 처리
 - `getActiveAllocation()`: 사용자의 활성 할당 조회
+- `assignSeatById(allocationId, seatId)`: `seat_id = NULL`인 `LINK_SENT` 할당에 사용자가 고른 좌석을 만료 시각과 상태를 확인하며 원자적으로 기록. 이미 같은 좌석이 기록된 재시도는 멱등 성공으로 반환하고, 다른 좌석 동시 요청은 거부
+- `clearSeatAssignmentById(allocationId, seatId)`: 좌석 홀드 실패 시 이번 요청이 기록한 allocation 좌석만 NULL로 되돌림
 - `getAllocation()`: 사용자·이벤트별 할당 조회 (만료 포함 여부 선택)
 - `getAllocationHistory()`: 이벤트별 전체 할당 내역
 - `expireAllocation()`: 활성 할당을 만료시키고 선점 중인 좌석을 해제. `seat_id`가 NULL인 할당은 좌석 해제를 건너뜀
@@ -675,7 +693,7 @@ MariaDB 테이블 생성 및 reservations CRUD.
 | `memberships` | 멤버십 구독 |
 | `events` | 공연 이벤트 |
 | `seats` | 좌석 |
-| `waiting_queue` | 대기열 (MariaDB 측 동기화용) |
+| `waiting_queue` | 대기열 (MariaDB 측 동기화용, 기본키 `queue_id`) |
 | `cancel_allocations` | 취소표 할당 |
 | `cancellation_outbox` | SQS 발행 실패 이벤트 보관 (outbox 패턴) |
 | `callback_outbox` | B파트 complete/expire 콜백 실패 요청 보관 (outbox 패턴) |
@@ -690,7 +708,7 @@ MariaDB 테이블 생성 및 reservations CRUD.
 
 reservations CRUD 함수: `saveReservation()`, `getReservationsBySeat()`, `getAllReservations()`, `getReservationsByUser()`, `cancelReservation()`
 
-`saveReservation()`은 INSERT 결과의 `insertId`를 `reservationId`로 반환한다. `cancelReservation()`은 트랜잭션과 행 잠금(`FOR UPDATE`)을 사용한다. `CONFIRMED`, `RESERVED`, `PAID` 상태를 활성 예약으로 보고 현재 예약자가 요청 사용자와 일치할 때만 `reservations.status='CANCELLED'` 및 `seats.status='AVAILABLE'`을 함께 반영한다. 이미 취소된 동일 예약은 `idempotent: true`로 반환해 좌석 재판매 이후의 상태를 다시 덮어쓰거나 이메일·SQS 이벤트를 중복 생성하지 않는다.
+`saveReservation()`은 INSERT 결과의 `reservation_id`(`insertId`)를 `reservationId`로 반환한다. `cancelReservation()`은 실제 운영 스키마의 기본키 `reservation_id`를 기준으로 트랜잭션과 행 잠금(`FOR UPDATE`)을 사용한다. `CONFIRMED`, `RESERVED`, `PAID` 상태를 활성 예약으로 보고 현재 예약자가 요청 사용자와 일치할 때만 `reservations.status='CANCELLED'` 및 `seats.status='AVAILABLE'`을 함께 반영한다. 이미 취소된 동일 예약은 `idempotent: true`로 반환해 좌석 재판매 이후의 상태를 다시 덮어쓰거나 이메일·SQS 이벤트를 중복 생성하지 않는다.
 
 ---
 
@@ -780,6 +798,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `SMTP_HOST` | `smtp.gmail.com` | SMTP 서버 호스트 |
 | `SMTP_PORT` | `587` | SMTP 서버 포트 |
 | `FROM_EMAIL` | `SMTP_USER` 또는 `noreply@queuing.com` | 발신자 이메일 주소 |
+| `LOCAL_FRONTEND_BASE_URL` | `http://localhost:5173` | Local SMTP 시뮬레이션 이메일에 포함할 프론트엔드 기본 주소 |
 | `RECAPTCHA_SECRET_KEY` | *(없음)* | Google reCAPTCHA v3 서버 비밀 키. 설정하면 검증 활성화 |
 | `RECAPTCHA_REQUIRED` | *(설정값에 따름)* | `false`로 설정하면 비상 시 reCAPTCHA 검증을 일시 비활성화 |
 | `RECAPTCHA_SCORE_THRESHOLD` | `0.5` | reCAPTCHA v3 최소 허용 점수 |

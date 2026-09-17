@@ -50,6 +50,7 @@ const cancelQueueRoutes = require('./routes/cancelQueueRoutes');
 fastify.register(cancelQueueRoutes);
 const simulationRoutes = require('./routes/simulationRoutes');
 fastify.register(simulationRoutes);
+fastify.register(simulationRoutes, { mode: 'local' });
 
 fastify.get('/health', async () => ({ status: 'ok' }));
 

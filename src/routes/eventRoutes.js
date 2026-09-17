@@ -60,6 +60,28 @@ function eventCardFromRow(row) {
   return card;
 }
 
+function normalizeEventSessions(sessions) {
+  if (!Array.isArray(sessions)) return [];
+  return sessions
+    .filter((session) => session && (session.date || session.time || session.sessionDate || session.sessionTime))
+    .map((session) => ({
+      ...session,
+      date: String(session.date || session.sessionDate || ''),
+      time: String(session.time || session.sessionTime || ''),
+    }));
+}
+
+function sessionsFromSeatRows(rows) {
+  const roundByDate = new Map();
+  return rows.map((row) => {
+    const date = String(row.session_date || '');
+    const time = String(row.session_time || '');
+    const round = (roundByDate.get(date) || 0) + 1;
+    roundByDate.set(date, round);
+    return { date, time, round };
+  });
+}
+
 function assignZoneGeometry(sections) {
   const n = sections.length;
   const ANGLE_SPAN = 150;
@@ -469,6 +491,82 @@ async function eventRoutes(fastify) {
 
     events.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     return reply.send({ events, count: events.length });
+  });
+
+  // 특정 공연의 회차 목록을 제공한다.
+  // Redis 이벤트 카드에 저장된 회차를 우선 사용하고, Redis에 회차가 없으면
+  // MariaDB seats의 session_date/session_time을 distinct 조회해 복원한다.
+  fastify.get('/events/:eventId/sessions', async (request, reply) => {
+    const eventId = String(request.params.eventId || '').trim();
+    if (!eventId) {
+      return reply.status(400).send({ error: 'eventId는 필수입니다.' });
+    }
+
+    let eventCard = null;
+    try {
+      const rawCard = await redis.hget(EVENT_LIST_KEY, eventId);
+      eventCard = rawCard ? JSON.parse(rawCard) : null;
+    } catch (err) {
+      console.warn(`[Event] 회차 Redis 조회 실패 (${eventId}):`, err.message);
+    }
+
+    let sessions = normalizeEventSessions(eventCard?.sessions);
+    let source = sessions.length > 0 ? 'redis' : '';
+    let dbEvent = null;
+    let dbError = null;
+
+    // Redis에 완전한 회차 목록이 있으면 MariaDB를 추가 조회하지 않는다.
+    // Redis 복구 상황이나 레거시 이벤트처럼 회차가 비어 있을 때만 DB를 사용한다.
+    if (sessions.length === 0 || !eventCard) {
+      try {
+        const eventRows = await pool.query(
+          `SELECT event_id, event_name, event_date
+           FROM events WHERE event_id = ? LIMIT 1`,
+          [eventId],
+        );
+        dbEvent = eventRows[0] || null;
+
+        if (dbEvent) {
+          const dbSessionRows = await pool.query(
+            `SELECT DISTINCT session_date, session_time
+             FROM seats
+             WHERE event_id = ?
+               AND (session_date <> '' OR session_time <> '')
+             ORDER BY session_date, session_time`,
+            [eventId],
+          );
+          if (dbSessionRows.length > 0) {
+            sessions = sessionsFromSeatRows(dbSessionRows);
+            source = 'mariadb.seats';
+          }
+        }
+      } catch (err) {
+        dbError = err;
+        console.warn(`[Event] 회차 MariaDB 조회 실패 (${eventId}):`, err.message);
+      }
+    }
+
+    const eventName = eventCard?.eventName || dbEvent?.event_name || '';
+    const eventDate = eventCard?.eventDate || dbEvent?.event_date || '';
+    if (sessions.length === 0 && eventDate) {
+      sessions = [{ date: String(eventDate), time: '' }];
+      source = 'event_date';
+    }
+
+    if (!eventCard && !dbEvent) {
+      return reply.status(dbError ? 503 : 404).send({
+        error: dbError ? '회차 정보를 조회할 수 없습니다.' : '해당 이벤트가 없습니다.',
+      });
+    }
+
+    return reply.send({
+      eventId,
+      eventName,
+      eventDate,
+      sessions,
+      count: sessions.length,
+      source,
+    });
   });
 
   fastify.patch('/events/:eventId/open-time', adminAuth, async (request, reply) => {

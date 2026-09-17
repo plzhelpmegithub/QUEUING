@@ -124,8 +124,9 @@ async function initSeats(seatIds, section = '', price = 0, session = {}) {
   return { initialized: seatIds.length, section, price, seats: seatIds };
 }
 
-async function holdSeat(userId, seatId, admissionToken, requestedContext = {}) {
+async function holdSeat(userId, seatId, admissionToken, requestedContext = {}, options = {}) {
   const { verifyToken } = require('./tokenService');
+  const isCancelLink = options.cancelLink === true;
   const seatKey = `${SEAT_PREFIX}${seatId}`;
   const seatInfo = await redis.hgetall(seatKey);
   const inferredContext = sessionFromSeat(seatId, seatInfo);
@@ -133,12 +134,18 @@ async function holdSeat(userId, seatId, admissionToken, requestedContext = {}) {
     ? inferredContext
     : normalizeSessionContext({ eventId: inferredContext.eventId, ...requestedContext });
 
-  const tokenResult = await verifyToken(admissionToken, userId, sessionContext);
+  // 취소표 Secret Link는 cancelQueueRoutes에서 이미 JWT 서명·범위·할당을
+  // 검증한다. 이 흐름은 일반 대기열 Admission Token을 요구하지 않는다.
+  const tokenResult = isCancelLink
+    ? { valid: true }
+    : await verifyToken(admissionToken, userId, sessionContext);
   if (!tokenResult.valid) {
     return { success: false, reason: tokenResult.reason, message: tokenResult.message };
   }
 
-  const isAdmitted = await queueService.isUserAdmitted(userId, sessionContext);
+  const isAdmitted = isCancelLink
+    ? true
+    : await queueService.isUserAdmitted(userId, sessionContext);
   if (!isAdmitted) {
     return { success: false, reason: 'not_admitted', message: '입장이 허용되지 않은 사용자입니다.' };
   }
@@ -166,7 +173,9 @@ async function holdSeat(userId, seatId, admissionToken, requestedContext = {}) {
       heldAt: Date.now().toString(),
     });
     await startTimer(seatId, userId);
-    await queueService.cancelAdmissionDeadline(userId, sessionContext);
+    if (!isCancelLink) {
+      await queueService.cancelAdmissionDeadline(userId, sessionContext);
+    }
     await publishSeatEvent(EVENT_TYPE.HELD, { seatId, userId });
 
     await syncToMariaDB(
@@ -474,6 +483,16 @@ async function cancelSeat(userId, seatId) {
     sessionTime: reservation.sessionTime || durableSeat.sessionTime || inferredContext.sessionTime,
   });
 
+  // 본 티켓팅이 아직 열려 있으면 환불 좌석은 B파트 취소표가 아니라
+  // 본 대기열의 다음 사용자에게 돌아가야 한다. Redis 상태를 확인하지
+  // 못하는 경우에는 안전하게 폐장 후 취소표 흐름으로 처리한다.
+  let ticketingOpen = false;
+  try {
+    ticketingOpen = await queueService.isMainTicketingOpen(sessionContext);
+  } catch (err) {
+    console.warn('[Seat] 환불 시 티켓팅 단계 확인 실패:', err.message);
+  }
+
   // MariaDB 트랜잭션이 이미 성공했으므로 Redis는 실시간 조회용 캐시로
   // 동기화한다. Redis가 일시적으로 실패해도 환불 자체는 성공 상태를
   // 유지하며, 이후 MariaDB 기반 복구가 좌석 상태를 재구성한다.
@@ -506,7 +525,14 @@ async function cancelSeat(userId, seatId) {
       await adjustSeatCounter(sessionContext.eventId, sessionContext, 'sold', 'available');
     }
     await redis.del(getScopedKey(SOLD_OUT_KEY, sessionContext));
-    await redis.del(getScopedKey('event:ticketing-status', sessionContext));
+    const statusKey = getScopedKey('event:ticketing-status', sessionContext);
+    if (ticketingOpen) {
+      await redis.del(statusKey);
+    } else if (!await redis.get(statusKey)) {
+      // 카드의 ticketCloseAt만으로 폐장 판정된 경우에도 환불 뒤 다시
+      // 신규 본 티켓팅이 열리지 않도록 명시적인 closed 상태를 남긴다.
+      await redis.set(statusKey, 'closed');
+    }
     await publishSeatEvent(EVENT_TYPE.CANCELLED, { seatId, userId });
   } catch (err) {
     redisSynced = false;
@@ -514,20 +540,39 @@ async function cancelSeat(userId, seatId) {
   }
   invalidateSeatsCache(sessionContext.eventId);
 
+  let backfill = null;
+  if (ticketingOpen && redisSynced) {
+    const resource = `admission:${sessionContext.eventId || 'default'}:${sessionContext.sessionKey}`;
+    try {
+      const admissionLock = await acquireLock(resource);
+      if (admissionLock.acquired) {
+        try {
+          backfill = await queueService.backfillOne(sessionContext);
+        } finally {
+          await releaseLock(resource, admissionLock.token).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.error(`[Seat] 오픈 중 환불 좌석 본 대기열 재충원 실패 (${seatId}):`, err.message);
+    }
+  }
+
   let cancellationEvent = null;
-  try {
-    cancellationEvent = await publishCancellationEvent({
-      eventId: sessionContext.eventId,
-      seatId,
-      userId,
-      reservationId: cancelResult.reservationId || null,
-      status: 'CANCELLED',
-      sessionDate: sessionContext.sessionDate,
-      sessionTime: sessionContext.sessionTime,
-      reason: 'reservation_cancelled',
-    });
-  } catch (err) {
-    console.error('[CancellationEvent] 취소 이벤트 SQS 발행 실패:', err.message);
+  if (!ticketingOpen) {
+    try {
+      cancellationEvent = await publishCancellationEvent({
+        eventId: sessionContext.eventId,
+        seatId,
+        userId,
+        reservationId: cancelResult.reservationId || null,
+        status: 'CANCELLED',
+        sessionDate: sessionContext.sessionDate,
+        sessionTime: sessionContext.sessionTime,
+        reason: 'reservation_cancelled',
+      });
+    } catch (err) {
+      console.error('[CancellationEvent] 취소 이벤트 SQS 발행 실패:', err.message);
+    }
   }
 
   return {
@@ -536,8 +581,12 @@ async function cancelSeat(userId, seatId) {
     seatId,
     status: STATUS.AVAILABLE,
     redisSynced,
+    ticketingOpen,
+    backfill,
     cancellationEvent,
-    message: '좌석이 취소되었습니다. 취소표 대기자에게 기회가 부여됩니다.',
+    message: ticketingOpen
+      ? '좌석이 취소되었습니다. 본 티켓팅 대기열의 다음 사용자에게 기회가 부여됩니다.'
+      : '좌석이 취소되었습니다. 취소표 대기자에게 기회가 부여됩니다.',
   };
 }
 

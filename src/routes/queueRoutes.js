@@ -224,9 +224,10 @@ async function queueRoutes(fastify) {
     const keys = queueService.queueKeys(context);
     const eligibleRemoved = await redis.zrem(keys.waitingKey, userId);
     const standbyRemoved = await redis.zrem(keys.standbyKey, userId);
+    const mainParticipantRemoved = await redis.srem(keys.mainParticipantKey, userId);
     let admittedRemoved = false;
     if (await redis.sismember(keys.admittedKey, userId)) {
-      admittedRemoved = await queueService.removeAdmitted(userId, context);
+      admittedRemoved = await queueService.removeAdmitted(userId, context, { finalStatus: 'LEFT' });
     } else {
       await queueService.cancelAdmissionDeadline(userId, context);
       await revokeToken(userId, context);
@@ -240,7 +241,7 @@ async function queueRoutes(fastify) {
           ? 'standby'
           : '';
 
-    if (eligibleRemoved > 0 || standbyRemoved > 0) {
+    if (eligibleRemoved > 0 || standbyRemoved > 0 || mainParticipantRemoved > 0) {
       await syncToMariaDB(
         `UPDATE waiting_queue
          SET status = 'LEFT', updated_at = NOW()
@@ -248,7 +249,8 @@ async function queueRoutes(fastify) {
            AND event_id = ?
            AND session_date = ?
            AND session_time = ?
-           AND status = 'WAITING'`,
+           AND queue_type IN ('eligible', 'standby')
+           AND status IN ('WAITING', 'STANDBY')`,
         [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
         `queue:leave ${userId}`,
       );

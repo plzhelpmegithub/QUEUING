@@ -6,6 +6,12 @@ const redis = require('../config/redis');
 const SEAT_METRICS_KEY = 'seat:metrics:aggregate';
 const SEAT_METRICS_LOCK_KEY = 'lock:seat-metrics-migration';
 const SEAT_METRIC_FIELDS = ['total', 'available', 'held', 'sold'];
+const QUEUE_METRIC_KEYS = {
+  eligible: 'queue:waiting',
+  standby: 'queue:standby',
+  admitted: 'queue:admitted',
+};
+const QUEUE_SCAN_COUNT = 200;
 
 // ===== 기본 메트릭 수집 (CPU, 메모리, 이벤트 루프 등) =====
 client.collectDefaultMetrics({ prefix: 'queuing_' });
@@ -146,17 +152,65 @@ async function initializeSeatMetricAggregate() {
 }
 
 /**
+ * Redis에서 기본 대기열 키와 회차별 대기열 키를 찾는다.
+ *
+ * 회차 컨텍스트가 있는 일반 대기열은 다음 형태로 저장된다.
+ *   queue:waiting:{eventId}:{sessionKey}
+ *   queue:standby:{eventId}:{sessionKey}
+ *   queue:admitted:{eventId}:{sessionKey}
+ *
+ * 기본 키도 함께 조회해 레거시 시뮬레이션/무회차 요청과의 호환성을
+ * 유지한다. 사용자 목록은 읽지 않고 각 Sorted Set/Set의 cardinality만
+ * pipeline으로 조회하므로, 사용자의 수에 비례한 응답 payload는 만들지 않는다.
+ */
+async function scanScopedQueueKeys(baseKey) {
+  const keys = [baseKey];
+  let cursor = '0';
+
+  do {
+    const [nextCursor, scannedKeys] = await redis.scan(
+      cursor,
+      'MATCH',
+      `${baseKey}:*`,
+      'COUNT',
+      QUEUE_SCAN_COUNT,
+    );
+    cursor = nextCursor;
+    keys.push(...scannedKeys);
+  } while (cursor !== '0');
+
+  return [...new Set(keys)];
+}
+
+async function sumQueueCardinality(baseKey, command) {
+  const keys = await scanScopedQueueKeys(baseKey);
+  const pipeline = redis.pipeline();
+
+  keys.forEach((key) => {
+    if (command === 'zcard') pipeline.zcard(key);
+    else pipeline.scard(key);
+  });
+
+  const results = await pipeline.exec();
+  return results.reduce((total, [error, value]) => {
+    if (error) throw error;
+    return total + (Number(value) || 0);
+  }, 0);
+}
+
+/**
  * Redis에 저장된 값을 읽어 Gauge 메트릭 갱신.
- * - Prometheus가 /metrics를 scrape할 때마다 O(1) 조회만 수행
- * - 좌석 개별 키 SCAN/HGET 및 집계 연산은 수행하지 않음
+ * - 기본 키와 모든 회차별 queue:*:{eventId}:{sessionKey} 키를 합산
+ * - 사용자 목록은 읽지 않고 SCAN + cardinality pipeline만 실행
+ * - Prometheus scrape 시점의 전체 이벤트/회차 대기열 스냅샷을 제공
  */
 async function updateGauges() {
   try {
     // 대기열 수치
     const [eligible, standby, admitted] = await Promise.all([
-      redis.zcard('queue:waiting'),
-      redis.zcard('queue:standby'),
-      redis.scard('queue:admitted'),
+      sumQueueCardinality(QUEUE_METRIC_KEYS.eligible, 'zcard'),
+      sumQueueCardinality(QUEUE_METRIC_KEYS.standby, 'zcard'),
+      sumQueueCardinality(QUEUE_METRIC_KEYS.admitted, 'scard'),
     ]);
     queueEligible.set(eligible);
     queueStandby.set(standby);

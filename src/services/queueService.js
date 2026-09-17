@@ -1,6 +1,6 @@
 const redis = require('../config/redis');
 const pool = require('../config/mariadb');
-const { isPriorityUser } = require('./membershipService');
+const { getMembership } = require('./membershipService');
 const { syncToMariaDB } = require('./syncRetryService');
 const { normalizeSessionContext, getScopedKey } = require('./sessionContext');
 
@@ -8,6 +8,7 @@ const QUEUE_KEY = 'queue:waiting';
 const COUNTER_KEY = 'queue:counter';
 const ADMITTED_KEY = 'queue:admitted';
 const STANDBY_KEY = 'queue:standby';
+const MAIN_PARTICIPANT_KEY = 'queue:main-participants';
 const TOTAL_SEATS_KEY = 'event:total-seats';
 const TICKETING_STATUS_KEY = 'event:ticketing-status';
 const HOLD_DURATION_KEY = 'event:hold-duration';
@@ -75,6 +76,70 @@ async function cancelAdmissionDeadline(userId, context = {}) {
     .exec();
 }
 
+// 본 티켓팅 대기열에 실제로 참여한 사용자만 취소표 대기열로 이동할 수
+// 있도록 참여 이력을 확인한다. Redis 세트는 빠른 경로이고, Redis 재구성
+// 또는 재시작 뒤에는 MariaDB waiting_queue를 기준으로 보완한다.
+async function hasMainQueueParticipation(userId, context = {}) {
+  const keys = queueKeys(context);
+
+  try {
+    if (await redis.sismember(keys.mainParticipantKey, userId)) {
+      return true;
+    }
+  } catch (err) {
+    console.warn(`[Queue] 본 대기열 참여 Redis 조회 실패 (${userId}):`, err.message);
+  }
+
+  if (!keys.eventId) return false;
+
+  try {
+    const rows = await pool.query(
+      `SELECT queue_id
+       FROM waiting_queue
+       WHERE user_id = ?
+         AND event_id = ?
+         AND session_date = ?
+         AND session_time = ?
+         AND queue_type = 'eligible'
+         AND status IN ('WAITING', 'ADMITTED', 'PROMOTED', 'COMPLETED', 'EXPIRED', 'CANCELLED', 'STANDBY')
+       ORDER BY queue_id DESC
+       LIMIT 1`,
+      [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    // 참여 여부를 확인하지 못한 경우에는 직접 취소표 진입을 허용하지
+    // 않는다. 잘못된 직접 진입을 막는 fail-closed 정책이다.
+    console.warn(`[Queue] 본 대기열 참여 DB 조회 실패 (${userId}):`, err.message);
+    return false;
+  }
+}
+
+async function isMainTicketingOpen(context = {}) {
+  const keys = queueKeys(context);
+  const scopedStatus = await redis.get(keys.statusKey);
+  const status = scopedStatus || (!keys.scoped ? await redis.get(TICKETING_STATUS_KEY) : null);
+
+  if (status === 'closed') return false;
+
+  if (keys.eventId) {
+    const eventCard = await redis.hget(EVENT_LIST_KEY, keys.eventId);
+    if (eventCard) {
+      try {
+        const parsed = JSON.parse(eventCard);
+        if (parsed.status === 'closed' || parsed.status === 'cancelled') return false;
+        const closeTime = parsed.ticketCloseAt ? new Date(parsed.ticketCloseAt).getTime() : NaN;
+        if (Number.isFinite(closeTime) && closeTime <= Date.now()) return false;
+      } catch (_) {}
+    }
+  }
+
+  // open/sold_out 또는 아직 명시적인 마감 상태가 없는 경우는 본 티켓팅
+  // 중으로 간주한다. sold_out은 좌석이 없다는 뜻이지, 마감 후 Secret Link
+  // 전용 상태라는 뜻이 아니다.
+  return true;
+}
+
 async function removeAdmitted(userId, context = {}, options = {}) {
   const { revokeToken } = require('./tokenService');
   const keys = queueKeys(context);
@@ -109,9 +174,29 @@ async function backfillOne(context = {}) {
   const keys = queueKeys(context);
   const admissionTimeout = await getAdmissionTimeout();
 
+  const admittedCount = await redis.scard(keys.admittedKey);
+  if (admittedCount >= BATCH_SIZE) return null;
+
   const waiting = await redis.zrange(keys.waitingKey, 0, 0);
-  if (waiting.length > 0) {
-    const userId = waiting[0];
+  let source = 'eligible';
+  let userId = waiting[0] || null;
+
+  // 오픈 중 좌석이 취소되었거나 입장 슬롯이 비면, 본 대기열 참여자 중
+  // sold_out 시점에 standby로 밀린 사용자도 일반 Admission Token을 받는다.
+  // 마감 후에는 standby를 이 경로로 승격하지 않아 B파트 Secret Link 흐름과
+  // 섞이지 않도록 한다.
+  if (!userId && await isMainTicketingOpen(context)) {
+    const standbyUsers = await redis.zrange(keys.standbyKey, 0, -1);
+    for (const candidate of standbyUsers) {
+      if (await redis.sismember(keys.mainParticipantKey, candidate)) {
+        userId = candidate;
+        source = 'standby';
+        break;
+      }
+    }
+  }
+
+  if (userId) {
 
     let tokenInfo;
     try {
@@ -122,10 +207,10 @@ async function backfillOne(context = {}) {
     }
 
     try {
-      await redis.pipeline()
-        .zrem(keys.waitingKey, userId)
-        .sadd(keys.admittedKey, userId)
-        .exec();
+      const pipeline = redis.pipeline();
+      pipeline.zrem(source === 'standby' ? keys.standbyKey : keys.waitingKey, userId);
+      pipeline.sadd(keys.admittedKey, userId);
+      await pipeline.exec();
     } catch (err) {
       await revokeToken(userId, keys).catch(() => {});
       throw err;
@@ -141,17 +226,18 @@ async function backfillOne(context = {}) {
          AND event_id = ?
          AND session_date = ?
          AND session_time = ?
+         AND queue_type = ?
          AND status = 'WAITING'`,
-      [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+      [userId, keys.eventId, keys.sessionDate, keys.sessionTime, source],
       `queue:backfill:eligible ${userId}`,
     );
 
-    console.log(`[Backfill] ${userId} eligible → admitted`);
-    return { userId, type: 'eligible' };
+    console.log(`[Backfill] ${userId} ${source} → admitted`);
+    return { userId, type: 'eligible', promotedFrom: source };
   }
 
-  // standby is reserved for the separate cancellation-ticket flow. It must
-  // not receive a normal admission token when an eligible slot is refilled.
+  // 마감 후 standby는 별도 취소표 흐름으로 남기며, 오픈 중에만
+  // mainParticipant 표식이 있는 사용자를 일반 입장으로 승격한다.
   return null;
 }
 
@@ -164,9 +250,91 @@ function queueKeys(context = {}) {
     counterKey: getScopedKey(COUNTER_KEY, normalized),
     admittedKey: getScopedKey(ADMITTED_KEY, normalized),
     standbyKey: getScopedKey(STANDBY_KEY, normalized),
+    mainParticipantKey: getScopedKey(MAIN_PARTICIPANT_KEY, normalized),
     totalSeatsKey: getScopedKey(TOTAL_SEATS_KEY, normalized),
     statusKey: getScopedKey(TICKETING_STATUS_KEY, normalized),
   };
+}
+
+// 취소표 대기열은 멤버십 회원만 대상이다. Redis standby에는 과거 테스트에서
+// 들어간 비회원 ID가 남아 있을 수 있으므로, 표시용 순번·전체 인원은 Redis의
+// zrank/zcard가 아니라 MariaDB의 활성 멤버십과 waiting_queue를 기준으로 계산한다.
+async function getActiveStandbyMembers(context = {}) {
+  const keys = queueKeys(context);
+  if (!keys.eventId) return [];
+
+  const params = [keys.eventId, keys.sessionDate, keys.sessionTime];
+  try {
+    return await pool.query(
+      `SELECT w.user_id, w.queue_id, w.queue_index
+       FROM waiting_queue w
+       INNER JOIN memberships m ON m.user_id = w.user_id
+       WHERE w.event_id = ?
+         AND w.session_date = ?
+         AND w.session_time = ?
+         AND w.queue_type = 'standby'
+         AND w.status = 'WAITING'
+         AND m.is_membership = TRUE
+         AND m.expires_at > UTC_TIMESTAMP()
+       ORDER BY w.queue_index ASC, w.queue_id ASC`,
+      params,
+    );
+  } catch (err) {
+    // 구버전 DB에 memberships.expires_at 또는 조인 컬럼이 없는 경우에도
+    // 대기열 API 전체를 중단하지 않고, 가입 당시 저장한 플래그로 보완한다.
+    console.warn('[Queue] 활성 멤버십 standby 집계 fallback:', err.message);
+    return pool.query(
+      `SELECT user_id, queue_id, queue_index
+       FROM waiting_queue
+       WHERE event_id = ?
+         AND session_date = ?
+         AND session_time = ?
+         AND queue_type = 'standby'
+         AND status = 'WAITING'
+         AND membership_at_join = 1
+       ORDER BY queue_index ASC, queue_id ASC`,
+      params,
+    );
+  }
+}
+
+async function getStandbyMemberStats(userId, context = {}) {
+  const rows = await getActiveStandbyMembers(context);
+  const index = rows.findIndex((row) => String(row.user_id) === String(userId));
+  return {
+    position: index >= 0 ? index + 1 : null,
+    total: rows.length,
+  };
+}
+
+async function getStandbyMemberCount(context = {}) {
+  return (await getActiveStandbyMembers(context)).length;
+}
+
+async function recordSimulationStandbyUser(userId, context = {}) {
+  const keys = queueKeys(context);
+  if (!keys.eventId || !userId) return;
+
+  // 관리자 시뮬레이션이 활성화된 동안 일반 사용자가 실제
+  // /cancel-queue/join 경로로 들어왔다는 사실만 별도로 추적한다.
+  // 이 목록은 단계4 대상자 선정과 시뮬레이션 정리에만 사용한다.
+  try {
+    // B파트 연동 시뮬레이션과 온프레미스 SMTP 시뮬레이션은 상태 해시를
+    // 별도로 사용한다. 어느 모드가 활성화되어 있든 실제 사용자가
+    // /cancel-queue/join으로 들어오면 해당 모드의 대상 목록에 기록한다.
+    const simulationKeys = [
+      `simulation:${keys.eventId}`,
+      `simulation:local:${keys.eventId}`,
+    ];
+    for (const simulationKey of simulationKeys) {
+      if (await redis.exists(simulationKey)) {
+        await redis.sadd(`${simulationKey}:standby-users`, userId);
+      }
+    }
+  } catch (err) {
+    // 시뮬레이션 추적 실패가 정상 취소표 대기열 진입을 막아서는 안 된다.
+    console.warn('[Queue] 시뮬레이션 standby 사용자 추적 실패:', err.message);
+  }
 }
 
 async function setTotalSeats(count, context = {}) {
@@ -195,6 +363,15 @@ async function enter(userId, context = {}) {
       ? { ...context, eventId: currentEventId }
       : {}
   );
+  let eventClosed = false;
+
+  // 조기 마감 이후에도 이미 standby에 등록된 사용자의 Redis/MariaDB
+  // 대기열 기록은 유지해야 한다. 다만 프론트에는 마감 상태를 알려
+  // 멤버십 안내 알럿을 표시할 수 있도록 별도의 closed 응답을 반환한다.
+  const existingStandbyScore = await redis.zscore(
+    keys.standbyKey,
+    userId
+  );
 
   if (requestedContext && currentEventId) {
     const eventCard = await redis.hget(
@@ -205,6 +382,8 @@ async function enter(userId, context = {}) {
     if (eventCard) {
       try {
         const parsedCard = JSON.parse(eventCard);
+
+        eventClosed = parsedCard.status === 'closed' || parsedCard.status === 'cancelled';
 
         const openTime = parsedCard.ticketOpenAt
           ? new Date(parsedCard.ticketOpenAt).getTime()
@@ -226,9 +405,13 @@ async function enter(userId, context = {}) {
           ? new Date(parsedCard.ticketCloseAt).getTime()
           : NaN;
 
+        if (Number.isFinite(closeTime) && closeTime <= Date.now()) {
+          eventClosed = true;
+        }
+
         if (
-          Number.isFinite(closeTime) &&
-          closeTime <= Date.now()
+          eventClosed &&
+          existingStandbyScore === null
         ) {
           return {
             status: 'closed',
@@ -247,7 +430,23 @@ async function enter(userId, context = {}) {
       ? await redis.get(TICKETING_STATUS_KEY)
       : null);
 
-  if (ticketingStatus === 'closed') {
+  // 기존 standby 사용자는 대기열에서 제거하지 않은 채 마감 안내만
+  // 표시한다. 프론트의 showClosedUI()는 이 응답을 받아 호출되며,
+  // pagehide/이탈 처리로 waiting_queue를 LEFT로 바꾸지 않는다.
+  if (
+    existingStandbyScore !== null &&
+    (ticketingStatus === 'closed' || eventClosed)
+  ) {
+    return {
+      status: 'closed',
+      type: 'standby',
+      code: 'ticketing_closed',
+      preserveStandby: true,
+      message: '본 티켓팅이 마감되었습니다. 취소표 대기열 안내를 확인해주세요.',
+    };
+  }
+
+  if (ticketingStatus === 'closed' && existingStandbyScore === null) {
     return {
       status: 'closed',
       message:
@@ -272,6 +471,7 @@ async function enter(userId, context = {}) {
   );
 
   if (isAdmitted) {
+    await redis.sadd(keys.mainParticipantKey, userId);
     const { getRawToken, issueToken } = require('./tokenService');
 
     const existing = await getRawToken(
@@ -321,6 +521,7 @@ async function enter(userId, context = {}) {
   );
 
   if (existingScore !== null) {
+    await redis.sadd(keys.mainParticipantKey, userId);
     const position = await redis.zrank(
       keys.waitingKey,
       userId
@@ -347,10 +548,7 @@ async function enter(userId, context = {}) {
     };
   }
 
-  const standbyScore = await redis.zscore(
-    keys.standbyKey,
-    userId
-  );
+  const standbyScore = existingStandbyScore;
 
   if (standbyScore !== null) {
     const rank = await redis.zrank(
@@ -379,33 +577,26 @@ async function enter(userId, context = {}) {
     };
   }
 
-  let ticket = await redis.incr(
+  const ticket = await redis.incr(
     keys.counterKey
   );
 
-  let priorityLevel = 0;
-
+  let membershipAtJoin = 0;
   try {
-    priorityLevel = await isPriorityUser(
-      userId
-    );
-
-    if (priorityLevel > 0) {
-      ticket = Math.max(
-        1,
-        ticket - priorityLevel * 50
-      );
-    }
+    const membership = await getMembership(userId);
+    membershipAtJoin = membership.isMembership ? 1 : 0;
   } catch (_) {}
-
-  const membershipAtJoin =
-    priorityLevel > 0 ? 1 : 0;
 
   const currentStatus =
     (await redis.get(keys.statusKey)) ||
     (!requestedContext
       ? await redis.get(TICKETING_STATUS_KEY)
       : null);
+
+  // 본 티켓팅 참여 표식은 멤버십 우선순위와 무관하게 모든 사용자에게
+  // 동일하게 기록한다. 이 표식은 마감 후 취소표 대기열 자격 확인에만
+  // 사용되며, 본 대기열의 순번에는 영향을 주지 않는다.
+  await redis.sadd(keys.mainParticipantKey, userId);
 
   if (
     currentStatus === 'sold_out' ||
@@ -446,12 +637,41 @@ async function enter(userId, context = {}) {
       `queue:enter:standby ${userId}`,
     );
 
+    // sold_out 시점에 본 대기열에서 standby로 이동한 사용자도
+    // '본 티켓팅 참여자'라는 사실을 MariaDB에 남긴다. Redis가 재시작되어도
+    // 직접 취소표 진입을 허용할 근거를 복구할 수 있다.
+    await syncToMariaDB(
+      `INSERT INTO waiting_queue
+       (
+         user_id,
+         event_id,
+         session_date,
+         session_time,
+         queue_type,
+         queue_index,
+         status,
+         membership_at_join
+       )
+       VALUES (?, ?, ?, ?, 'eligible', ?, 'STANDBY', ?)`,
+      [
+        userId,
+        currentEventId,
+        keys.sessionDate,
+        keys.sessionTime,
+        ticket,
+        membershipAtJoin,
+      ],
+      `queue:enter:main-participant ${userId}`,
+    );
+
+    await recordSimulationStandbyUser(userId, keys);
+
     return {
       status: 'waiting',
       type: 'standby',
       standbyPosition: rank + 1,
       ticket,
-      priority: priorityLevel > 0,
+      priority: false,
       membershipAtJoin: Boolean(
         membershipAtJoin
       ),
@@ -500,7 +720,7 @@ async function enter(userId, context = {}) {
     type: 'eligible',
     position: position + 1,
     ticket,
-    priority: priorityLevel > 0,
+    priority: false,
     membershipAtJoin: Boolean(
       membershipAtJoin
     ),
@@ -517,20 +737,32 @@ async function enterStandby(
 
   const keys = queueKeys(context);
 
-  let priorityLevel = 0;
+  const membership = await getMembership(userId);
+  if (!membership.isMembership) {
+    return {
+      status: 'closed',
+      code: 'membership_required',
+      message: '취소표 대기열은 활성 멤버십 회원만 이용할 수 있습니다.',
+    };
+  }
 
-  try {
-    priorityLevel = await isPriorityUser(
-      userId
-    );
-  } catch (_) {}
+  const membershipAtJoin = membership.isMembership ? 1 : 0;
 
-  const membershipAtJoin =
-    priorityLevel > 0 ? 1 : 0;
+  // 활성 멤버십만으로는 충분하지 않다. 본 티켓팅 대기열을 거치지 않고
+  // /cancel-queue/join을 직접 호출한 사용자는 취소표 대기열에 등록하지
+  // 못하도록 동일 공연·회차의 본 대기열 참여 이력을 먼저 확인한다.
+  const participatedInMainQueue = await hasMainQueueParticipation(userId, context);
+  if (!participatedInMainQueue) {
+    return {
+      status: 'closed',
+      code: 'main_queue_required',
+      message: '본 티켓팅 대기열에 참여한 활성 멤버십 회원만 취소표 대기열을 이용할 수 있습니다.',
+    };
+  }
 
-  // standby 접수가 마감된 뒤에도 이미 등록된 사용자는 마이페이지에서
-  // 자신의 취소표 대기 상태를 다시 조회할 수 있어야 한다. 신규 등록만
-  // 막고, 기존 standby의 멱등 조회는 허용한다.
+  // 본 티켓팅이 closed가 된 뒤에도, 본 대기열 참여를 확인한 멤버십
+  // 사용자는 자신의 취소표 대기열 등록을 완료할 수 있다. 참여 이력이 없는
+  // 사용자는 위의 게이트에서 이미 차단되므로 직접 진입할 수 없다.
   const existingStandby =
     await redis.zscore(
       keys.standbyKey,
@@ -538,22 +770,26 @@ async function enterStandby(
     );
 
   if (existingStandby !== null) {
+    await recordSimulationStandbyUser(userId, keys);
     const rank =
       await redis.zrank(
         keys.standbyKey,
         userId
       );
 
-    const totalStandby =
-      await redis.zcard(
-        keys.standbyKey
-      );
+    let memberStats;
+    try {
+      memberStats = await getStandbyMemberStats(userId, context);
+    } catch (err) {
+      console.warn('[Queue] 기존 standby 멤버십 순번 집계 실패:', err.message);
+      memberStats = { position: rank + 1, total: 0 };
+    }
 
     return {
       status: 'waiting',
       type: 'standby',
-      standbyPosition: rank + 1,
-      totalStandby,
+      standbyPosition: memberStats.position || rank + 1,
+      totalStandby: memberStats.total,
       ticket: parseInt(
         existingStandby,
         10
@@ -569,7 +805,8 @@ async function enterStandby(
 
   if (
     currentStatus &&
-    currentStatus !== 'sold_out'
+    currentStatus !== 'sold_out' &&
+    currentStatus !== 'closed'
   ) {
     return {
       status: 'closed',
@@ -637,10 +874,13 @@ async function enterStandby(
     userId
   );
 
-  const totalStandby =
-    await redis.zcard(
-      keys.standbyKey
-    );
+  let memberStats;
+  try {
+    memberStats = await getStandbyMemberStats(userId, context);
+  } catch (err) {
+    console.warn('[Queue] standby 멤버십 순번 집계 실패:', err.message);
+    memberStats = { position: rank + 1, total: 0 };
+  }
 
   await syncToMariaDB(
     `UPDATE waiting_queue
@@ -685,17 +925,19 @@ async function enterStandby(
     `queue:enter:standby ${userId}`,
   );
 
+  await recordSimulationStandbyUser(userId, keys);
+
   return {
     status: 'waiting',
     type: 'standby',
-    standbyPosition: rank + 1,
-    totalStandby,
+    standbyPosition: memberStats.position || rank + 1,
+    totalStandby: memberStats.total,
     ticket,
     membershipAtJoin: Boolean(
       membershipAtJoin
     ),
-    message:
-      `취소표 대기 ${rank + 1}번째로 등록되었습니다.`,
+      message:
+        `취소표 대기 ${memberStats.position || rank + 1}번째로 등록되었습니다.`,
   };
 }
 
@@ -748,19 +990,23 @@ async function getPosition(
     );
 
   if (standbyRank !== null) {
-    const totalStandby =
-      await redis.zcard(
-        keys.standbyKey
-      );
+    let memberStats = null;
+    try {
+      memberStats = await getStandbyMemberStats(userId, context);
+    } catch (err) {
+      console.warn('[Queue] 취소표 멤버십 순번 집계 실패:', err.message);
+    }
+    const standbyPosition = memberStats?.position || null;
+    const totalStandby = memberStats ? memberStats.total : 0;
 
     return {
       status: 'standby',
       type: 'standby',
       standbyPosition:
-        standbyRank + 1,
+        standbyPosition,
       totalStandby,
       message:
-        `취소표 대기 ${standbyRank + 1}번째입니다.`,
+        standbyPosition ? `취소표 대기 ${standbyPosition}번째입니다.` : '취소표 대기 중입니다.',
     };
   }
 
@@ -1062,25 +1308,34 @@ async function getStats(
 ) {
   const keys = queueKeys(context);
 
+  const memberStandbyPromise = keys.eventId
+    ? getStandbyMemberCount(context).catch((err) => {
+      console.warn('[Queue] 관리자 취소표 멤버십 집계 실패:', err.message);
+      return null;
+    })
+    : Promise.resolve(null);
+
   const [
     waiting,
     standby,
     admitted,
     lastTicket,
     totalSeats,
+    memberStandby,
   ] = await Promise.all([
     redis.zcard(keys.waitingKey),
     redis.zcard(keys.standbyKey),
     redis.scard(keys.admittedKey),
     redis.get(keys.counterKey),
     redis.get(keys.totalSeatsKey),
+    memberStandbyPromise,
   ]);
 
   return {
     totalSeats:
       parseInt(totalSeats, 10) || 0,
     eligible: waiting,
-    standby,
+    standby: memberStandby === null ? standby : memberStandby,
     admitted,
     lastTicket:
       parseInt(lastTicket, 10) || 0,
@@ -1884,12 +2139,16 @@ module.exports = {
   setTotalSeats,
   enter,
   enterStandby,
+  getActiveStandbyMembers,
   getPosition,
   admitBatch,
   getNextStandby,
   skipStandby,
   promoteStandby,
   getStats,
+  getStandbyMemberStats,
+  getStandbyMemberCount,
+  recordSimulationStandbyUser,
   isUserAdmitted,
   clearQueuesForEvent,
   queueKeys,
@@ -1904,6 +2163,8 @@ module.exports = {
   cancelAdmissionDeadline,
   removeAdmitted,
   backfillOne,
+  hasMainQueueParticipation,
+  isMainTicketingOpen,
   scheduleTicketing,
   restoreTicketingSchedule,
   cancelSchedule,

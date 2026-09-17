@@ -74,7 +74,7 @@ async function initTable() {
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS waiting_queue (
-      id INT AUTO_INCREMENT PRIMARY KEY,
+      queue_id INT AUTO_INCREMENT PRIMARY KEY,
       user_id VARCHAR(50) NOT NULL,
       event_id VARCHAR(50) NOT NULL DEFAULT '',
       session_date VARCHAR(50) DEFAULT '',
@@ -84,6 +84,7 @@ async function initTable() {
       status VARCHAR(20) NOT NULL DEFAULT 'WAITING',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NULL,
+      membership_at_join TINYINT(1) NOT NULL DEFAULT 0,
       INDEX idx_user (user_id),
       INDEX idx_event (event_id),
       INDEX idx_status (status)
@@ -132,7 +133,7 @@ async function initTable() {
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reservations (
-      id INT AUTO_INCREMENT PRIMARY KEY,
+      reservation_id INT AUTO_INCREMENT PRIMARY KEY,
       seat_id VARCHAR(100) NOT NULL DEFAULT '',
       user_id VARCHAR(50) NOT NULL DEFAULT '',
       event_id VARCHAR(50) NOT NULL DEFAULT '',
@@ -141,6 +142,8 @@ async function initTable() {
       status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED',
       reserved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       cancelled_at DATETIME NULL,
+      reservation_status VARCHAR(20) DEFAULT 'PENDING',
+      payment_method VARCHAR(20) DEFAULT NULL,
       INDEX idx_seat (seat_id),
       INDEX idx_user (user_id),
       INDEX idx_event (event_id)
@@ -176,7 +179,7 @@ async function initTable() {
 
 function toItem(row) {
   return {
-    reservationId: row.id || null,
+    reservationId: row.reservation_id || null,
     seatId: row.seat_id,
     userId: row.user_id,
     eventId: row.event_id || '',
@@ -200,20 +203,20 @@ async function saveReservation(data) {
 
 async function getReservationsBySeat(seatId) {
   const rows = await pool.query(
-    `SELECT id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
+    `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
     [seatId],
   );
   return rows.map(toItem);
 }
 
 async function getAllReservations() {
-  const rows = await pool.query(`SELECT id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations`);
+  const rows = await pool.query(`SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations`);
   return rows.map(toItem);
 }
 
 async function getReservationsByUser(userId) {
   const rows = await pool.query(
-    `SELECT id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
+    `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
     [userId],
   );
   return rows.map(toItem);
@@ -230,22 +233,22 @@ async function cancelReservation(seatId, userId) {
     // 구매자가 다시 취소하는 경우를 막기 위해 user_id 조건보다 먼저 현재
     // 활성 예약자를 잠근다.
     const activeRows = await connection.query(
-      `SELECT id, seat_id, user_id, event_id, session_date, session_time,
+      `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time,
               status, reserved_at, cancelled_at
        FROM reservations
        WHERE seat_id = ? AND status IN (${activeStatusPlaceholders})
-       ORDER BY reserved_at DESC, id DESC
+       ORDER BY reserved_at DESC, reservation_id DESC
        LIMIT 1 FOR UPDATE`,
       [seatId, ...ACTIVE_RESERVATION_STATUSES],
     );
 
     if (activeRows.length === 0) {
       const previousRows = await connection.query(
-        `SELECT id, seat_id, user_id, event_id, session_date, session_time,
+        `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time,
                 status, reserved_at, cancelled_at
          FROM reservations
          WHERE seat_id = ? AND user_id = ?
-         ORDER BY reserved_at DESC, id DESC
+         ORDER BY reserved_at DESC, reservation_id DESC
          LIMIT 1`,
         [seatId, userId],
       );
@@ -256,7 +259,7 @@ async function cancelReservation(seatId, userId) {
         return {
           affected: 0,
           idempotent: true,
-          reservationId: previous.id,
+          reservationId: previous.reservation_id,
           reservation: toItem(previous),
         };
       }
@@ -278,8 +281,8 @@ async function cancelReservation(seatId, userId) {
     const updateResult = await connection.query(
       `UPDATE reservations
        SET status = 'CANCELLED', cancelled_at = NOW()
-       WHERE id = ? AND status IN (${activeStatusPlaceholders})`,
-      [active.id, ...ACTIVE_RESERVATION_STATUSES],
+       WHERE reservation_id = ? AND status IN (${activeStatusPlaceholders})`,
+      [active.reservation_id, ...ACTIVE_RESERVATION_STATUSES],
     );
     if (Number(updateResult.affectedRows) !== 1) {
       await connection.rollback();
@@ -312,11 +315,11 @@ async function cancelReservation(seatId, userId) {
         }
       : null;
 
-    console.log(`[MariaDB] 예약 취소: ${seatId} (${userId}) reservation_id=${active.id}`);
+    console.log(`[MariaDB] 예약 취소: ${seatId} (${userId}) reservation_id=${active.reservation_id}`);
     return {
       affected: 1,
       idempotent: false,
-      reservationId: active.id,
+      reservationId: active.reservation_id,
       reservation,
       seat,
     };

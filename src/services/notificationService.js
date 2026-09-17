@@ -24,6 +24,10 @@ const snsClient = new SNSClient(buildAwsConfig());
 const FROM_EMAIL = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@queuing.com';
 const USE_SMTP = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
 
+function isSmtpConfigured() {
+  return USE_SMTP && !!smtpTransport;
+}
+
 let smtpTransport = null;
 if (USE_SMTP) {
   smtpTransport = nodemailer.createTransport({
@@ -148,4 +152,4 @@ async function notifyEventUpdate(eventInfo, changeDetail, users) {
   return results;
 }
 
-module.exports = { sendEmail, sendSMS, notifyEventCancellation, notifyEventUpdate };
+module.exports = { sendEmail, sendSMS, notifyEventCancellation, notifyEventUpdate, isSmtpConfigured };

@@ -1,6 +1,5 @@
 const cancelAllocationService = require('../services/cancelAllocationService');
 const pool = require('../config/mariadb');
-const redis = require('../config/redis');
 const membershipService = require('../services/membershipService');
 const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
@@ -57,6 +56,10 @@ function toIso(value) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function cancelQueueKey(eventId, sessionDate, sessionTime) {
+  return [eventId || '', sessionDate || '', sessionTime || ''].map(String).join('::');
+}
+
 async function cancelQueueRoutes(fastify) {
 
   fastify.post('/cancel-queue/join', userAuth, async (request, reply) => {
@@ -75,11 +78,28 @@ async function cancelQueueRoutes(fastify) {
     const userId = request.query.userId || request.params.userId;
     const context = getQueueContext(request, eventId);
 
-    const [position, membership, allocation] = await Promise.all([
+    const [position, membership, allocation, participatedInMainQueue] = await Promise.all([
       queueService.getPosition(userId, context),
       membershipService.getMembership(userId),
       cancelAllocationService.getActiveAllocation(userId, eventId),
+      queueService.hasMainQueueParticipation(userId, context),
     ]);
+
+    if (!membership.isMembership) {
+      return reply.status(403).send({
+        success: false,
+        code: 'membership_required',
+        message: '취소표 대기열은 활성 멤버십 회원만 이용할 수 있습니다.',
+      });
+    }
+
+    if (!participatedInMainQueue) {
+      return reply.status(403).send({
+        success: false,
+        code: 'main_queue_required',
+        message: '본 티켓팅 대기열에 참여한 멤버십 회원만 취소표 상태를 조회할 수 있습니다.',
+      });
+    }
 
     return reply.send({
       eventId,
@@ -108,73 +128,174 @@ async function cancelQueueRoutes(fastify) {
   // 목록에 남긴다. Redis가 살아 있으면 현재 순번만 실시간으로 보정한다.
   fastify.get('/cancel-queue/mine', { preHandler: [authenticate] }, async (request, reply) => {
     const userId = request.authUser.userId;
-    const rows = await pool.query(
-      `SELECT w.id, w.event_id, w.session_date, w.session_time, w.queue_index,
-              w.status, w.created_at,
-              e.event_name, e.title, e.event_date, e.venue, e.status AS event_status,
-              a.allocation_id, a.seat_id AS allocation_seat_id, a.expires_at AS allocation_expires_at
-       FROM waiting_queue w
-       LEFT JOIN events e ON e.event_id = w.event_id
-       LEFT JOIN cancel_allocations a
-         ON a.user_id = w.user_id
-        AND a.event_id = w.event_id
-        AND a.session_date = w.session_date
-        AND a.session_time = w.session_time
-        AND a.status = 'LINK_SENT'
-        AND (a.expires_at IS NULL OR a.expires_at > UTC_TIMESTAMP())
-       WHERE w.user_id = ?
-         AND w.queue_type = 'standby'
-         AND (w.status = 'WAITING' OR a.allocation_id IS NOT NULL)
-       ORDER BY w.created_at DESC, w.id DESC`,
-      [userId],
-    );
+    let stage = 'identity';
 
-    const queues = await Promise.all(rows.map(async (row) => {
-      const context = {
-        eventId: row.event_id,
-        sessionDate: row.session_date || '',
-        sessionTime: row.session_time || '',
-      };
-      const keys = queueService.queueKeys(context);
-      let position = Number(row.queue_index || 0);
-      let total = 0;
-
-      try {
-        const [rank, totalStandby] = await Promise.all([
-          redis.zrank(keys.standbyKey, userId),
-          redis.zcard(keys.standbyKey),
-        ]);
-        if (rank !== null) position = rank + 1;
-        total = totalStandby;
-      } catch (err) {
-        console.warn(`[CancelQueue] 마이페이지 순번 Redis 보정 실패 (${row.event_id}):`, err.message);
+    try {
+      const membership = await membershipService.getMembership(userId);
+      if (!membership.isMembership) {
+        return reply.send({
+          userId,
+          membershipRequired: true,
+          queues: [],
+          count: 0,
+        });
       }
 
-      return {
-        queueId: row.id,
-        eventId: row.event_id,
-        eventName: row.event_name || row.title || row.event_id,
-        eventDate: row.event_date || '',
-        venue: row.venue || '',
-        eventStatus: row.event_status || '',
-        sessionDate: row.session_date || '',
-        sessionTime: row.session_time || '',
-        queueType: 'standby',
-        queueStatus: row.status,
-        myNumber: position > 0 ? position : null,
-        total,
-        joinedAt: toIso(row.created_at),
-        allocation: row.allocation_id ? {
-          active: true,
-          allocationId: row.allocation_id,
-          seatId: row.allocation_seat_id || null,
-          expiresAt: toIso(row.allocation_expires_at),
-        } : null,
-        status: row.allocation_id ? 'allocated' : row.status,
-      };
-    }));
+      // 시뮬레이션 입력값 또는 구버전 데이터가 이메일을 user_id로 저장한 경우에도
+      // 현재 로그인 계정의 user_id와 email을 함께 후보로 사용한다. users 조회는
+      // 보조 조회이므로 컬럼 차이가 있는 DB에서는 로그인 ID만으로 계속 진행한다.
+      let identity = {};
+      try {
+        const identityRows = await pool.query(
+          'SELECT user_id, email FROM users WHERE user_id = ? OR email = ? LIMIT 1',
+          [userId, userId],
+        );
+        identity = identityRows[0] || {};
+      } catch (err) {
+        console.warn('[CancelQueue] users identity 보조 조회 실패:', err.message);
+      }
 
-    return reply.send({ userId, queues, count: queues.length });
+      const userIds = [...new Set([userId, identity.user_id, identity.email].filter(Boolean).map(String))];
+      const userPlaceholders = userIds.map(() => '?').join(',');
+
+      // waiting_queue 자체가 목록의 기준이다. events/cancel_allocations를 LEFT JOIN한
+      // 단일 SQL은 두 테이블의 컬럼 차이 하나만 있어도 전체 API가 500이 되므로,
+      // 먼저 waiting_queue의 공통 컬럼만 조회하고 부가 정보는 별도로 보강한다.
+      stage = 'waiting_queue';
+      const candidateRows = await pool.query(
+        `SELECT user_id, queue_id, event_id, session_date, session_time, queue_index, status, created_at
+         FROM waiting_queue
+         WHERE user_id IN (${userPlaceholders})
+           AND queue_type = 'standby'
+           AND EXISTS (
+             SELECT 1
+             FROM waiting_queue main_queue
+             WHERE main_queue.user_id = waiting_queue.user_id
+               AND main_queue.event_id = waiting_queue.event_id
+               AND main_queue.session_date = waiting_queue.session_date
+               AND main_queue.session_time = waiting_queue.session_time
+               AND main_queue.queue_type = 'eligible'
+               AND main_queue.status IN ('WAITING', 'ADMITTED', 'PROMOTED', 'COMPLETED', 'EXPIRED', 'CANCELLED', 'STANDBY')
+           )
+         ORDER BY created_at DESC, queue_id DESC`,
+        userIds,
+      );
+
+      const eventIds = [...new Set(candidateRows.map((row) => row.event_id).filter(Boolean).map(String))];
+      const eventById = new Map();
+      if (eventIds.length) {
+        stage = 'events';
+        try {
+          const eventPlaceholders = eventIds.map(() => '?').join(',');
+          const eventRows = await pool.query(
+            `SELECT event_id, event_name, event_date, venue, status
+             FROM events WHERE event_id IN (${eventPlaceholders})`,
+            eventIds,
+          );
+          eventRows.forEach((event) => eventById.set(String(event.event_id), event));
+        } catch (err) {
+          // 공연 상세정보는 화면 표시용이다. 대기열 본문까지 숨기지 않는다.
+          console.warn('[CancelQueue] events 보조 조회 실패:', err.message);
+        }
+      }
+
+      const allocationByKey = new Map();
+      if (userIds.length) {
+        stage = 'cancel_allocations';
+        try {
+          const allocationRows = await pool.query(
+            `SELECT allocation_id, user_id, event_id, session_date, session_time, seat_id, expires_at
+             FROM cancel_allocations
+             WHERE user_id IN (${userPlaceholders})
+               AND status = 'LINK_SENT'
+               AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+             ORDER BY allocation_id DESC`,
+            userIds,
+          );
+          allocationRows.forEach((allocation) => {
+            const key = cancelQueueKey(allocation.event_id, allocation.session_date, allocation.session_time);
+            const userKey = `${String(allocation.user_id)}::${key}`;
+            if (!allocationByKey.has(userKey)) allocationByKey.set(userKey, allocation);
+          });
+        } catch (err) {
+          // B파트 링크 발급 전에는 할당 행이 없어도 정상이다. 이 조회 실패가
+          // waiting_queue 목록 조회 자체를 실패로 만들지 않도록 빈 보조정보로 진행한다.
+          console.warn('[CancelQueue] cancel_allocations 보조 조회 실패:', err.message);
+        }
+      }
+
+      const rows = candidateRows.filter((row) => {
+        const key = cancelQueueKey(row.event_id, row.session_date, row.session_time);
+        const allocation = userIds
+          .map((candidateId) => allocationByKey.get(`${candidateId}::${key}`))
+          .find(Boolean);
+        return String(row.status || '').toUpperCase() === 'WAITING' || Boolean(allocation);
+      });
+
+      const queues = await Promise.all(rows.map(async (row) => {
+        const context = {
+          eventId: row.event_id,
+          sessionDate: row.session_date || '',
+          sessionTime: row.session_time || '',
+        };
+        let position = Number(row.queue_index || 0);
+        let total = 0;
+        const key = cancelQueueKey(row.event_id, row.session_date, row.session_time);
+        const allocation = userIds
+          .map((candidateId) => allocationByKey.get(`${candidateId}::${key}`))
+          .find(Boolean);
+        const event = eventById.get(String(row.event_id)) || {};
+
+        let memberStats = null;
+        try {
+          memberStats = await queueService.getStandbyMemberStats(row.user_id, context);
+        } catch (err) {
+          console.warn(`[CancelQueue] 멤버십 대기자 집계 실패 (${row.event_id}):`, err.message);
+        }
+
+        if (memberStats) {
+          position = memberStats.position || position;
+          total = memberStats.total;
+        } else {
+          // 멤버십 대기자 집계가 실패한 경우 Redis 전체 standby 수를
+          // 대신 표시하지 않는다. 비회원이 섞인 수치를 노출하지 않기 위해
+          // DB의 queue_index만 유지하고 전체 인원은 미확인으로 둔다.
+          total = 0;
+        }
+
+        return {
+          queueId: row.queue_id,
+          eventId: row.event_id,
+          eventName: event.event_name || row.event_id,
+          eventDate: event.event_date || '',
+          venue: event.venue || '',
+          eventStatus: event.status || '',
+          sessionDate: row.session_date || '',
+          sessionTime: row.session_time || '',
+          queueType: 'standby',
+          queueStatus: row.status || 'WAITING',
+          myNumber: position > 0 ? position : null,
+          total,
+          joinedAt: toIso(row.created_at),
+          allocation: allocation ? {
+            active: true,
+            allocationId: allocation.allocation_id,
+            seatId: allocation.seat_id || null,
+            expiresAt: toIso(allocation.expires_at),
+          } : null,
+          status: allocation ? 'allocated' : row.status || 'WAITING',
+        };
+      }));
+
+      return reply.send({ userId, queues, count: queues.length });
+    } catch (err) {
+      console.error(`[CancelQueue] /cancel-queue/mine 실패 (stage=${stage}):`, err.message);
+      return reply.status(503).send({
+        success: false,
+        code: 'cancel_queue_unavailable',
+        message: '취소표 대기열 정보를 일시적으로 불러오지 못했습니다.',
+      });
+    }
   });
 
   // 취소표 순차 배정은 B파트 Step Functions + SQS 파이프라인의 단일 책임이다.
@@ -187,7 +308,10 @@ async function cancelQueueRoutes(fastify) {
   fastify.post('/cancel-queue/allocate', adminAuth, allocationDelegated);
   fastify.post('/cancel-queue/allocate-next', adminAuth, allocationDelegated);
 
-  // Secret Link 보유자만 배정된 좌석을 선점할 수 있게 한다.
+  // [보존 / DO NOT DELETE] 취소표 전용 좌석 흐름.
+  // B파트가 별도 취소표 사이트를 제공하더라도 A파트의 기존 로컬 SMTP/
+  // fallback Secret Link 페이지와 이 API는 삭제하거나 일반 예매 흐름과 합치지 않는다.
+  // seat_id가 있으면 서버 배정 좌석만, NULL이면 사용자가 고른 회차 좌석을 처리한다.
   fastify.post('/cancel-queue/hold', userAuth, async (request, reply) => {
     if (!await guardRecaptcha(request, reply, 'cancel_seat_hold')) return;
     const { userId, eventId, seatId } = request.body || {};
@@ -195,7 +319,7 @@ async function cancelQueueRoutes(fastify) {
       return reply.status(400).send({ error: 'userId, eventId, seatId는 필수입니다.' });
     }
 
-    const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
+    let allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
     if (!allocation) {
       return reply.status(409).send({ success: false, reason: 'allocation_required', message: '본인에게 배정된 취소표 할당이 없습니다.' });
     }
@@ -208,12 +332,80 @@ async function cancelQueueRoutes(fastify) {
       sessionDate: allocation.sessionDate || request.body.sessionDate || '',
       sessionTime: allocation.sessionTime || request.body.sessionTime || '',
     };
-    const tokenInfo = await getRawToken(userId, context);
-    if (!tokenInfo) {
-      return reply.status(401).send({ success: false, reason: 'token_unavailable', message: '취소표 입장 토큰이 만료되었거나 유효하지 않습니다.' });
+
+    // verify-link 성공 후 발급된 JWT는 특정 allocation에만 사용할 수 있는
+    // 취소표 전용 세션이다. 이 세션에서는 일반 대기열 Admission Token을
+    // Redis에서 다시 찾으면 안 된다(로컬 SMTP 흐름에는 일반 토큰이 없음).
+    const isScopedCancelSession = request.authUser?.scope === 'cancel_queue';
+    const isCancelLinkSession = isScopedCancelSession || !!request.cancelLink;
+    if (isScopedCancelSession) {
+      const tokenEventId = String(request.authUser.eventId || '');
+      const tokenAllocationId = String(request.authUser.allocationId || '');
+      if (tokenEventId !== String(eventId) || tokenAllocationId !== String(allocation.id)) {
+        return reply.status(403).send({
+          success: false,
+          reason: 'allocation_mismatch',
+          message: '취소표 입장 토큰과 할당 정보가 일치하지 않습니다.',
+        });
+      }
     }
 
-    const result = await seatService.holdSeat(userId, seatId, tokenInfo.token, context);
+    let admissionToken = '';
+    if (!isCancelLinkSession) {
+      const tokenInfo = await getRawToken(userId, context);
+      if (!tokenInfo) {
+        return reply.status(401).send({ success: false, reason: 'token_unavailable', message: '취소표 입장 토큰이 만료되었거나 유효하지 않습니다.' });
+      }
+      admissionToken = tokenInfo.token;
+    }
+
+    let claimedByRequest = false;
+    if (!allocation.seatId) {
+      // 인증·토큰 검증을 통과한 뒤 사용자가 고른 좌석을 allocation에 기록한다.
+      // 해당 공연·회차의 inventory와 AVAILABLE 상태는 여기서 먼저 확인하고,
+      // 최종 동시성 처리는 seatService의 좌석 분산 락에서 다시 수행한다.
+      const sessionSeats = await seatService.getAllSeats(eventId, context);
+      const requestedSeat = sessionSeats.find((seat) => seat.seatId === seatId);
+      if (!requestedSeat) {
+        return reply.status(409).send({ success: false, reason: 'seat_session_mismatch', message: '선택한 좌석이 해당 공연 회차에 없습니다.' });
+      }
+      if (requestedSeat.status !== 'AVAILABLE') {
+        return reply.status(409).send({ success: false, reason: 'unavailable', message: `이미 ${requestedSeat.status} 상태인 좌석입니다.` });
+      }
+
+      const assignment = await cancelAllocationService.assignSeatById(allocation.id, seatId);
+      if (!assignment.success) {
+        return reply.status(assignment.reason === 'already_expired' ? 401 : 409).send({
+          success: false,
+          reason: assignment.reason,
+          status: assignment.status,
+          message: assignment.reason === 'seat_mismatch'
+            ? '이미 다른 좌석을 선택한 취소표 할당입니다.'
+            : assignment.message || '취소표 좌석을 배정할 수 없습니다.',
+        });
+      }
+      allocation = assignment.allocation || allocation;
+      claimedByRequest = !assignment.idempotent;
+    }
+
+    let result;
+    try {
+      result = await seatService.holdSeat(
+        userId,
+        seatId,
+        admissionToken,
+        context,
+        { cancelLink: isCancelLinkSession },
+      );
+    } catch (err) {
+      if (claimedByRequest) {
+        await cancelAllocationService.clearSeatAssignmentById(allocation.id, seatId).catch(() => {});
+      }
+      throw err;
+    }
+    if (!result.success && claimedByRequest) {
+      await cancelAllocationService.clearSeatAssignmentById(allocation.id, seatId).catch(() => {});
+    }
     const statusCode = result.success ? 200 : result.reason === 'expired' || result.reason === 'no_token' ? 401 : 409;
     return reply.status(statusCode).send({ ...result, allocation });
   });
@@ -410,8 +602,11 @@ async function cancelQueueRoutes(fastify) {
       return reply.status(400).send({ valid: false, reason: 'missing', message: 'token은 필수입니다.' });
     }
 
-    let result;
-    if (bCallback.isConfigured()) {
+    // 로컬 SMTP 시뮬레이션에서 A가 발급한 토큰은 B파트로 보내지 않는다.
+    // B 연동이 설정되어 있어도 먼저 A 토큰을 검증하고, 유효하지 않은 경우에만
+    // B파트 토큰 검증으로 넘겨 온프레미스와 운영 흐름을 함께 지원한다.
+    let result = verifyCancelLinkToken(token);
+    if (!result.valid && bCallback.isConfigured()) {
       try {
         const bResult = await bCallback.callbackVerifyLink(token);
         const source = bResult && typeof bResult === 'object'
@@ -440,9 +635,6 @@ async function cancelQueueRoutes(fastify) {
             : '취소표 링크가 유효하지 않거나 만료되었습니다.',
         });
       }
-    } else {
-      // 로컬 개발 환경에서만 A파트 자체 JWT 검증을 사용한다.
-      result = verifyCancelLinkToken(token);
     }
 
     if (!result.valid) {

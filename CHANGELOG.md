@@ -1,3 +1,160 @@
+## [2026-09-17 11:47] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: 조기 마감 후 기존 standby 사용자의 `/queue/enter` 재요청에 `closed` 응답을 반환하도록 복원. Redis Sorted Set과 MariaDB 대기 이력은 유지해 프론트의 멤버십 안내 또는 멤버십 가입 유도 알럿이 표시되도록 변경
+- **[README.md]**: 조기 마감 시 standby 데이터 보존과 마감 안내 응답 정책 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시뮬레이터에서 단계2 조기 마감 후 대기열 페이지가 마감 알럿을 표시하지 않고 계속 대기 상태로 남음
+- **원인(Cause):** 기존 standby 사용자의 조기 마감 후 `/queue/enter` 재요청을 `standby` 응답으로만 반환해 프론트의 `showClosedUI()` 호출 조건인 `status: 'closed'`가 충족되지 않음
+- **해결(Solution):** standby 존재 여부는 유지한 채 티켓팅 상태가 `closed`이면 `status: 'closed'`, `type: 'standby'`, `preserveStandby: true`를 반환. 프론트는 해당 응답으로 멤버십 상태에 따른 안내 알럿을 표시하고, standby 이탈 처리로 `LEFT` 변경을 하지 않음
+
+## [2026-09-17 11:28] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: 본 티켓팅 대기열에서 멤버십 score 보정을 제거하고 Redis `INCR` 기반 완전 선착순으로 변경. 본 대기열 참여 표식과 MariaDB 이력을 기록하며, 참여 이력이 없는 활성 멤버십 사용자의 `/cancel-queue/join` 직접 진입을 `main_queue_required`로 차단
+- **[src/routes/queueRoutes.js]**: 대기열 이탈 시 본 티켓팅 참여 표식을 제거하고 관련 대기 이력을 `LEFT`로 갱신해 이탈 사용자가 취소표 대기 자격을 유지하지 않도록 변경
+- **[src/services/seatService.js]**: 본 티켓팅 오픈 중 환불은 B파트 SQS 이벤트를 발행하지 않고 다음 본 대기열 참여자를 재충원하도록 변경. 마감 후 환불만 B파트 취소표 이벤트로 전달하며, 마감 상태에서 환불해도 신규 본 티켓팅이 다시 열리지 않도록 보완
+- **[src/routes/cancelQueueRoutes.js]**: 취소표 상태 조회와 마이페이지 목록도 본 티켓팅 참여 이력이 없는 사용자를 제외하도록 검증 범위를 확장
+- **[src/routes/simulationRoutes.js]**: 로컬 취소표 시뮬레이션 정리 시 본 티켓팅 참여 표식도 함께 삭제
+- **[README.md]**: 본 티켓팅 FIFO, 취소표 직접 진입 조건, 오픈 중 재충원과 마감 후 B파트 연동 정책 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 멤버십만 가입한 사용자가 본 티켓팅 대기열을 거치지 않고 취소표 대기열에 직접 들어갈 수 있었고, 오픈 중 환불 좌석이 B파트 취소표 흐름으로만 발행되어 본 대기열 후순위 사용자에게 재충원되지 않음
+- **원인(Cause):** `enterStandby()`가 활성 멤버십만 확인했으며 본 대기열 참여 여부를 확인하지 않았음. `enter()`는 멤버십 등급별 score 보정을 사용했고, `cancelSeat()`는 티켓팅 마감 여부와 관계없이 취소 이벤트를 B파트로 발행했음
+- **해결(Solution):** 회차별 `queue:main-participants` 표식과 `waiting_queue` 참여 이력을 함께 확인하도록 게이트를 추가하고, score는 Redis `INCR` 원값을 사용하도록 변경. 오픈 중에는 빈 입장 슬롯을 본 대기열 참여자에게만 일반 Admission Token으로 재충원하고, `closed` 상태에서만 B파트 취소표 이벤트를 발행하도록 분리
+
+## [2026-09-17 01:13] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 기존 B파트 SQS 시뮬레이션과 분리된 `/admin/local-simulation/*` 라우트를 추가하고, 단계4에서 활성 멤버십 대기자에게 5분 제한 A파트 Secret Link를 Gmail SMTP로 발송하도록 구현
+- **[src/app.js]**: 시뮬레이션 라우트를 B 모드와 Local 모드로 각각 등록하고 더미 유저 관리 라우트는 B 모드에서만 등록하도록 중복 라우트 충돌을 방지
+- **[src/services/notificationService.js]**: SMTP 설정 여부를 확인하는 `isSmtpConfigured()`를 추가
+- **[src/services/cancelAllocationService.js]**: Local SMTP 링크 발급에 사용할 `LINK_SENT` 취소표 할당 생성 함수 추가
+- **[src/routes/cancelQueueRoutes.js]**: B 콜백이 설정되어 있어도 A파트가 발급한 로컬 Secret Link JWT를 먼저 검증하도록 보완
+- **[src/services/queueService.js]**: 실제 사용자가 취소표 대기열에 진입할 때 B/Local 시뮬레이션별 추적 Set에 사용자 ID 기록
+- **[README.md]**: Local SMTP 시뮬레이션 API, Redis 키, 환경변수 및 단계 흐름 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트 콜백 설정이 있는 온프레미스 API에서 Local SMTP 시뮬레이션 링크를 열면 A파트가 발급한 토큰도 B파트 검증으로 전달될 수 있었고, 시뮬레이션 플러그인을 두 번 등록하면 더미 유저 라우트가 중복될 수 있었음
+- **원인(Cause):** `/verify-link`가 B 콜백 설정 여부만 먼저 판단했고, B/Local 라우트 등록 시 공통 더미 라우트를 모드 구분 없이 등록함
+- **해결(Solution):** A JWT를 먼저 검증하고 실패한 경우에만 B 콜백으로 위임하도록 순서를 조정했으며, 더미 유저 라우트는 B 모드에서만 등록하도록 조건을 추가
+
+## [2026-09-17 09:42] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: Local SMTP 단계4가 준비된 취소 좌석과 활성 멤버십 standby 대기자를 순서대로 1:1 매칭해 사용자별 Secret Link를 발송하도록 변경. 유효한 기존 할당은 재발송하지 않고 만료 할당만 재사용
+- **[README.md]**: Local SMTP 단계4의 다중 좌석·다중 대기자 발급 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 단계4에서 여러 취소표가 준비되어도 첫 번째 멤버십 대기자에게만 메일이 발송되었고, 이메일 링크 진입 시 `오류 발생` 화면이 표시됨
+- **원인(Cause):** Local SMTP 발급 코드가 `preparedEvents.find()`와 `memberStandbyRows[0]`만 사용해 한 건만 처리했으며, 프론트의 `POST /verify-link` 경로가 Vite 개발 프록시에서 A파트 API로 전달되지 않음
+- **해결(Solution):** 준비 좌석·활성 멤버십 대기자를 순서대로 반복 처리하고 중복 발급 방지 이력을 추가했으며, Vite에 `/verify-link` API 프록시를 등록
+
+## [2026-09-17 00:13] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: `getPosition()`과 `getStats()`의 취소표 인원·순번을 활성 멤버십 대기자 기준으로 적용
+- **[src/services/queueService.js]**: 활성 멤버십 확인 없이 standby에 들어갈 수 있던 경로를 차단하고 `membership_required` 응답 추가
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/status`도 비멤버십 사용자의 취소표 상태 조회를 차단하고 `/mine`은 멤버십 대기자 수만 반환
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 서비스가 멤버십 전용이어도 비회원의 기존·신규 standby 접근이 가능하고, Redis에 남은 비회원이 전체 대기자 수에 포함될 수 있었음
+- **원인(Cause):** `enterStandby()`에 활성 멤버십 진입 검사가 없었고, 상세 상태와 마이페이지가 Redis Sorted Set 전체를 대기자 기준으로 사용함
+- **해결(Solution):** 활성 `memberships`와 `waiting_queue`를 조인해 현재 회차의 회원만 순번·전체 인원으로 집계하며, 비회원의 join/status/mine 접근을 제한
+
+## [2026-09-17 00:12] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: standby 순번·전체 대기자 계산에서 Redis 전체 수 fallback을 제거하고 MariaDB 활성 멤버십 대기자 기준으로 유지
+- **[src/routes/cancelQueueRoutes.js]**: 마이페이지 대기열 수치도 멤버십 집계 실패 시 비회원이 섞인 Redis 수치를 표시하지 않도록 수정
+- **[README.md]**: 대기자 수의 MariaDB 기준을 명확히 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Redis standby Sorted Set에 과거 테스트 비회원이 남아 있으면 전체 대기자 수와 순번에 포함될 수 있었음
+- **원인(Cause):** 멤버십 집계 DB 조회가 실패할 때 Redis `zcard`·`zrank` 결과를 그대로 fallback으로 사용함
+- **해결(Solution):** 멤버십 기준 조회가 실패한 경우에도 Redis 전체 standby 수를 노출하지 않고, DB `queue_index` 또는 미확인 수치만 유지하도록 변경
+
+## [2026-09-17 00:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: 취소표 standby 진입을 활성 멤버십 회원으로 제한하고, 가입 시 멤버십 플래그를 정확히 저장
+- **[src/services/queueService.js]**: 취소표 순번·전체 대기자·관리자 standby 통계를 MariaDB의 활성 멤버십 대기자 기준으로 계산
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/mine`과 `/cancel-queue/status`에서 비멤버십 사용자의 취소표 대기열 조회를 차단
+- **[README.md]**: 멤버십 전용 정책과 멤버십 대기자 집계 기준 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 대기열의 전체 인원과 순번에 시뮬레이션 비회원 또는 과거 테스트 사용자가 포함될 수 있었음
+- **원인(Cause):** Redis `standby` Sorted Set을 그대로 `zrank`·`zcard`하여 멤버십 가입 여부를 검증하지 않았고, `enterStandby()`도 비회원 진입을 차단하지 않았음
+- **해결(Solution):** 취소표 진입 전에 활성 멤버십을 확인하고, `waiting_queue`와 활성 `memberships`를 조인해 멤버십 대기자만 순번·전체 인원으로 계산. 마이페이지 API도 비멤버십 사용자에게 빈 목록을 반환하도록 수정
+
+## [2026-09-16 23:44] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/mine`을 `waiting_queue` 핵심 조회와 공연·취소표 할당 부가 조회로 분리
+- **[src/routes/cancelQueueRoutes.js]**: DB 조회 단계별 오류를 기록하고 핵심 대기열 조회 실패 시에만 `503 cancel_queue_unavailable`을 반환하도록 보완
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 실제 DB의 `waiting_queue`에 `standby`·`WAITING` 행이 있어도 `/cancel-queue/mine`이 500을 반환하여 마이페이지가 빈 목록을 표시함
+- **원인(Cause):** `waiting_queue`, `events`, `cancel_allocations`를 한 번의 `LEFT JOIN`으로 묶어 부가 테이블의 컬럼·스키마 차이 하나가 전체 조회 실패로 전파될 수 있었음
+- **해결(Solution):** 공통 컬럼만 사용하는 `waiting_queue` 조회를 먼저 실행하고, 공연·할당 정보는 각각 보조 조회로 처리한다. 보조 조회 실패 시에도 대기열 행과 이벤트 ID를 반환하며, 핵심 DB 오류만 단계 로그와 함께 503으로 반환한다.
+
+## [2026-09-16 23:21] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/mine` 조회에서 환경별로 존재하지 않을 수 있는 `queue_status` 의존을 제거하고 `waiting_queue.status` 기준으로 조회하도록 수정
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 브라우저에서 `GET /cancel-queue/mine`이 HTTP 500을 반환함
+- **원인(Cause):** API가 연결된 DB의 `waiting_queue` 스키마와 코드가 참조한 컬럼 구성이 달라 `queue_status` 조회 SQL이 실패할 수 있었음
+- **해결(Solution):** 모든 환경에서 공통으로 확인되는 `status = 'WAITING'` 조건으로 대기열을 조회하고, 조기마감 시뮬레이션의 기존 행 복구만 `queue_status` 컬럼 유무에 따라 fallback 처리
+
+## [2026-09-16 23:09] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 조기마감 시뮬레이션에서 기존 standby 행을 상태와 무관하게 찾고, `LEFT`로 남은 행도 `WAITING`으로 복구하도록 수정. 실제 DB의 `queue_id`와 회차 정보를 유지하면서 대기순번을 갱신한다.
+- **[src/routes/cancelQueueRoutes.js]**: DB 환경별 `waiting_queue` 스키마 차이로 500이 발생하지 않도록 `/cancel-queue/mine`의 핵심 조회는 공통 컬럼인 `status`를 사용하도록 정리했다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 조기마감 시뮬레이션 화면에는 실제 사용자가 standby 1번으로 보이지만, 마이페이지 취소표 대기열은 빈 화면으로 표시됨.
+- **원인(Cause):** MariaDB 행이 존재해도 `status = 'LEFT'`이면 `/cancel-queue/mine`의 `WAITING` 조건에서 제외되었고, 이전 테스트의 `LEFT` 행을 조기마감 재실행 시 활성 대기 행으로 복구하지 않았음.
+- **해결(Solution):** 조기마감 시 기존 회차 standby 행을 `status = 'WAITING'`으로 복구하고, 마이페이지 조회 SQL은 실제 공통 스키마에 존재하는 `status`만 사용하도록 변경했다. `queue_status`가 있는 DB에서는 시뮬레이션 복구 시 함께 갱신하되, 해당 컬럼이 없는 DB도 fallback UPDATE로 처리한다.
+
+## [2026-09-16 22:52] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 시뮬레이션 입력값이 이메일이어도 `users.user_id`를 찾아 `waiting_queue`·Redis·멤버십 조회에 동일한 사용자 식별자를 사용하도록 보완
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/mine`이 로그인 ID와 users 테이블의 이메일을 연결해 실제 `waiting_queue` 대기 행을 조회하도록 보완하고, 기존 Redis 멤버 ID도 순번 보정에 사용
+- **[README.md]**: 시뮬레이션 실제 사용자 식별자와 마이페이지 대기열 조회 기준을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 조기 마감이 완료되어도 실제 사용자 마이페이지의 취소표 대기열이 빈 목록으로 표시됨
+- **원인(Cause):** 시뮬레이션 관리자가 입력한 이메일과 로그인 JWT의 `userId`가 다르면 `waiting_queue.user_id`와 마이페이지 조회 조건이 일치하지 않을 수 있었고, `/events` 지연 시 프론트가 API가 반환한 대기 행까지 숨길 수 있었음
+- **해결(Solution):** 초기화 시 users의 `user_id`를 해석해 시뮬레이션 상태에 저장하고, 마이페이지 API가 ID·이메일 후보를 함께 조회하도록 변경. 프론트는 공연 목록이 늦어도 서버 대기 행의 공연명 fallback으로 표시
+
+## [2026-09-16 22:10] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 취소표 시뮬레이션 단계 4에서 실제 `waiting_queue` 기본키인 `queue_id`를 조회하고 정렬하도록 수정
+- **[src/routes/cancelQueueRoutes.js]**: 취소표 대기 목록 조회와 응답 매핑에서 `w.id`·`row.id` 대신 `w.queue_id`·`row.queue_id`를 사용하도록 수정
+- **[src/services/dbService.js]**: 신규 `waiting_queue` 테이블 정의를 `queue_id` 기본키와 `membership_at_join` 컬럼 기준으로 실제 DB 스키마와 정렬
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 어드민 취소표 시뮬레이션 단계 4 또는 취소표 대기 목록 조회 시 `Unknown column 'id' in 'field list'` 오류가 발생할 수 있음
+- **원인(Cause):** 실제 MariaDB `waiting_queue` 테이블의 자동 증가 기본키는 `queue_id`인데 일부 SQL이 존재하지 않는 `id` 컬럼을 참조함
+- **해결(Solution):** `SELECT queue_id`, `ORDER BY queue_id DESC`, `w.queue_id`, `row.queue_id`로 관련 SQL과 반환 매핑을 통일. 신규 테이블 정의도 동일한 PK를 사용하도록 수정
+
+## [2026-09-16 21:46] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: 실제 MariaDB `reservations` 스키마의 기본키인 `reservation_id`에 맞춰 예약 목록 조회, 최신 예약 정렬, 소유권 확인, 환불 UPDATE, 멱등 응답 및 로그의 컬럼 참조를 모두 통일
+- **[src/services/dbService.js]**: 신규 DB 생성용 `reservations` 정의도 `reservation_id`, `reservation_status`, `payment_method` 구조로 실제 운영 스키마와 일치시킴
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 마이페이지에서 환불 시 `Unknown column 'id' in 'field list'` 오류가 발생하여 환불 처리가 실패함
+- **원인(Cause):** 실제 테이블의 PK는 `reservation_id`인데 `SELECT id`, `ORDER BY id`, `WHERE id = ?`와 `active.id`·`previous.id` 참조가 남아 있었음. `toItem()`만 먼저 수정되어 SQL과 응답 변환 로직이 서로 다른 컬럼명을 사용하고 있었음
+- **해결(Solution):** 모든 예약 SQL을 `reservation_id` 기준으로 변경하고, 반환 객체에서는 `reservationId`로 변환하도록 통일. 환불 트랜잭션과 동일 예약 재요청의 멱등 처리도 같은 PK를 사용하도록 수정
+
 ## [2026-09-16 17:52] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -962,3 +1119,100 @@
 - **해결(Solution):** `const realUserEmail = simData.realUserEmail;`을 추가하여 시뮬레이션 초기화 때 저장한 실제 사용자와 대기열 등록 대상을 일치시킴
 
 ---
+## [2026-09-17 00:31] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 취소표 시뮬레이션 초기화에서 실제 멤버십 유저 이메일 입력·계정 생성·멤버십 자동 가입을 제거
+- **[src/routes/simulationRoutes.js]**: 단계2 조기 마감은 특정 사용자를 자동 등록하지 않고, 일반 `/cancel-queue/join`으로 직접 진입한 활성 멤버십 대기자만 집계하도록 변경
+- **[src/routes/simulationRoutes.js]**: 단계4는 시뮬레이션 중 직접 진입한 `waiting_queue`의 활성 멤버십 standby 최상위 사용자를 확인한 뒤 B파트 SQS로 취소 이벤트를 전달하도록 변경
+- **[src/routes/simulationRoutes.js]**: 시뮬레이션 직접 진입 사용자 추적 Set을 추가하고, 정리 시 해당 standby 행만 삭제하도록 보완하여 실제 사용자 계정은 삭제하지 않도록 변경
+- **[src/services/queueService.js]**: 일반 `enterStandby()` 성공 경로에서 시뮬레이션 중 직접 진입한 사용자 ID를 기록하는 보조 로직 추가. 추적 실패가 정상 대기열 진입을 차단하지 않도록 처리
+- **[README.md]**: 실제 사용자 수동 대기열 진입을 기준으로 한 시뮬레이션 단계 및 B파트 연동 흐름 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 시뮬레이션의 실제 멤버십 이메일 입력값에 의존해야만 단계2·4를 실행할 수 있어, 실제 사용자가 사이트에서 대기열에 진입한 운영 흐름을 그대로 검증하기 어려움
+- **원인(Cause):** 시뮬레이션 초기화가 지정 이메일을 자동으로 사용자·멤버십으로 만들고, 조기 마감과 링크 발급이 해당 ID를 강제로 standby에 등록·최우선 처리함
+- **해결(Solution):** 실제 사용자는 일반 `POST /cancel-queue/join`을 통해서만 standby에 등록하도록 변경하고, 단계4는 MariaDB의 활성 멤버십 `WAITING` 행과 시뮬레이션 추적 Set을 기준으로 최상위 대기자를 확인한 뒤 B파트에 이벤트를 위임
+## [2026-09-17 01:13] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 기존 B파트 SQS 시뮬레이션과 분리된 `/admin/local-simulation/*` 라우트를 추가하고, 단계4에서 활성 멤버십 대기자에게 5분 제한 A파트 Secret Link를 Gmail SMTP로 발송하도록 구현
+- **[src/app.js]**: 시뮬레이션 라우트를 B 모드와 Local 모드로 각각 등록하고 더미 유저 관리 라우트는 B 모드에서만 등록하도록 중복 라우트 충돌을 방지
+- **[src/services/notificationService.js]**: SMTP 설정 여부를 확인하는 `isSmtpConfigured()`를 추가
+- **[src/services/cancelAllocationService.js]**: Local SMTP 링크 발급에 사용할 `LINK_SENT` 취소표 할당 생성 함수 추가
+- **[src/routes/cancelQueueRoutes.js]**: B 콜백이 설정되어 있어도 A파트가 발급한 로컬 Secret Link JWT를 먼저 검증하도록 보완
+- **[src/services/queueService.js]**: 실제 사용자가 취소표 대기열에 진입할 때 B/Local 시뮬레이션별 추적 Set에 사용자 ID 기록
+- **[README.md]**: Local SMTP 시뮬레이션 API, Redis 키, 환경변수 및 단계 흐름 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트 콜백 설정이 있는 온프레미스 API에서 Local SMTP 시뮬레이션 링크를 열면 A파트가 발급한 토큰도 B파트 검증으로 전달될 수 있었고, 시뮬레이션 플러그인을 두 번 등록하면 더미 유저 라우트가 중복될 수 있었음
+- **원인(Cause):** `/verify-link`가 B 콜백 설정 여부만 먼저 판단했고, B/Local 라우트 등록 시 공통 더미 라우트를 모드 구분 없이 등록함
+- **해결(Solution):** A JWT를 먼저 검증하고 실패한 경우에만 B 콜백으로 위임하도록 순서를 조정했으며, 더미 유저 라우트는 B 모드에서만 등록하도록 조건을 추가
+## [2026-09-17 09:55] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: 취소표 전용 세션 JWT의 event/allocation 범위를 검증하고, 로컬 SMTP 링크 좌석 선점 시 일반 Redis Admission Token 조회를 생략하도록 수정
+- **[src/services/seatService.js]**: 일반 좌석 예매와 취소표 Secret Link 좌석 선점을 구분하는 옵션을 추가하고, 취소표 흐름에서는 일반 대기열 admitted 슬롯 해제를 호출하지 않도록 보완
+- **[README.md]**: 취소표 전용 토큰을 사용하는 좌석 선점 동작을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Gmail SMTP로 발급된 취소표 링크를 열어도 좌석 선점 단계에서 `취소표 입장 토큰이 만료되었거나 유효하지 않습니다.`가 표시됨
+- **원인(Cause):** `/cancel-queue/hold`가 취소표 전용 JWT를 사용하지 않고 Redis의 일반 Admission Token만 조회했으며, 로컬 SMTP 발급 흐름에는 일반 대기열 토큰이 없음
+- **해결(Solution):** `verify-link`에서 발급한 `cancel_link_session` JWT의 공연·allocation 범위를 라우트에서 확인한 후 `seatService.holdSeat(..., { cancelLink: true })`로 처리하도록 변경
+## [2026-09-17 10:47] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: 이미 취소표 standby에 등록된 사용자는 공연 카드의 `ticketCloseAt` 또는 회차별 `closed` 상태가 되어도 `/queue/enter` 재호출에서 `closed`로 종료하지 않고 기존 standby 상태를 유지하도록 수정
+- **[src/routes/simulationRoutes.js]**: 로컬·B파트 취소표 시뮬레이션의 단계3 `cancel-seats`가 단계2 조기 마감(`closed`) 이후에만 실행되도록 서버 검증 추가
+- **[README.md]**: 시뮬레이션 단계 순서와 조기 마감 후 standby 유지 규칙 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 로컬 시뮬레이션에서 단계2 전에 단계3을 실행할 수 있었고, 이미 대기 중인 사용자가 조기 마감 후 `/queue/enter` 재호출에서 `closed`로 처리되어 취소표 흐름을 계속할 수 없었음
+- **원인(Cause):** 취소 좌석 생성 API에 단계 순서 검증이 없었으며, `enter()`가 기존 standby 여부를 확인하기 전에 공연 마감 상태를 우선 반환함
+- **해결(Solution):** 단계3을 `closed` 이후로 제한하고, `enter()`가 기존 standby score를 먼저 확인해 마감 판정에서 해당 사용자를 제외하도록 수정. 좌석 선택 페이지는 단계3만으로 열리지 않고, 단계4에서 발급된 Gmail/B파트 Secret Link를 클릭한 경우에만 진입한다.
+
+---
+## [2026-09-17 11:41] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/metricsService.js]**: `queuing_queue_eligible`, `queuing_queue_standby`, `queuing_queue_admitted` 갱신 시 기본 Redis 키뿐 아니라 이벤트·회차별 `queue:*:{eventId}:{sessionKey}` 키를 탐색하고 cardinality를 합산하도록 변경. 기존 메트릭 이름과 Grafana 쿼리는 유지
+- **[README.md]**: 대기열 메트릭이 회차별 Redis 키를 합산하는 방식과 조회 범위를 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Prometheus scrape와 Grafana 시계열은 정상 생성되지만 `queuing_queue_eligible` 값이 계속 0으로 표시됨
+- **원인(Cause):** 일반 대기열은 회차 컨텍스트가 있으면 `queue:waiting:{eventId}:{sessionKey}`에 저장되는데, 메트릭 갱신 코드는 무회차 기본 키 `queue:waiting`만 조회함
+- **해결(Solution):** 기본 키와 회차별 키를 `SCAN`으로 찾은 뒤 사용자 목록이 아닌 각 Sorted Set/Set의 `ZCARD`/`SCARD`만 pipeline으로 합산하여 기존 Gauge에 반영
+
+---
+## [2026-09-17 12:11] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/eventRoutes.js]**: `GET /events/:eventId/sessions` 전용 회차 목록 API를 추가
+- **[src/routes/eventRoutes.js]**: Redis 이벤트 카드의 `sessions`를 우선 반환하고, 회차 정보가 없으면 MariaDB `seats.session_date/session_time`을 `DISTINCT` 조회하여 복원하도록 구현
+- **[README.md]**: 신규 회차 목록 API의 URL, 응답 구조, 데이터 조회 우선순위를 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트가 특정 공연의 회차 목록을 조회할 전용 API가 없어 프론트엔드의 날짜 하드코딩 또는 전체 이벤트 목록 조회에 의존해야 함
+- **원인(Cause):** 기존에는 `/events`와 `/event/info` 응답에만 `sessions`가 포함되고, `event_id` 기준의 회차 조회 경로가 없었음
+- **해결(Solution):** `GET /events/:eventId/sessions`를 추가하여 `eventId`, `eventName`, `eventDate`, `sessions`, `count`, `source`를 반환한다. Redis에 회차 정보가 없을 경우 MariaDB 좌석의 회차 컬럼에서 복원하고, 좌석 데이터도 없을 때만 이벤트 기본 날짜를 최종 fallback으로 사용한다.
+## [2026-09-17 12:32] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `allocation.seat_id`가 NULL인 취소표 Secret Link도 선택한 회차의 전체 AVAILABLE 좌석을 대상으로 처리하도록 기존 `/cancel-queue/hold` 흐름을 보존·문서화
+- **[src/services/cancelAllocationService.js]**: NULL 좌석 할당에 선택 좌석을 `allocation_id` 기준으로 원자적으로 기록하고, 홀드 실패 시 이번 요청의 기록만 되돌리는 `assignSeatById()` / `clearSeatAssignmentById()` 흐름을 보존
+- **[README.md]**: B파트 별도 취소표 사이트가 추가되어도 A파트 local SMTP/fallback 링크와 좌석 직접 선택 API를 삭제하지 않도록 보존 정책 및 두 가지 좌석 모드 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트가 `cancel_allocations.seat_id = NULL`로 링크를 발급하는 경우 A파트 기존 화면은 서버가 미리 배정한 좌석만 선택하는 구조로 동작할 수 있었음
+- **원인(Cause):** `seat_id`가 NULL인 할당에 대한 좌석 선택·allocation 기록·홀드의 연결 흐름이 명시적으로 분리되어 있지 않았음
+- **해결(Solution):** `/verify-link`에서 해당 회차 AVAILABLE 좌석 목록을 반환하고, A파트 화면에서 사용자가 좌석을 선택하면 `/cancel-queue/hold`가 회차·AVAILABLE 상태를 확인한 뒤 allocation 좌석 기록과 Redis/MariaDB 홀드를 이어서 처리한다. 기존 `seat_id`가 있는 서버 배정 모드는 그대로 유지한다.
+
+## [2026-09-17 12:34] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: NULL 좌석 모드에서 취소표 전용 세션·일반 토큰 검증을 allocation 좌석 기록보다 먼저 수행하도록 순서를 정리
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 좌석 선택 요청이 인증·토큰 검증에서 실패해도 그 전에 기록된 `cancel_allocations.seat_id`가 남을 수 있었음
+- **원인(Cause):** NULL 모드의 allocation 좌석 기록이 토큰 검증보다 먼저 실행됨
+- **해결(Solution):** 인증과 토큰 확인을 완료한 뒤에만 `assignSeatById()`를 실행하고, 이후 좌석 홀드 실패 시에만 해당 요청의 기록을 조건부 NULL 복구하도록 정리

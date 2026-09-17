@@ -36,6 +36,20 @@ async function getAllocationById(allocationId) {
   return rows.length ? toAllocation(rows[0]) : null;
 }
 
+async function createAllocation({ userId, seatId = null, eventId, sessionDate = '', sessionTime = '', holdDuration = 300, expiresAt }) {
+  if (!userId || !eventId || !expiresAt) {
+    throw new Error('userId, eventId, expiresAt는 취소표 할당 생성에 필요합니다.');
+  }
+
+  const result = await pool.query(
+    `INSERT INTO cancel_allocations
+       (user_id, seat_id, event_id, hold_duration, session_date, session_time, status, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'LINK_SENT', UTC_TIMESTAMP(), ?)`,
+    [userId, seatId, eventId, holdDuration, sessionDate, sessionTime, expiresAt],
+  );
+  return getAllocationById(result.insertId);
+}
+
 async function getLatestAllocation(userId, eventId = '') {
   const eventFilter = eventId ? ' AND event_id = ?' : '';
   const params = eventId ? [userId, eventId] : [userId];
@@ -205,6 +219,66 @@ async function getActiveAllocation(userId, eventId = '') {
   return getAllocation(userId, eventId, false);
 }
 
+// [보존 / DO NOT DELETE] A파트 좌석 직접 선택 로직.
+// B파트가 별도 취소표 사이트를 만들더라도 A파트 API의 local SMTP/fallback
+// 흐름을 제거하지 않는다. seat_id가 NULL인 취소표 할당에 사용자가 고른 좌석을 원자적으로 기록한다.
+// 이미 다른 좌석이 기록된 동시 요청은 seat_mismatch로 거부하고,
+// 같은 좌석의 재시도는 멱등 성공으로 처리한다.
+async function assignSeatById(allocationId, seatId) {
+  if (allocationId === undefined || allocationId === null || allocationId === '' || !seatId) {
+    return { success: false, reason: 'invalid_request', message: 'allocationId와 seatId가 필요합니다.' };
+  }
+
+  const result = await pool.query(
+    `UPDATE cancel_allocations
+     SET seat_id = ?
+     WHERE allocation_id = ?
+       AND status = 'LINK_SENT'
+       AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+       AND (seat_id IS NULL OR seat_id = ?)`,
+    [seatId, allocationId, seatId],
+  );
+
+  if ((result.affectedRows || 0) > 0) {
+    return {
+      success: true,
+      idempotent: false,
+      allocation: await getAllocationById(allocationId),
+    };
+  }
+
+  const current = await getAllocationById(allocationId);
+  if (!current) {
+    return { success: false, reason: 'not_found', message: '취소표 할당을 찾을 수 없습니다.' };
+  }
+  if (current.status !== 'LINK_SENT') {
+    return {
+      success: false,
+      reason: current.status === 'EXPIRED' ? 'already_expired' : 'invalid_status',
+      status: current.status,
+      allocation: current,
+    };
+  }
+  if (isPastExpiry(current)) {
+    return { success: false, reason: 'already_expired', status: current.status, allocation: current };
+  }
+  if (current.seatId && current.seatId === seatId) {
+    return { success: true, idempotent: true, allocation: current };
+  }
+  return { success: false, reason: 'seat_mismatch', allocation: current };
+}
+
+async function clearSeatAssignmentById(allocationId, seatId) {
+  if (allocationId === undefined || allocationId === null || allocationId === '' || !seatId) return false;
+  const result = await pool.query(
+    `UPDATE cancel_allocations
+     SET seat_id = NULL
+     WHERE allocation_id = ? AND status = 'LINK_SENT' AND seat_id = ?`,
+    [allocationId, seatId],
+  );
+  return (result.affectedRows || 0) > 0;
+}
+
 async function expireAllocation(userId, eventId, seatId, context = {}) {
   const allocation = await getActionAllocation(userId, eventId);
   if (!allocation) {
@@ -278,12 +352,15 @@ async function getAllocationHistory(eventId) {
 }
 
 module.exports = {
+  createAllocation,
   markResponded,
   markRespondedById,
   markExpired,
   markExpiredById,
   expireAllOverdue,
   getActiveAllocation,
+  assignSeatById,
+  clearSeatAssignmentById,
   getAllocationById,
   getAllocation,
   getActionAllocation,
