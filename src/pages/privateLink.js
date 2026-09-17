@@ -1,4 +1,7 @@
-// Secret Link 입장 페이지 — 서버에서 발급한 취소표 할당과 만료시각을 사용한다.
+// [보존 / DO NOT DELETE] A파트 취소표 Secret Link 입장 페이지.
+// B파트가 별도 취소표 사이트를 만들더라도 이 local SMTP/fallback 화면과
+// verify-link -> private-link -> cancel-seats 흐름은 삭제하거나 일반 예매 화면에
+// 통합하지 않는다. 서버 배정 좌석과 seat_id=NULL 직접 선택 모드를 모두 지원한다.
 
 import { navigate } from '../router.js';
 import { getState, setReturnTo } from '../state/store.js';

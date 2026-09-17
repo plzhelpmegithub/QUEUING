@@ -919,3 +919,24 @@
 - **해결(Solution):** 초기화 → 매진 → 조기 마감 → 취소표 생성 → 링크 발급 순서에 맞춰 버튼을 활성화한다. 단계3은 단계2 이후에만 가능하고, 실제 좌석 선택은 단계4에서 발급된 개인 Secret Link를 클릭할 때만 진행된다.
 
 ---
+## [2026-09-17 12:32] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/cancelSeatSelect.js]**: A파트 취소표 화면을 보존하고, `allocation.seatId`가 있으면 배정 좌석만, NULL이면 해당 회차의 AVAILABLE 좌석만 선택하도록 지원
+- **[src/pages/privateLink.js / src/pages/verifyLink.js]**: B파트 별도 사이트와 분리된 A파트 local SMTP/fallback Secret Link 진입 화면임을 코드 주석과 문서에 명시
+- **[README.md]**: 전체 인터랙티브 좌석맵 표시, 서버 배정 모드와 사용자 직접 선택 모드, A파트 화면 보존 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트가 좌석을 사전에 배정하지 않고 `seat_id = NULL`인 Secret Link를 발급하면 기존 취소표 좌석 화면에서 선택할 수 있는 좌석이 없었음
+- **원인(Cause):** 기존 UI가 allocation에 기록된 단일 좌석을 전제로 하여 좌석 선택 가능 여부를 계산했음
+- **해결(Solution):** 회차 좌석 전체를 조회해 실제 상태를 표시하고, NULL 모드에서 AVAILABLE 좌석만 클릭 가능하도록 변경했다. 선택 시 A파트 API가 allocation에 선택 좌석을 저장하고 서버 좌석 홀드를 완료한 뒤 결제로 전달한다. B파트가 별도 사이트를 운영해도 이 A파트 흐름은 삭제하거나 일반 예매 흐름으로 통합하지 않는다.
+
+## [2026-09-17 12:34] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/cancelSeatSelect.js]**: 기존 A파트 취소표 화면을 보존하고 서버 배정 좌석 모드와 NULL allocation의 사용자 직접 선택 모드를 함께 유지
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트 별도 취소표 사이트 추가 후 A파트 local SMTP/fallback 화면이 정리 대상 코드로 오인될 수 있었음
+- **원인(Cause):** A파트와 B파트의 취소표 UI가 별도 운영된다는 보존 정책이 코드와 문서에 충분히 표시되지 않았음
+- **해결(Solution):** Secret Link 검증·개인 입장·좌석 선택 파일에 보존 주석을 추가하고, `allocation.seatId` 유무에 따른 두 가지 선택 정책과 API 흐름을 README에 명시

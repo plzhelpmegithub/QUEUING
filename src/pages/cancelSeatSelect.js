@@ -1,4 +1,8 @@
-// 취소표 좌석 선택 페이지 — Secret Link에 서버가 배정한 좌석만 선점한다.
+// [보존 / DO NOT DELETE] A파트 취소표 좌석 페이지.
+// B파트가 별도 취소표 사이트를 만들더라도 이 로컬 SMTP/fallback 화면은
+// 삭제하거나 일반 예매 화면으로 통합하지 않는다.
+// allocation.seatId가 있으면 서버 배정 좌석만, NULL이면 사용자가 직접 고른
+// 해당 회차의 AVAILABLE 좌석 1개만 선점하는 두 모드를 모두 지원한다.
 
 import { formatPrice } from '../utils/format.js';
 import { navigate } from '../router.js';
@@ -95,8 +99,11 @@ function buildSeatMapData(event, rawSeats, assignedSeatId) {
         seatNum: numberMatch ? Number(numberMatch[1]) : seatIndex + 1,
         grade,
         status: toLocalSeatStatus(seat.status),
-        // 전체 배치도에 표시하되, Secret Link로 실제 배정된 좌석만 클릭 가능하다.
-        selectable: seatId === assignedSeatId,
+        // 전체 배치도는 유지한다. 서버 배정 모드에서는 배정 좌석만,
+        // 사용자 선택 모드(NULL)에서는 AVAILABLE 좌석만 클릭 가능하다.
+        selectable: assignedSeatId
+          ? seatId === assignedSeatId
+          : toLocalSeatStatus(seat.status) === 'available',
         price: Number(seat.price || price || 0),
       });
     });
@@ -115,7 +122,7 @@ export const cancelSeatSelectPage = {
       return;
     }
 
-    container.innerHTML = '<div class="center-state"><div class="center-state__title">배정 좌석을 확인하는 중...</div></div>';
+    container.innerHTML = '<div class="center-state"><div class="center-state__title">취소표 좌석 정보를 확인하는 중...</div></div>';
     let destroyed = false;
     let heldSeatId = null;
     let handedOffToPayment = false;
@@ -160,21 +167,37 @@ export const cancelSeatSelectPage = {
         if (session.time) query.set('sessionTime', session.time);
         const seatsResponse = await fetch(`/seats?${query.toString()}`);
         const seatsData = await seatsResponse.json();
-        const assignedSeat = (seatsData.seats || []).find((seat) => seat.seatId === allocation.seatId);
-        if (!assignedSeat || assignedSeat.status !== 'AVAILABLE') {
+        const assignedSeatId = allocation.seatId ? String(allocation.seatId) : '';
+        const assignedSeat = assignedSeatId
+          ? (seatsData.seats || []).find((seat) => seat.seatId === assignedSeatId)
+          : null;
+        if (assignedSeatId && (!assignedSeat || assignedSeat.status !== 'AVAILABLE')) {
           renderMessage('배정된 좌석을 사용할 수 없습니다', '좌석 상태가 변경되어 다음 대기자에게 확인이 필요합니다.');
+          return;
+        }
+        const availableSeats = (seatsData.seats || []).filter((seat) => seat.status === 'AVAILABLE');
+        if (!assignedSeatId && availableSeats.length === 0) {
+          renderMessage('선택 가능한 좌석이 없습니다', '현재 회차에 남은 취소표 좌석이 없습니다.');
           return;
         }
         if (destroyed) return;
 
-        const section = assignedSeat.section || '일반';
-        const price = Number(assignedSeat.price || 0);
-        const label = `${section}석 ${bareSeatId(assignedSeat.seatId)}`;
-        const { sections, flatSeats } = buildSeatMapData(event, seatsData.seats || [], assignedSeat.seatId);
-        if (!flatSeats.some((seat) => seat.id === assignedSeat.seatId)) {
+        const initialSection = assignedSeat?.section || '';
+        const initialPrice = Number(assignedSeat?.price || 0);
+        const initialLabel = assignedSeat ? `${initialSection}석 ${bareSeatId(assignedSeat.seatId)}` : '';
+        const { sections, flatSeats } = buildSeatMapData(event, seatsData.seats || [], assignedSeatId);
+        if (assignedSeatId && !flatSeats.some((seat) => seat.id === assignedSeatId)) {
           renderMessage('좌석 배치도를 불러올 수 없습니다', '배정 좌석의 배치 정보가 공연 좌석 데이터와 일치하지 않습니다.');
           return;
         }
+
+        let selectedSeat = null;
+        const modeNotice = assignedSeatId
+          ? '<strong>회원님에게 서버가 배정한 좌석만 선택</strong>할 수 있습니다.'
+          : '<strong>AVAILABLE 상태인 좌석 중 1개를 직접 선택</strong>할 수 있습니다.';
+        const modeSummary = assignedSeatId
+          ? `배정: ${escapeHtml(initialLabel)} · ${formatPrice(initialPrice)}`
+          : '선택: 회차의 AVAILABLE 좌석 1매';
 
         container.innerHTML = `
           <section class="seat-page-header">
@@ -187,8 +210,8 @@ export const cancelSeatSelectPage = {
           </section>
           <div class="container">
             <div class="notice-box mt-16">
-              <p>전체 좌석 배치도를 확인할 수 있으며, <strong>회원님에게 서버가 배정한 좌석만 선택</strong>할 수 있습니다.</p>
-              <p><strong>1인 1매</strong> 제한이 적용됩니다. 배정 좌석을 선점한 뒤 결제를 완료해주세요.</p>
+              <p>전체 좌석 배치도를 확인할 수 있으며, ${modeNotice}</p>
+              <p><strong>1인 1매</strong> 제한이 적용됩니다. 좌석을 선점한 뒤 결제를 완료해주세요.</p>
             </div>
           </div>
           <div class="container" style="padding-top:20px;">
@@ -196,9 +219,9 @@ export const cancelSeatSelectPage = {
               <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;">
                 <div>
                   <div style="font-size:18px;font-weight:800;">전체 좌석 배치도</div>
-                  <div style="font-size:13px;color:var(--color-text-secondary);margin-top:4px;">회차의 실시간 좌석 상태 · 배정 좌석만 선택 가능</div>
+                  <div style="font-size:13px;color:var(--color-text-secondary);margin-top:4px;">회차의 실시간 좌석 상태 · ${assignedSeatId ? '배정 좌석만 선택 가능' : 'AVAILABLE 좌석 선택 가능'}</div>
                 </div>
-                <div class="num-mono" style="font-size:13px;color:var(--color-text-secondary);">배정: ${escapeHtml(label)} · ${formatPrice(price)}</div>
+                <div class="num-mono" style="font-size:13px;color:var(--color-text-secondary);">${modeSummary}</div>
               </div>
               <div class="seatmap-scroll">
                 <div class="seatmap-inner" data-cancel-seatmap></div>
@@ -222,8 +245,8 @@ export const cancelSeatSelectPage = {
         const infoEl = container.querySelector('[data-selected-info]');
         const nextButton = container.querySelector('[data-next]');
         let selected = false;
-        async function selectAssignedSeat(seatId) {
-          if (seatId !== assignedSeat.seatId) {
+        async function selectEligibleSeat(seatId) {
+          if (assignedSeatId && seatId !== assignedSeatId) {
             showToast({
               title: '배정된 좌석만 선택할 수 있습니다',
               body: 'Secret Link로 회원님에게 배정된 좌석을 선택해주세요.',
@@ -231,9 +254,12 @@ export const cancelSeatSelectPage = {
             return;
           }
           if (selected || heldSeatId) return;
-          const seat = flatSeats.find((item) => item.id === assignedSeat.seatId);
-          if (!seat) return;
-          const result = await holdCancelSeat(userId, eventId, assignedSeat.seatId, {
+          const seat = flatSeats.find((item) => item.id === seatId);
+          if (!seat || seat.status !== 'available') {
+            showToast({ title: '선택할 수 없는 좌석입니다', body: 'AVAILABLE 상태의 좌석만 선택할 수 있습니다.' });
+            return;
+          }
+          const result = await holdCancelSeat(userId, eventId, seatId, {
             sessionDate: session.date,
             sessionTime: session.time,
           }).catch(() => ({ ok: false, data: {} }));
@@ -242,21 +268,22 @@ export const cancelSeatSelectPage = {
             return;
           }
           selected = true;
-          heldSeatId = assignedSeat.seatId;
+          heldSeatId = seatId;
           seat.status = 'mine';
+          selectedSeat = seat;
           seatMapApi?.updateStatuses(flatSeats);
           infoEl.style.display = 'block';
-          container.querySelector('[data-sel-label]').textContent = label;
-          container.querySelector('[data-sel-price]').textContent = formatPrice(price);
+          container.querySelector('[data-sel-label]').textContent = `${seat.section || '일반'}석 ${bareSeatId(seat.id)}`;
+          container.querySelector('[data-sel-price]').textContent = formatPrice(Number(seat.price || 0));
           nextButton.disabled = false;
         }
 
         seatMapApi = mountSeatMap(container.querySelector('[data-cancel-seatmap]'), {
           sections,
           seats: flatSeats,
-          onSeatClick: selectAssignedSeat,
+          onSeatClick: selectEligibleSeat,
           cancelMode: true,
-          selectionOnly: true,
+          selectionOnly: Boolean(assignedSeatId),
           venue: event.venue,
         });
 
@@ -264,14 +291,14 @@ export const cancelSeatSelectPage = {
           if (!selected || !heldSeatId) return;
           handedOffToPayment = true;
           const seat = {
-            id: assignedSeat.seatId,
-            seatId: assignedSeat.seatId,
-            section,
-            grade: section,
-            gradeName: `${section}석`,
-            seatNum: flatSeats.find((item) => item.id === assignedSeat.seatId)?.seatNum || null,
-            price,
-            label,
+            id: selectedSeat.id,
+            seatId: selectedSeat.id,
+            section: selectedSeat.section || '일반',
+            grade: selectedSeat.grade || selectedSeat.section || 'A',
+            gradeName: `${selectedSeat.section || '일반'}석`,
+            seatNum: selectedSeat.seatNum || null,
+            price: Number(selectedSeat.price || 0),
+            label: `${selectedSeat.section || '일반'}석 ${bareSeatId(selectedSeat.id)}`,
           };
           setCurrentOrder({
             concertId: eventId,
@@ -281,7 +308,7 @@ export const cancelSeatSelectPage = {
             source: 'cancel',
             securedAt: Date.now(),
             cancelDeadline: allocation.expiresAt,
-            cancelAllocation: allocation,
+            cancelAllocation: { ...allocation, seatId: selectedSeat.id },
           });
           navigate('payment/cancel');
         });

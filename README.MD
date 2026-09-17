@@ -211,7 +211,7 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 또는 일�
 
 ### src/utils/backendApi.js
 - **목적:** A파트 REST API 호출 유틸리티. Vite 프록시를 통해 CORS 없이 호출.
-- **주요 기능:** 일반 좌석 API와 함께 취소표 대기열 진입·상태 조회, 로그인 사용자 대기열 목록 조회, 서버 Pool 조회, Secret Link 좌석 선점, 할당 만료 API를 제공한다. `getJson()`은 비정상 HTTP 응답의 `message`·`code`를 Error 객체에 보존하여 마이페이지가 500/503을 빈 목록으로 표시하지 않게 한다. `leaveQueueBeacon()`은 대기열 페이지 이탈 시 인증 헤더가 포함된 keepalive 요청으로 `/queue/leave`를 호출한다.
+- **주요 기능:** 일반 좌석 API와 함께 취소표 대기열 진입·상태 조회, 로그인 사용자 대기열 목록 조회, 서버 Pool 조회, Secret Link 좌석 선점, 할당 만료 API를 제공한다. `holdCancelSeat()`는 서버 배정 좌석과 `allocation.seat_id = NULL`인 회차별 AVAILABLE 좌석 직접 선택을 같은 A파트 API로 전달한다. `getJson()`은 비정상 HTTP 응답의 `message`·`code`를 Error 객체에 보존하여 마이페이지가 500/503을 빈 목록으로 표시하지 않게 한다. `leaveQueueBeacon()`은 대기열 페이지 이탈 시 인증 헤더가 포함된 keepalive 요청으로 `/queue/leave`를 호출한다.
 - **API 명세 / 라우팅 규칙:** `joinCancelQueueApi()`는 `POST /cancel-queue/join`, `fetchCancelQueueStatus()`는 `GET /cancel-queue/status/:eventId/:userId`, `fetchMyCancelQueues()`는 `GET /cancel-queue/mine`, `fetchCancelPool()`은 `GET /cancel-queue/pool/:eventId`, `holdCancelSeat()`는 `POST /cancel-queue/hold`, `expireCancelAllocation()`은 `POST /cancel-queue/expire`를 호출한다. 보호 대상 요청에는 Access JWT를 포함하고, reCAPTCHA 보호 대상 POST 요청은 `fetchWithRecaptcha()`를 통해 v3 토큰 발급 → v3 점수 미달 시 v2 체크박스 모달 폴백을 자동 처리한다. 모든 요청에 3초 타임아웃을 적용하며 `releaseSeatBeacon()`은 인증 헤더를 유지하기 위해 `fetch(..., { keepalive: true })`를 사용한다.
 
 ### src/utils/recaptcha.js
@@ -233,17 +233,20 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 또는 일�
 
 ### src/pages/verifyLink.js
 - **목적:** B파트가 이메일로 발송한 Secret Link의 랜딩 페이지. 토큰 검증과 자동 로그인을 처리.
+- **보존 정책:** B파트 별도 사이트가 추가되어도 A파트 local SMTP/fallback Secret Link 검증 진입점으로 유지한다.
 - **주요 기능:** URL 쿼리의 `linkToken` 또는 `token` 파라미터를 추출하여 `POST /verify-link`로 검증한다. 성공 시 현재 브라우저의 로그인 여부와 관계없이 응답으로 받은 allocation 범위의 취소표 전용 Access JWT를 저장하고, 할당된 userId로 세션을 전환한 뒤 `private-link/{eventId}` 페이지로 이동한다. 별도 일반 로그인은 필요하지 않으며, 토큰 자체가 인증 수단이다.
 - **API 명세 / 라우팅 규칙:** `POST /verify-link` 사용. 개발 환경에서는 `vite.config.js`가 `/verify-link`를 A파트 API 서버로 프록시하고, 운영 환경에서는 Nginx의 동일 location이 API 서버로 전달해야 한다. 프론트엔드 라우트는 `verify-link`이며 `main.js`에서 `private-link` 라우트보다 먼저 등록된다.
 
 ### src/pages/privateLink.js
 - **목적:** 서버에서 발급한 취소표 Secret Link의 입장과 만료를 처리.
-- **주요 기능:** 이메일 Secret Link로 진입한 개인 전용 화면에서 사용자·공연별 활성 할당을 서버에서 확인하고, 할당된 좌석과 서버 만료시각만 사용한다. B파트 NULL seat_id 할당 시 "취소 좌석 중 선택 가능"을 표시하며, 타이머 바는 서버의 `remainingSeconds`를 사용하여 남은 시간을 정확히 반영한다. 만료·오류 시 마이페이지 대기열로 이동시키지 않고 개인 링크 화면에서 안내한 뒤 홈으로 이동한다.
+- **보존 정책:** B파트 별도 취소표 사이트와 별개로 A파트 local SMTP/fallback 링크의 개인 전용 화면을 유지한다.
+- **주요 기능:** 이메일 Secret Link로 진입한 개인 전용 화면에서 사용자·공연별 활성 할당을 서버에서 확인하고, 할당된 좌석과 서버 만료시각만 사용한다. B파트 `NULL seat_id` 할당 시 "취소 좌석 중 선택 가능"을 표시하며, 타이머 바는 서버의 `remainingSeconds`를 사용하여 남은 시간을 정확히 반영한다. 만료·오류 시 마이페이지 대기열로 이동시키지 않고 개인 링크 화면에서 안내한 뒤 홈으로 이동한다.
 - **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/expire` 사용. `verifyLink.js`가 저장한 취소표 전용 Access JWT로 본인 상태를 조회하며, 유효한 할당이 없으면 개인 링크 만료 안내를 표시한다.
 
 ### src/pages/cancelSeatSelect.js
-- **목적:** Secret Link 보유자에게 서버가 배정한 취소표 좌석을 보여주고 선점.
-- **주요 기능:** `/seats`에서 해당 이벤트·회차의 전체 좌석과 실제 상태를 조회해 본티켓팅과 같은 Canvas 인터랙티브 배치도로 표시한다. 배정 좌석은 선택 가능하게, 나머지 좌석은 회색으로 표시하되 선택 불가하게 구성한다. 선택 시 allocation에 묶인 취소표 전용 Access JWT로 서버 선점을 완료한 뒤 결제 주문으로 전달하며, 결제 화면으로 이동하지 않고 이탈하면 좌석을 해제한다.
+- **목적:** A파트 Secret Link 보유자에게 회차별 취소표 좌석 상태를 보여주고 1매를 선점.
+- **보존 정책:** B파트가 별도 취소표 사이트를 제공하더라도 A파트의 local SMTP/fallback 화면과 `verify-link → private-link → cancel-seats` 흐름은 보존한다.
+- **주요 기능:** `/seats`에서 해당 이벤트·회차의 전체 좌석과 실제 상태를 조회해 본티켓팅과 같은 Canvas 인터랙티브 배치도로 표시한다. `allocation.seatId`가 있으면 서버가 배정한 좌석만 선택 가능하고, `allocation.seatId`가 `NULL`이면 해당 회차의 `AVAILABLE` 좌석만 선택 가능하게 한다. 좌석 선택 시 취소표 전용 Access JWT로 `POST /cancel-queue/hold`를 호출하며, 서버는 allocation에 좌석을 원자적으로 기록한 뒤 Redis/MariaDB 좌석을 홀드한다. 결제 화면으로 이동하지 않고 이탈하면 좌석을 해제한다.
 - **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `GET /seats`, `POST /cancel-queue/hold`, `POST /seats/release` 사용. 회차 정보는 할당에 저장된 `sessionDate`·`sessionTime`을 우선 사용한다.
 
 ### src/pages/home.js

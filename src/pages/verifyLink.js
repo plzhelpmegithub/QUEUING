@@ -1,3 +1,6 @@
+// [보존 / DO NOT DELETE] A파트 취소표 Secret Link 검증 진입점.
+// B파트의 별도 사이트가 추가되어도 A파트 local SMTP/fallback 링크를 검증하는
+// 기존 화면이므로 삭제하거나 일반 로그인 흐름으로 대체하지 않는다.
 import { navigate } from '../router.js';
 import { login, getState } from '../state/store.js';
 
