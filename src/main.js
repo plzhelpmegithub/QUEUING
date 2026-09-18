@@ -19,6 +19,7 @@ import { membershipCheckoutPage } from './pages/membershipCheckout.js';
 import { privateLinkPage } from './pages/privateLink.js';
 import { verifyLinkPage } from './pages/verifyLink.js';
 import { cancelSeatSelectPage } from './pages/cancelSeatSelect.js';
+import { lastCancelTicketingPage } from './pages/lastCancelTicketing.js';
 import { myPage } from './pages/mypage.js';
 import { loginPage } from './pages/login.js';
 import { signupPage } from './pages/signup.js';
@@ -48,6 +49,8 @@ registerRoute(/^membership-checkout\/(?<plan>monthly|yearly)$/, membershipChecko
 registerRoute(/^verify-link$/, verifyLinkPage);
 registerRoute(/^private-link\/(?<id>[\w-]+)$/, privateLinkPage);
 registerRoute(/^cancel-seats\/(?<id>[\w-]+)$/, cancelSeatSelectPage);
+// [보존 / LAST LOCAL SIMULATION] B파트와 분리된 공용 취소표 풀 검증 화면.
+registerRoute(/^last-cancel-ticketing$/, lastCancelTicketingPage);
 registerRoute(/^mypage(?:\/(?<section>[\w-]+))?$/, myPage);
 registerRoute(/^login$/, loginPage);
 registerRoute(/^signup$/, signupPage);

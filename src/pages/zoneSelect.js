@@ -24,7 +24,7 @@ import { leaveQueueBeacon, releaseSeatBeacon } from '../utils/backendApi.js';
 
 const GRADE_COLOR = { VIP: '#B5121B', R: '#C98500', S: '#199E70', A: '#3987E5' };
 const FALLBACK_PALETTE = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400', '#2C3E50'];
-const POLL_MS = 4000;
+//const POLL_MS = 4000;
 const HOLD_MS = 8 * 60 * 1000 + 42 * 1000;
 
 const WEEKDAYS_KO = ['일', '월', '화', '수', '목', '금', '토'];
@@ -189,6 +189,9 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         : storedLayout;
       let session = selectedSession || getSelectedSession(c.eventId);
       const eventSessions = formatStoredSessions(c.sessions) || generateEventSessions(c.eventDate);
+      const sessionSocketKey = session?.date && session?.time
+        ? `${session.date}_${String(session.time).replace(/^([0-9]):/, '0$1:').replace(/:/g, '-')}`
+        : '';
       queueContext = {
         eventId: c.eventId,
         sessionDate: session?.date || '',
@@ -605,7 +608,8 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
       function openSeatWs() {
         if (destroyed) return;
         const u = getState().user;
-        seatConn = connectSeats(c.eventId, u?.email || 'anonymous', u?.name || '게스트', {
+        const socketEventId = sessionSocketKey ? `${c.eventId}:${sessionSocketKey}` : c.eventId;
+        seatConn = connectSeats(socketEventId, u?.email || 'anonymous', u?.name || '게스트', {
           onMessage: (msg) => {
             if (!msg?.seatId || !msg.type) return;
             if (mySeats.some((s) => s.id === msg.seatId)) return;

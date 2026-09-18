@@ -20,8 +20,14 @@ export const privateLinkPage = {
   render(container, params, query) {
     const eventId = params.id;
     const userId = getState().user?.userId || getState().user?.email || query?.userId || '';
+    const sessionDate = query?.sessionDate || '';
+    const sessionTime = query?.sessionTime || '';
+    const sessionQuery = new URLSearchParams();
+    if (sessionDate) sessionQuery.set('sessionDate', sessionDate);
+    if (sessionTime) sessionQuery.set('sessionTime', sessionTime);
+    const sessionQuerySuffix = sessionQuery.toString() ? `?${sessionQuery.toString()}` : '';
     if (!userId) {
-      setReturnTo(`private-link/${eventId}`);
+      setReturnTo(`private-link/${eventId}${sessionQuerySuffix}`);
       navigate('login');
       return;
     }
@@ -96,7 +102,7 @@ export const privateLinkPage = {
       container.querySelector('[data-enter]')?.addEventListener('click', () => {
         clearInterval(countdownTimer);
         countdownTimer = null;
-        navigate(`cancel-seats/${eventId}`);
+        navigate(`cancel-seats/${eventId}${sessionQuerySuffix}`);
       });
     }
 
@@ -104,7 +110,11 @@ export const privateLinkPage = {
       try {
         const [eventsResponse, status] = await Promise.all([
           fetch('/events'),
-          fetchCancelQueueStatus(eventId, userId, { eventId }),
+          fetchCancelQueueStatus(eventId, userId, {
+            eventId,
+            ...(sessionDate ? { sessionDate } : {}),
+            ...(sessionTime ? { sessionTime } : {}),
+          }),
         ]);
         const eventsData = await eventsResponse.json();
         const event = (eventsData.events || []).find((item) => item.eventId === eventId);

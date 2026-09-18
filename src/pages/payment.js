@@ -48,6 +48,9 @@ export const paymentPage = {
   render(container, params) {
     const type = params.type === 'cancel' ? 'cancel' : 'regular';
     const order = getState().currentOrder;
+    const lastSimulationAllocation = type === 'cancel' && order?.cancelAllocation?.lastSimulation
+      ? order.cancelAllocation
+      : null;
     // cancel(취소표) 플로우는 여전히 좌석 1개(order.seat)만 다루고, regular(일반
     // 예매) 플로우는 최대 4매까지 담긴 order.seats 배열을 다룬다 — 이후 로직은
     // 전부 이 통합된 seats 배열 하나만 보고 동작하도록 정규화한다.
@@ -129,7 +132,21 @@ export const paymentPage = {
     function abandonAdmission({ waitForRelease = false } = {}) {
       if (admissionAbandonSent) return Promise.resolve();
       admissionAbandonSent = true;
-      const currentUserId = getState().user?.userId || getState().user?.email;
+      const currentUserId = getState().user?.userId || getState().user?.email || order.userId || lastSimulationAllocation?.userId;
+
+      // Final Last 링크는 일반 로그인 JWT가 아니라 취소표 scoped token을
+      // 사용하므로, 전용 expire API가 좌석 해제와 allocation 만료를 함께 처리한다.
+      if (lastSimulationAllocation) {
+        const linkToken = lastSimulationAllocation.accessToken;
+        if (!linkToken || !lastSimulationAllocation.allocationId) return Promise.resolve();
+        return fetch('/last-simulation/expire', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${linkToken}` },
+          body: JSON.stringify({ allocationId: lastSimulationAllocation.allocationId }),
+          keepalive: !waitForRelease,
+        }).then(() => undefined).catch(() => undefined);
+      }
+
       if (!currentUserId) return Promise.resolve();
 
       if (!waitForRelease) {
@@ -166,8 +183,8 @@ export const paymentPage = {
             <span class="badge badge-red">결제 대기</span>
           </div>
           <div class="notice-box mt-16">
-              <p>취소표를 확보한 시점부터 <strong>24시간 이내</strong> 결제를 완료해야 합니다.</p>
-              <p>24시간 이내 결제하지 않으면 티켓은 <strong>자동 취소</strong>됩니다.</p>
+              <p>취소표를 확보한 시점부터 <strong>5분 이내</strong> 결제를 완료해야 합니다.</p>
+              <p>5분 이내 결제하지 않으면 티켓은 <strong>자동 취소</strong>됩니다.</p>
               <p>취소된 티켓은 다시 취소표 Pool로 돌아가며 다음 대기자에게 배부됩니다.</p>
           </div>` : `
           <div class="notice-box mt-16">
@@ -314,10 +331,10 @@ export const paymentPage = {
               settled = true;
               payBtn.disabled = true;
               agreeBox.disabled = true;
-              const currentUserId = getState().user?.userId || getState().user?.email;
+              const currentUserId = getState().user?.userId || getState().user?.email || order.userId || lastSimulationAllocation?.userId;
               const releasePromise = abandonAdmission({ waitForRelease: true });
               const expirePromise = releasePromise.then(() => (
-                type === 'cancel' && currentUserId && order.cancelAllocation
+                type === 'cancel' && currentUserId && order.cancelAllocation && !lastSimulationAllocation
                   ? expireCancelAllocation(currentUserId, c.eventId, order.cancelAllocation.seatId, {
                       sessionDate: order.cancelAllocation.sessionDate || order.session?.date || '',
                       sessionTime: order.cancelAllocation.sessionTime || order.session?.time || '',
@@ -362,7 +379,7 @@ export const paymentPage = {
         return;
       }
       const method = container.querySelector('input[name="pay"]:checked')?.value || 'card';
-      const userId = getState().user?.userId || getState().user?.email;
+      const userId = getState().user?.userId || getState().user?.email || order.userId || lastSimulationAllocation?.userId;
 
       payBtn.disabled = true;
 
@@ -370,7 +387,27 @@ export const paymentPage = {
          // 일반 예매와 취소표 모두 /seats/hold를 거친 좌석은
          // /seats/confirm으로 MariaDB reservations에 확정 저장한다.
         const realSeats = seats.filter((s) => typeof s.id === 'string' && s.id.includes(':') && !!userId);
-        const confirmCall = realSeats.length
+        const confirmCall = lastSimulationAllocation
+          ? fetch('/last-simulation/confirm', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${lastSimulationAllocation.accessToken}`,
+              },
+              body: JSON.stringify({
+                userId,
+                seatId: realSeats[0]?.id || seats[0]?.id,
+                eventId: c.eventId,
+                allocationId: lastSimulationAllocation.allocationId,
+                sessionDate: order.session?.date || lastSimulationAllocation.sessionDate || '',
+                sessionTime: order.session?.time || lastSimulationAllocation.sessionTime || '',
+                paymentMethod: method,
+              }),
+            }).then(async (response) => ({
+              ok: response.ok,
+              data: await response.json().catch(() => ({})),
+            }))
+          : realSeats.length
           ? Promise.all(
               realSeats.map((s) => fetchWithRecaptcha('/seats/confirm', {
                     userId,

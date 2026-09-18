@@ -8,9 +8,9 @@ import { formatPrice } from '../utils/format.js';
 import { navigate } from '../router.js';
 import { getSelectedSession, getState, isLoggedIn, setCurrentOrder } from '../state/store.js';
 import { fetchCancelQueueStatus, holdCancelSeat, releaseSeatApi } from '../utils/backendApi.js';
-import { getVenueZoneLayout } from '../data/concerts.js';
 import { mountSeatMap } from '../components/seatMap.js';
 import { showToast } from '../components/toast.js';
+import { bareSeatId, buildCancelSeatMapData, toCancelSeatStatus } from '../utils/cancelSeatMap.js';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -21,101 +21,12 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-function bareSeatId(seatId) {
-  return String(seatId || '').split(':').pop();
-}
-
-function toLocalSeatStatus(status) {
-  const normalized = String(status || '').toUpperCase();
-  if (normalized === 'SOLD' || normalized === 'RESERVED') return 'sold';
-  if (normalized === 'HELD' || normalized === 'LOCKED') return 'holding';
-  return 'available';
-}
-
-function extractGrade(sectionName) {
-  const value = String(sectionName || '').toUpperCase();
-  return ['VIP', 'R', 'S', 'A'].find((grade) => value.includes(grade)) || 'A';
-}
-
-function buildSeatMapData(event, rawSeats, assignedSeatId) {
-  const eventPrefix = `${event.eventId}:`;
-  const eventSeats = rawSeats.filter((seat) => String(seat.seatId || '').startsWith(eventPrefix));
-  const storedSections = Array.isArray(event.sections) ? event.sections : [];
-  const storedByName = new Map(storedSections.map((section) => [String(section.name || section.id), section]));
-
-  // 올림픽홀은 API에 실제 구역명(A1, B1...)만 저장되는 경우가 있어
-  // 프론트의 고정 좌표/등급 메타데이터로 등급을 보완한다.
-  let venueZones = [];
-  if (event.venue === '올림픽홀') {
-    venueZones = getVenueZoneLayout({
-      ...event,
-      grades: Array.isArray(event.grades) ? event.grades : [],
-    });
-  }
-  const venueByName = new Map(venueZones.map((zone) => [String(zone.id), zone]));
-
-  const names = [];
-  const seenNames = new Set();
-  [...storedSections.map((section) => section.name || section.id), ...eventSeats.map((seat) => seat.section)]
-    .forEach((name) => {
-      const key = String(name || '');
-      if (key && !seenNames.has(key)) {
-        seenNames.add(key);
-        names.push(key);
-      }
-    });
-
-  const sections = [];
-  const flatSeats = [];
-  const palette = ['#B5121B', '#C98500', '#199E70', '#3987E5', '#8E44AD', '#16A085', '#D35400'];
-
-  names.forEach((sectionName, sectionIndex) => {
-    const stored = storedByName.get(sectionName) || {};
-    const venueZone = venueByName.get(sectionName) || {};
-    const sectionSeats = eventSeats.filter((seat) => String(seat.section || '') === sectionName);
-    if (!sectionSeats.length) return;
-
-    const grade = venueZone.grade || stored.grade || extractGrade(sectionName);
-    const label = venueZone.label || stored.label || `${sectionName}구역`;
-    const color = palette[sectionIndex % palette.length];
-    const price = Number(sectionSeats.find((seat) => Number(seat.price) > 0)?.price || venueZone.price || stored.price || event.price || 0);
-    sections.push({
-      id: sectionName,
-      label,
-      grade,
-      zone: event.eventName,
-      cols: sectionSeats.length,
-      color,
-    });
-
-    sectionSeats.forEach((seat, seatIndex) => {
-      const seatId = String(seat.seatId || '');
-      const bareId = bareSeatId(seatId);
-      const numberMatch = bareId.match(/-(\d+)$/);
-      flatSeats.push({
-        id: seatId,
-        section: sectionName,
-        row: bareId.split('-')[0] || String(Math.floor(seatIndex / 10) + 1),
-        seatNum: numberMatch ? Number(numberMatch[1]) : seatIndex + 1,
-        grade,
-        status: toLocalSeatStatus(seat.status),
-        // 전체 배치도는 유지한다. 서버 배정 모드에서는 배정 좌석만,
-        // 사용자 선택 모드(NULL)에서는 AVAILABLE 좌석만 클릭 가능하다.
-        selectable: assignedSeatId
-          ? seatId === assignedSeatId
-          : toLocalSeatStatus(seat.status) === 'available',
-        price: Number(seat.price || price || 0),
-      });
-    });
-  });
-
-  return { sections, flatSeats };
-}
-
 export const cancelSeatSelectPage = {
-  render(container, params) {
+  render(container, params, query) {
     const eventId = params.id;
     const userId = getState().user?.userId || getState().user?.email;
+    const sessionDate = query?.sessionDate || '';
+    const sessionTime = query?.sessionTime || '';
 
     if (!isLoggedIn() || !userId) {
       navigate('');
@@ -143,7 +54,11 @@ export const cancelSeatSelectPage = {
 
     async function load() {
       try {
-        const status = await fetchCancelQueueStatus(eventId, userId, { eventId });
+        const status = await fetchCancelQueueStatus(eventId, userId, {
+          eventId,
+          ...(sessionDate ? { sessionDate } : {}),
+          ...(sessionTime ? { sessionTime } : {}),
+        });
         const allocation = status.secretLink?.active ? status.secretLink : null;
         if (!allocation) {
           renderMessage('유효한 취소표 배정이 없습니다', 'Secret Link가 만료되었거나 이미 처리되었습니다.');
@@ -185,7 +100,8 @@ export const cancelSeatSelectPage = {
         const initialSection = assignedSeat?.section || '';
         const initialPrice = Number(assignedSeat?.price || 0);
         const initialLabel = assignedSeat ? `${initialSection}석 ${bareSeatId(assignedSeat.seatId)}` : '';
-        const { sections, flatSeats } = buildSeatMapData(event, seatsData.seats || [], assignedSeatId);
+        const mapData = buildCancelSeatMapData(event, seatsData.seats || [], assignedSeatId);
+        const { sections, seats: flatSeats } = mapData;
         if (assignedSeatId && !flatSeats.some((seat) => seat.id === assignedSeatId)) {
           renderMessage('좌석 배치도를 불러올 수 없습니다', '배정 좌석의 배치 정보가 공연 좌석 데이터와 일치하지 않습니다.');
           return;

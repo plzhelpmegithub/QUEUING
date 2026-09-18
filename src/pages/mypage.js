@@ -302,6 +302,7 @@ export const myPage = {
     }
     const section = params.section || '';
     const { user, bookings, interests, cancelQueues } = getState();
+    let lastPassHistory = [];
 
     container.innerHTML = `
       <div class="container mypage-body">
@@ -389,7 +390,7 @@ export const myPage = {
                   bookingId: `R-${r.seatId}`,
                   ownerUserId: userId,
                   concertId: eventId,
-                  session: null,
+                  session: { date: r.sessionDate || '', time: r.sessionTime || '' },
                   zone: { id: section, label: `${section}구역` },
                   seat: {
                     id: r.seatId,
@@ -413,6 +414,23 @@ export const myPage = {
         .catch(() => {});
     }
     syncBookingsFromServer();
+
+    // 취소표 전용 화면에서 사용자가 "다음 순번에게 넘기기"를 선택한 경우는
+    // 결제가 없으므로 reservations가 아닌 Last 전용 이력에 남는다. 마이페이지의
+    // 취소/환불내역에서는 이를 환불 건과 구분해 안내용 기록으로 함께 보여준다.
+    function syncLastPassHistory() {
+      fetch('/last-simulation/history/mine', { headers: { ...authHeaders() } })
+        .then((response) => response.ok ? response.json() : { history: [] })
+        .then((data) => {
+          if (getState().user?.userId !== user?.userId) return;
+          lastPassHistory = Array.isArray(data.history) ? data.history : [];
+          if (section === 'refunds') renderRefunds();
+        })
+        .catch(() => {
+          lastPassHistory = [];
+        });
+    }
+    syncLastPassHistory();
 
     let cancelQueueLoadError = '';
 
@@ -751,17 +769,45 @@ export const myPage = {
 
     const REFUND_HISTORY_MS = 7 * 24 * 60 * 60 * 1000; // 취소/환불내역은 7일만 유지
 
+    function passedQueueRowHtml(item, realEvents) {
+      const meta = resolveConcert(item.eventId, realEvents);
+      const name = item.eventName || meta?.name || item.eventId;
+      const session = [item.sessionDate, item.sessionTime].filter(Boolean).join(' ');
+      const passedAt = item.createdAt ? formatDate(item.createdAt) : '-';
+      return `
+        <div class="ticket-row" style="align-items:flex-start;">
+          <div>
+            <div class="ticket-row__concert">${escapeAttr(name)} <span class="badge badge-gray">취소표 순번 양도</span></div>
+            <div class="ticket-row__meta">${session ? `${escapeAttr(session)} · ` : ''}처리일 ${passedAt}</div>
+            <div class="ticket-row__meta">원하는 좌석이 없어 다음 대기자에게 취소표 순번을 넘겼습니다.</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="kv-row"><span>결제금액</span><b class="num-mono">결제 없음</b></div>
+            <div class="mt-8"><span class="badge badge-gray">순번 종료</span></div>
+          </div>
+        </div>
+      `;
+    }
+
     function renderRefunds() {
       withRealEvents((realEvents) => {
-        const list = bookings.filter(
+        const refundList = bookings.filter(
           (b) =>
             (b.status === 'cancelled' || b.status === 'refund_pending' || b.status === 'refunded') &&
             (!b.cancelledAt || Date.now() - b.cancelledAt <= REFUND_HISTORY_MS)
         );
+        const passedList = lastPassHistory.filter((item) => {
+          const createdAt = new Date(item.createdAt || 0).getTime();
+          return !createdAt || Date.now() - createdAt <= REFUND_HISTORY_MS;
+        });
+        const rows = [
+          ...refundList.map((booking) => refundRowHtml(booking, realEvents)),
+          ...passedList.map((item) => passedQueueRowHtml(item, realEvents)),
+        ].filter(Boolean);
         content.innerHTML = `
           <div class="mypage-section-title" style="margin-top:0;">취소/환불내역</div>
           <div class="notice-box mt-8" style="margin-bottom:16px;"><p>취소/환불내역은 취소일로부터 7일간만 보관됩니다.</p></div>
-          ${list.length ? list.map((b) => refundRowHtml(b, realEvents)).join('') : emptyRow('취소 및 환불 내역이 없습니다.')}
+          ${rows.length ? rows.join('') : emptyRow('취소 및 환불 내역이 없습니다.')}
         `;
       });
     }

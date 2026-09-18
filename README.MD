@@ -1,5 +1,16 @@
 # QUEUING - 프론트엔드 (Vite SPA)
 
+## 회차별 좌석 WebSocket 채널
+
+좌석 실시간 연결은 공연 ID만 사용하지 않고 선택된 회차를 포함한 다음 식별자를 사용한다.
+
+```text
+공연ID:YYYY-MM-DD_HH-MM
+예시: evt-221:2026-12-05_18-00
+```
+
+`zoneSelect.js`와 `seatSelect.js`가 현재 선택된 회차를 조합하여 WebSocket 래퍼에 전달하며, `realtimeChat.js`와 서버 연결 형식은 변경하지 않는다.
+
 Vite 기반 Vanilla JS 싱글 페이지 애플리케이션. 콘서트 예매 티켓팅 시스템의 사용자/관리자 인터페이스.
 
 **빌드 도구**: Vite 6.x  
@@ -54,6 +65,7 @@ nginx/
     │   ├── olympicHallPreview.js   # 올림픽홀 미리보기
     │   ├── payment.js              # 결제 페이지
     │   ├── privateLink.js          # Secret Link 입장
+    │   ├── lastCancelTicketing.js  # Final 공용 취소표 풀 mock 예매 화면
     │   ├── verifyLink.js           # 이메일 Secret Link 토큰 검증 랜딩
     │   ├── queue.js                # 대기열 페이지
     │   ├── seatMapper.js           # 좌석 매퍼
@@ -76,6 +88,7 @@ nginx/
     └── utils/
         ├── backendApi.js           # API 호출 유틸리티
         ├── authToken.js            # Access/Refresh JWT 저장 및 Bearer 헤더 생성
+        ├── cancelSeatMap.js        # Local/Final 취소표 공통 좌석맵 변환
         ├── recaptcha.js            # Google reCAPTCHA v3/v2 토큰 발급 및 자동 폴백
         ├── calendarEvents.js       # 달력 이벤트 유틸리티
         ├── format.js               # 날짜/숫자 포맷
@@ -151,8 +164,8 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 또는 일�
 
 ## 배포 시 주의
 
-- `vite.config.js`의 프록시 설정이 운영 환경과 일치하는지 확인할 것
-- 운영 `nginx.conf`의 API 프록시 location 정규식에 `/cancel-queue`와 `/verify-link`를 포함할 것. 누락되면 취소표 API 또는 Secret Link 검증 요청이 SPA `index.html`로 fall back되어 JSON 조회가 실패한다.
+- `vite.config.js`의 프록시 설정이 운영 환경과 일치하는지 확인할 것. 개발 환경에서 Final 관리자 단계4와 Last 화면은 `/admin/last-simulation/*`, `/last-simulation/*`이 A파트 API(`http://192.168.0.190:3000`)로 전달되어야 한다.
+- 운영 `nginx.conf`의 API 프록시 location 정규식에 `/cancel-queue`, `/verify-link`, `/last-simulation`을 포함할 것. 누락되면 취소표 API 또는 Secret Link 검증 요청이 SPA `index.html`로 fall back되어 JSON 조회가 실패한다.
 - 빌드: `npm run build` → `dist/` 디렉토리를 Nginx에 배포
 - 좌석 좌표 변경 시 `olympicHallSeats.js`만 수정하면 됨 (seatMap.js의 변환 로직은 변경 불필요)
 - 개발용 reCAPTCHA v3는 `.env.local`에 `VITE_RECAPTCHA_SITE_KEY`를, v2 폴백은 `VITE_RECAPTCHA_V2_SITE_KEY`를 설정한다. secret key는 프론트엔드에 넣지 않고 API 서버 환경변수로만 관리한다.
@@ -187,18 +200,20 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 또는 일�
 - **주요 기능:** HTTP 페이지에서는 `ws://현재호스트`, HTTPS 페이지에서는 `wss://현재호스트`를 사용하고, query parameter를 URL 인코딩해 추가한다. 채팅·좌석 연결에서 공통으로 사용한다.
 
 ### src/pages/admin.js
-- **목적:** 관리자 공연 생성·오픈/마감 시간 설정·삭제 화면 및 취소표 시뮬레이션 제어판을 제공.
+- **공연 목록 동기화:** 일반 공연 관리 목록과 취소표 시뮬레이션 AWS의 드롭다운은 공연 생성·삭제 후 갱신 이벤트를 통해 업데이트되며, 시뮬레이션 패널을 다시 펼칠 때도 최신 목록을 재조회한다. Final 패널은 통합 공연 카탈로그를 사용하고, Last 전용 목록 API가 일시적으로 실패하면 일반 `/events` 목록을 보조 표시한다.
+- **목적:** 관리자 공연 생성·오픈/마감 시간 설정·삭제 화면, 취소표 시뮬레이션 AWS 및 Final 로컬 검증 제어판을 제공.
 - **인증 연동:** 모든 관리자 API 호출을 `authFetch()`로 감싸 관리자 Access JWT를 전송한다. API에서 관리자 역할을 다시 검증하므로 프론트 화면 진입만으로는 관리자 기능을 실행할 수 없다.
 - **주요 기능:** 선택 체크박스 없이 `5개씩 삭제` 버튼을 누르면 현재 공연 목록의 앞에서부터 최대 5개를 확인 후 삭제한다. 공연이 5개보다 적으면 남은 공연을 모두 삭제한다. 배치 API가 구버전인 운영 서버에서는 기존 단일 삭제 API를 순차 호출하는 대체 경로를 사용한다. 아직 오픈 시간이 없는 공연은 오픈 시간 모달을 열 때 공연 목록 순서별로 서로 다른 기본 시각을 표시하여, 여러 포스터 공연이 같은 `현재 시각 + 5분`으로 저장되지 않도록 한다. "즉시 마감" 버튼으로 `ticketCloseAt`을 현재 시각으로 설정하여 즉시 예매를 마감할 수 있다.
-- **취소표 시뮬레이션 패널:** 접기/펼치기 토글로 표시. DB 등록 공연 드롭다운 + 회차 선택, 더미 유저 수 설정. 공연 선택 후 초기화·매진 연출·조기 마감·취소표 생성·B파트 링크 발급 버튼을 관리자가 수동 실행할 수 있다. 단계1 이후 실제 멤버십 계정이 사이트에서 취소표 대기열에 직접 진입해야 하며, 단계4는 기존 standby 대기열의 최상위 활성 멤버십 사용자를 확인한 뒤 준비된 취소 이벤트를 B파트 SQS로 전송한다. B파트가 처리해 `cancel_allocations`에 활성 할당을 생성하면 취소표 대기열 페이지가 서버 상태를 폴링하여 Secret Link 상태를 표시한다. 작업의 선행조건은 API 응답으로 확인하고 상태 패널에 좌석 통계·대기열 수치·현재 대상 멤버십 사용자 상태·취소표 할당 내역을 표시한다.
-- **취소표 시뮬레이션(Local) 패널:** 기존 패널과 동일한 단계·회차·실제 멤버십 대기자 흐름을 사용하되 `/admin/local-simulation/*` API를 호출한다. 단계3은 단계2 조기 마감 후에만 실행되며, 단계4에서는 B파트 SQS를 호출하지 않고 API 서버가 준비된 취소 좌석과 활성 멤버십 대기자를 순서대로 1:1 매칭해 사용자별 Gmail SMTP Secret Link를 발송한다. 이미 발급된 유효 할당은 재발송하지 않으며, 별도 사이드바 항목 `취소표 시뮬레이션 (Local)`로 이동할 수 있다. 단계3만으로 좌석 선택 페이지를 열지 않고, 발급된 Secret Link 클릭을 통해 개인 좌석 선택 페이지로 이동한다.
-- **운영 콘솔 UI:** `admin-app` 내부를 사이드바 + 작업 영역으로 구성하고, 공연 수·상태 갱신 주기·시뮬레이션 실행 모드를 요약 카드로 표시한다. 사이드바는 개요·공연 관리·더미 유저 도구·B파트 취소표 시뮬레이션·로컬 SMTP 취소표 시뮬레이션 섹션으로 이동한다.
+- **취소표 시뮬레이션 Final 패널:** 기존 Local의 단계별 초기화·매진 연출·조기 마감·취소표 생성을 유지하면서 Last의 회차별 공용 풀·후보 순번·Gmail 일괄 링크 발급을 하나의 화면으로 통합한다. 단계4에서 `/admin/last-simulation/init` → `close` → `open-pool` → `issue-links`를 순서대로 호출하고, 본 대기열 참여·`membership_at_join=1`·활성 멤버십 조건을 만족하는 실제 사용자만 후보가 된다. Local 단계의 취소 좌석을 Last 풀에 복사하므로 링크 수신자는 Last mock 화면으로 진입하며, 기존 Local과 Last 전용 화면은 HTML 안에 보존하되 별도 사이드바에는 노출하지 않는다. 상태 패널은 더미 사용자·전체 standby·실제 멤버십 후보·공용 풀·링크 발급 상태를 구분해 표시한다.
+- **Final 시뮬레이션 데이터 삭제:** `데이터 삭제`는 먼저 `/admin/local-simulation/cleanup`으로 Local 더미 유저·좌석·대기열·상태를 정리한 뒤 `/admin/last-simulation/cleanup-event`를 `eventId` 기준으로 호출한다. 따라서 페이지를 새로고침해 Last `campaignId`가 없어도 해당 공연의 Last 캠페인·후보·풀·미처리 allocation이 함께 삭제된다. 결제 확정된 실제 예약 데이터는 화면 정리 대상에서 보호한다.
+- **Last 링크 오류 처리:** 공용 풀 조회가 403/410을 반환하면 polling을 중단하고 링크 권한·만료 원인을 안내한다. 정상적으로 현재 순번이 되면 AVAILABLE 풀 좌석 클릭 → Last 좌석 hold → 기존 `payment/cancel` 결제 화면 이동 흐름을 유지한다.
+- **운영 콘솔 UI:** `admin-app` 내부를 사이드바 + 작업 영역으로 구성하고, 공연 수·상태 갱신 주기·시뮬레이션 실행 모드를 요약 카드로 표시한다. 사이드바의 `취소표 시뮬레이션 Final` 한 화면에서 Local 단계와 Last 공용 풀 단계를 이어서 실행한다.
 - **키보드 조작:** `Ctrl/Cmd + K` 또는 상단 명령 검색 버튼으로 명령 팔레트를 열고, 입력 검색·상하 방향키·Enter·Escape로 명령을 실행한다. 공연 표의 행은 포커스할 수 있으며 상하 방향키와 Home/End로 행을 이동하고 Enter로 첫 번째 행 액션에 포커스를 옮긴다.
 
 ### src/pages/payment.js
 - **목적:** 결제 전 구매자 정보와 좌석 확정 흐름을 처리.
-- **주요 기능:** 일반 예매에서만 입력 전화번호와 회원정보를 비교해 변경 확인 후 회원정보를 저장한다. 취소표 Secret Link 결제는 scoped JWT의 회원정보 수정 제한과 충돌하지 않도록 전화번호 필수·형식 검증만 수행하고 저장 없이 결제를 진행한다. 일반 예매와 취소표 모두 `/seats/confirm`으로 좌석을 SOLD 처리하고 MariaDB reservations에 저장한다. 결제 수단을 함께 전달하며, 무통장 입금 선택 시 화면 상태를 `unpaid`로 유지하고 24시간 입금 기한을 표시한다. 취소표는 서버 Secret Link 만료시각을 결제 마감으로 사용한다. 일반 예매의 결제 실패·네트워크 오류·제한시간 초과 시 좌석을 해제하고 `POST /queue/leave`로 입장 슬롯을 즉시 반납한다. 결제 성공 시에는 `settled` 상태로 보호해 SOLD 좌석을 해제하지 않는다.
-- **API 명세 / 라우팅 규칙:** 회원정보 변경 요청은 `PATCH /auth/profile`에 `userId`와 `phone`만 전달한다. 결제 확정은 좌석마다 `POST /seats/confirm`에 `paymentMethod`를 함께 전달하고, 결제 실패·이탈·만료 시 `POST /seats/release`와 일반 예매의 `POST /queue/leave`를 사용한다. 취소표 할당 만료 시에는 `POST /cancel-queue/expire`를 사용하며, 브라우저 종료는 keepalive 방식의 `releaseSeatBeacon()`과 `leaveQueueBeacon()`으로 처리한다.
+- **주요 기능:** 일반 예매에서만 입력 전화번호와 회원정보를 비교해 변경 확인 후 회원정보를 저장한다. 취소표 Secret Link 결제는 scoped JWT의 회원정보 수정 제한과 충돌하지 않도록 전화번호 필수·형식 검증만 수행하고 저장 없이 결제를 진행한다. 일반 취소표는 `/seats/confirm`, Final Last 전용 주문은 `/last-simulation/confirm`으로 분기해 좌석을 SOLD 처리하고 MariaDB reservations에 저장한다. Last 전용 주문은 결제 이탈·실패·만료 시 `/last-simulation/expire`로 allocation과 좌석을 정리한다. 결제 수단을 함께 전달하며, 무통장 입금 선택 시 화면 상태를 `unpaid`로 유지하고 24시간 입금 기한을 표시한다. 취소표는 서버 Secret Link 만료시각을 결제 마감으로 사용한다. 일반 예매의 결제 실패·네트워크 오류·제한시간 초과 시 좌석을 해제하고 `POST /queue/leave`로 입장 슬롯을 즉시 반납한다. 결제 성공 시에는 `settled` 상태로 보호해 SOLD 좌석을 해제하지 않는다.
+- **API 명세 / 라우팅 규칙:** 회원정보 변경 요청은 `PATCH /auth/profile`에 `userId`와 `phone`만 전달한다. 일반 결제 확정은 좌석마다 `POST /seats/confirm`에 `paymentMethod`를 함께 전달하고, Final Last 주문은 scoped token으로 `POST /last-simulation/confirm`을 호출한다. 결제 실패·이탈·만료 시 일반 주문은 `POST /seats/release`, 취소표 allocation은 `POST /cancel-queue/expire` 또는 Last 전용 `POST /last-simulation/expire`를 사용한다. 브라우저 종료는 keepalive 방식으로 처리한다.
 
 ### src/pages/bookingComplete.js
 - **목적:** 예매 완료 또는 무통장 입금 대기 상태를 표시.
@@ -234,20 +249,30 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 또는 일�
 ### src/pages/verifyLink.js
 - **목적:** B파트가 이메일로 발송한 Secret Link의 랜딩 페이지. 토큰 검증과 자동 로그인을 처리.
 - **보존 정책:** B파트 별도 사이트가 추가되어도 A파트 local SMTP/fallback Secret Link 검증 진입점으로 유지한다.
-- **주요 기능:** URL 쿼리의 `linkToken` 또는 `token` 파라미터를 추출하여 `POST /verify-link`로 검증한다. 성공 시 현재 브라우저의 로그인 여부와 관계없이 응답으로 받은 allocation 범위의 취소표 전용 Access JWT를 저장하고, 할당된 userId로 세션을 전환한 뒤 `private-link/{eventId}` 페이지로 이동한다. 별도 일반 로그인은 필요하지 않으며, 토큰 자체가 인증 수단이다.
+- **주요 기능:** URL 쿼리의 `linkToken` 또는 `token` 파라미터를 추출하여 `POST /verify-link`로 검증한다. 성공 시 현재 브라우저의 로그인 여부와 관계없이 응답으로 받은 allocation 범위의 취소표 전용 Access JWT를 저장하고, 할당된 userId로 세션을 전환한 뒤 `sessionDate`·`sessionTime`을 포함한 `private-link/{eventId}` 페이지로 이동한다. 별도 일반 로그인은 필요하지 않으며, 토큰 자체가 인증 수단이다.
 - **API 명세 / 라우팅 규칙:** `POST /verify-link` 사용. 개발 환경에서는 `vite.config.js`가 `/verify-link`를 A파트 API 서버로 프록시하고, 운영 환경에서는 Nginx의 동일 location이 API 서버로 전달해야 한다. 프론트엔드 라우트는 `verify-link`이며 `main.js`에서 `private-link` 라우트보다 먼저 등록된다.
 
 ### src/pages/privateLink.js
 - **목적:** 서버에서 발급한 취소표 Secret Link의 입장과 만료를 처리.
 - **보존 정책:** B파트 별도 취소표 사이트와 별개로 A파트 local SMTP/fallback 링크의 개인 전용 화면을 유지한다.
-- **주요 기능:** 이메일 Secret Link로 진입한 개인 전용 화면에서 사용자·공연별 활성 할당을 서버에서 확인하고, 할당된 좌석과 서버 만료시각만 사용한다. B파트 `NULL seat_id` 할당 시 "취소 좌석 중 선택 가능"을 표시하며, 타이머 바는 서버의 `remainingSeconds`를 사용하여 남은 시간을 정확히 반영한다. 만료·오류 시 마이페이지 대기열로 이동시키지 않고 개인 링크 화면에서 안내한 뒤 홈으로 이동한다.
+- **주요 기능:** 이메일 Secret Link로 진입한 개인 전용 화면에서 사용자·공연·회차별 활성 할당을 서버에서 확인하고, 할당된 좌석과 서버 만료시각만 사용한다. `sessionDate`·`sessionTime`을 상태 조회에 포함해 본 티켓팅 참여 이력을 정확히 확인하며, 좌석 선택 화면으로 이동할 때도 회차 정보를 유지한다. B파트 `NULL seat_id` 할당 시 "취소 좌석 중 선택 가능"을 표시하며, 타이머 바는 서버의 `remainingSeconds`를 사용하여 남은 시간을 정확히 반영한다. 만료·오류 시 마이페이지 대기열로 이동시키지 않고 개인 링크 화면에서 안내한 뒤 홈으로 이동한다.
 - **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `POST /cancel-queue/expire` 사용. `verifyLink.js`가 저장한 취소표 전용 Access JWT로 본인 상태를 조회하며, 유효한 할당이 없으면 개인 링크 만료 안내를 표시한다.
 
 ### src/pages/cancelSeatSelect.js
 - **목적:** A파트 Secret Link 보유자에게 회차별 취소표 좌석 상태를 보여주고 1매를 선점.
 - **보존 정책:** B파트가 별도 취소표 사이트를 제공하더라도 A파트의 local SMTP/fallback 화면과 `verify-link → private-link → cancel-seats` 흐름은 보존한다.
-- **주요 기능:** `/seats`에서 해당 이벤트·회차의 전체 좌석과 실제 상태를 조회해 본티켓팅과 같은 Canvas 인터랙티브 배치도로 표시한다. `allocation.seatId`가 있으면 서버가 배정한 좌석만 선택 가능하고, `allocation.seatId`가 `NULL`이면 해당 회차의 `AVAILABLE` 좌석만 선택 가능하게 한다. 좌석 선택 시 취소표 전용 Access JWT로 `POST /cancel-queue/hold`를 호출하며, 서버는 allocation에 좌석을 원자적으로 기록한 뒤 Redis/MariaDB 좌석을 홀드한다. 결제 화면으로 이동하지 않고 이탈하면 좌석을 해제한다.
+- **주요 기능:** `private-link`에서 전달받은 `sessionDate`·`sessionTime`을 포함해 취소표 상태를 확인한 뒤, `/seats`에서 해당 이벤트·회차의 전체 좌석과 실제 상태를 조회해 본티켓팅과 같은 Canvas 인터랙티브 배치도로 표시한다. `allocation.seatId`가 있으면 서버가 배정한 좌석만 선택 가능하고, `allocation.seatId`가 `NULL`이면 해당 회차의 `AVAILABLE` 좌석만 선택 가능하게 한다. 좌석 선택 시 취소표 전용 Access JWT로 `POST /cancel-queue/hold`를 호출하며, 서버는 allocation에 좌석을 원자적으로 기록한 뒤 Redis/MariaDB 좌석을 홀드한다. 결제 화면으로 이동하지 않고 이탈하면 좌석을 해제한다.
 - **API 명세 / 라우팅 규칙:** `GET /cancel-queue/status/:eventId/:userId`, `GET /seats`, `POST /cancel-queue/hold`, `POST /seats/release` 사용. 회차 정보는 할당에 저장된 `sessionDate`·`sessionTime`을 우선 사용한다.
+
+### src/pages/lastCancelTicketing.js
+- **목적:** 첨부된 `cancel-ticketing (3).html` mock을 SPA 페이지로 옮긴 Last 로컬 검증 화면.
+- **주요 기능:** 첨부 mock의 화면 구조를 유지하면서 링크의 A파트 토큰과 5분 카운트다운을 표시한다. 본티켓팅과 같은 전체 인터랙티브 좌석맵을 렌더링하되, Last 링크는 현재 순번의 공용 풀 좌석만, 기존 Local 링크는 서버가 배정한 좌석만 선택 가능하다. 공용 풀에 포함된 AVAILABLE 좌석은 현재 순번이 아니어도 보라색으로 보여 실제 매진 좌석과 구분하고, `selectable` 검증으로 클릭만 차단한다. 좌석 선점에 성공하면 `payment/cancel`로 이동해 구매자 정보·결제 수단을 입력하고 기존 결제 UI를 사용한다. 결제 확정·만료 이후 다음 순번이 진행되도록 2초 주기로 상태를 갱신하며 Local 링크도 이 화면에서 호환 처리한다. 인증은 verify-link에서 받은 scoped cancel token(Bearer)을 우선 사용하고, 토큰이 없으면(`JWT_AUTH_SECRET` 미설정 등) 모든 후속 요청에 `linkToken`(원본 cancel link JWT)을 함께 전달하여 cancel link token 인증으로 폴백한다.
+- **API 명세 / 라우팅 규칙:** `POST /last-simulation/verify-link`, `GET /last-simulation/pool`, `POST /last-simulation/hold`, `POST /last-simulation/confirm`, `POST /last-simulation/expire` 사용. Final/Local Gmail 링크는 `#/last-cancel-ticketing?token=...`으로 진입한다.
+
+### src/utils/cancelSeatMap.js
+- **목적:** Local SMTP 취소표 화면과 Final Last 화면이 같은 전체 회차 좌석맵을 사용하도록 좌석 원장 응답을 Canvas 모델로 변환한다.
+- **주요 기능:** 이벤트·회차 좌석만 필터링하고 실제 `AVAILABLE`·`HELD`·`SOLD` 상태를 프론트 상태로 통일한다. 서버 배정 좌석 모드에서는 해당 좌석 하나만, `seat_id=NULL` 공용 풀 모드에서는 서버가 반환한 풀 좌석만 선택 가능하도록 `selectable`을 분리한다. 올림픽홀의 구역·등급 메타데이터도 보완한다.
+- **API 명세 / 라우팅 규칙:** 별도 HTTP API가 없는 프론트 공통 유틸리티이며 `cancelSeatSelect.js`와 `lastCancelTicketing.js`가 공유한다.
 
 ### src/pages/home.js
 - **목적:** 메인 히어로와 공연 탐색 섹션을 제공.
@@ -276,3 +301,29 @@ Canvas 2D 기반 좌석맵 렌더링. 올림픽홀 배경 이미지 또는 일�
 ### src/data/concerts.js
 - **목적:** 공연명과 포스터 이미지의 매칭 규칙을 관리.
 - **주요 기능:** `TOMORROW X TOGETHER` 전체 이름과 `TXT` 약칭을 모두 `/images/posters/poster-tomorrow.png`에 연결한다. 포스터 파일명이 바뀌어도 공연명 매칭이 해시 fallback으로 넘어가지 않도록 명시적인 별칭을 유지한다.
+
+### src/pages/lastCancelTicketing.js
+
+- **목적:** Final Local Secret Link의 공용 취소표 풀 좌석 선택과 취소표 전용 결제 화면을 제공한다.
+- **주요 기능:** 좌석을 서버에 선점한 뒤 일반 `payment/cancel` 경로로 이동하지 않고, 같은 화면에서 예매자 정보·결제수단·약관 동의를 확인한 뒤 `/last-simulation/confirm`을 호출한다. 성공 시 완료 메일 발송 여부를 안내하고, 서버 대기열을 즉시 동기화한 뒤 예매내역 또는 메인으로 이동한다.
+- **API 명세 / 라우팅 규칙:** 좌석 선택 단계의 `원하는 좌석이 없어요 · 다음 순번에게 넘기기`는 `/last-simulation/pass`를 호출한다. 성공하면 현재 Secret Link의 타이머·폴링을 중지하고 메인으로 이동하며, 이후 해당 공연은 취소표 대기열에서 보이지 않는다.
+
+### src/pages/mypage.js
+
+- **목적:** 서버 예약과 취소표 대기·양도 상태를 마이페이지에 일관되게 표시한다.
+- **주요 기능:** `/reservations/user/:userId`에서 복원한 예약에 회차 날짜·시간을 유지해 취소표 전용 결제가 예매내역에 표시되도록 한다. `/last-simulation/history/mine`의 순번 양도 기록은 취소/환불내역에서 실제 환불과 구분되는 `결제 없음 · 순번 종료` 안내 행으로 표시한다.
+
+## ⚙️ Core Logic & Code Description — Last 좌석 선택·결제 단계
+
+### src/pages/lastCancelTicketing.js
+
+- **목적:** Last 취소표 링크에서 좌석을 비교 선택한 뒤 사용자가 명시적으로 확정하고, 취소표 전용 결제 화면에서 결제를 완료하도록 한다.
+- **주요 기능:** 좌석 클릭은 브라우저 선택 상태만 갱신한다. 선택 카드의 `선택 해제`로 원래 상태로 되돌리거나 다른 좌석을 다시 고를 수 있으며, `좌석 확정 후 결제`에서만 서버의 `/last-simulation/hold`를 호출한다. 결제 단계에서는 동의 누락·실패 사유를 즉시 표시한다.
+- **API 명세 / 라우팅 규칙:** 우측 단계 레일의 `좌석 선택으로 돌아가기`는 `/last-simulation/release`를 호출해 서버 선점을 해제하고 같은 Secret Link의 좌석 선택 단계로 돌아간다. 페이지 이탈 시에도 실제로 선점된 좌석만 keepalive 해제하며, 링크·순번은 만료시키지 않는다. 제한시간은 우측 sticky 레일에서 두 단계 모두 계속 표시된다.
+- **UI 규칙:** 예매 완료 화면의 `예매내역 확인`과 `메인으로`는 같은 폭과 높이로 렌더링한다. 순번 양도는 확인 대화상자를 거친 직사각형 보조 버튼으로 표시하여, 좌석 확정·결제 버튼과 구분하면서도 쉽게 찾을 수 있게 한다.
+
+### src/pages/admin.js
+
+- **목적:** Final Last 시뮬레이션의 단계별 진행 상태와 링크 발급 정책을 관리자에게 안내한다.
+- **주요 기능:** 단계4 Gmail SMTP Last 링크 발급은 현재 1번 `WAITING` 후보 한 명만 대상으로 하며, 그 사용자가 결제·양도·만료로 순번을 종료하면 API가 다음 후보에게 새 링크를 자동 발급한다고 표시한다.
+- **API 명세 / 라우팅 규칙:** 관리자 버튼은 `/admin/last-simulation/issue-links`를 한 번 호출해 최초 후보를 발급한다. 다음 후보에게 수동으로 반복 발급하지 않는다.

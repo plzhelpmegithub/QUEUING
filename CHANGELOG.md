@@ -1,3 +1,162 @@
+## [2026-09-18 07:40] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/lastCancelTicketing.js]**: `lastHeaders()` 함수에서 토큰이 비어있을 때 `Authorization` 헤더를 생략하도록 변경. `loadPool`, `hold`, `confirm`, `expire` 모든 API 호출에 `linkToken` 파라미터를 추가하여 Bearer 토큰 없이도 cancel link token으로 인증 가능하도록 폴백 구조 적용
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Last 취소표 링크 페이지에서 좌석 클릭이 동작하지 않음 — `/last-simulation/pool`(폴링)과 `/last-simulation/hold`(클릭) 모두 403 반환
+- **원인(Cause):** `JWT_AUTH_SECRET` 미설정 시 verify-link 응답의 `accessToken`이 `null` → 프론트엔드가 `authToken = ''`으로 설정 → `lastHeaders('')`가 `Authorization: Bearer `(빈 토큰) 헤더를 전송 → 서버 미들웨어가 Bearer 인증 실패 처리. cancel link token 폴백이 필요하나 `linkToken`을 후속 요청에 포함하지 않아 대안 인증 경로도 실패
+- **해결(Solution):** `lastHeaders(token)`에서 `token`이 falsy면 Authorization 헤더 생략. 모든 `/last-simulation/*` 호출에 `linkToken: rawToken`을 query(GET) 또는 body(POST)로 포함하여 Bearer 실패 시에도 cancel link token 인증 동작
+
+## [2026-09-18 01:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[nginx.conf]**: API 프록시 location 정규식에 `last-simulation`과 `verify-link`를 추가하여 K8s Pod 배포 시 Final/Last 취소표 API 요청이 Fastify로 프록시되도록 수정
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** K8s Nginx Pod에서 `/last-simulation/pool`, `/last-simulation/verify-link` 등 Last 취소표 API 호출 시 JSON 응답 대신 SPA의 `index.html`이 반환되어 프론트엔드에서 파싱 실패
+- **원인(Cause):** `nginx.conf`의 API 프록시 location 정규식 `^/(events|auth|queue|...)` 패턴에 `last-simulation`과 `verify-link`가 누락되어, 해당 경로가 `location /`의 `try_files $uri $uri/ /index.html` SPA fallback으로 처리
+- **해결(Solution):** location 정규식에 `last-simulation|verify-link`를 추가. Vite 개발 서버에는 이미 프록시 설정이 있어 개발 환경에서는 영향 없음
+
+## [2026-09-17 23:08] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/lastCancelTicketing.js]**: Last 공용 풀 polling에서 403/410 응답을 무시하지 않고 링크 권한·만료 안내 화면으로 전환하도록 변경
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `/last-simulation/pool`이 403을 반환해도 화면이 초기 상태에 남아 “현재 순번 전”으로 잘못 표시되고, 사용자는 실제 원인을 알 수 없었음
+- **원인(Cause):** `loadPool()`이 실패 응답을 그대로 반환해 polling을 계속하고 서버의 오류 메시지를 UI에 표시하지 않았음
+- **해결(Solution):** 403/410 발생 시 polling을 중지하고 서버 응답 메시지를 포함한 `취소표 링크 확인 필요` 화면으로 전환. 정상 200 응답에서는 좌석 선택·홀드 후 기존 결제 화면 이동을 유지
+
+## [2026-09-17 21:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: Final 시뮬레이션의 `데이터 삭제`가 선택한 공연의 Local 더미 데이터와 Last 캠페인·후보·풀·미처리 allocation을 함께 삭제하도록 변경
+- **[src/pages/admin.js]**: 페이지 새로고침으로 Last `campaignId`를 잃어도 `eventId` 기준 정리가 수행되도록 변경
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시뮬레이션 삭제 후에도 Last 취소표 캠페인과 후보 데이터가 DB에 남아 다음 테스트에 영향을 줄 수 있었음
+- **원인(Cause):** Final 화면의 기존 삭제 요청은 Local 시뮬레이션 정리만 수행했으며, Last 전용 정리 요청은 현재 메모리의 캠페인 ID가 있을 때만 실행했음
+- **해결(Solution):** Local 정리 완료 후 선택 공연의 `/admin/last-simulation/cleanup-event`를 호출하도록 바꾸고, 삭제 결과를 관리자 화면에 합쳐 표시
+
+## [2026-09-17 19:02] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/seatMap.js]**: AVAILABLE이지만 현재 순번이 아니거나 배정 대상이 아닌 좌석의 툴팁을 `현재 순번 전 — 선택 불가`/`선택 불가`로 구분
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 클릭할 수 없는 좌석에도 툴팁이 단순히 “선택 가능”으로 표시되어 실제 클릭 실패 원인을 알기 어려웠음
+- **원인(Cause):** 툴팁이 좌석 상태만 보고 `selectable=false` 권한을 반영하지 않았음
+- **해결(Solution):** 좌석 상태와 선택 권한을 함께 표시하도록 툴팁 문구를 분기
+
+## [2026-09-17 18:59] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/lastCancelTicketing.js]**: Last 공용 풀에서 좌석 선점에 성공하면 기존 `payment/cancel` 결제 화면으로 이동하도록 주문 정보·회차·좌석·5분 마감 시각·scoped token을 저장
+- **[src/pages/payment.js]**: Last 전용 주문은 `/last-simulation/confirm`을 호출해 공용 풀 좌석과 후보 상태를 함께 확정하고, 결제 이탈·실패·만료 시 `/last-simulation/expire`로 allocation과 좌석을 정리
+- **[src/pages/payment.js]**: 취소표 결제 안내의 제한 시간을 실제 Secret Link 정책과 같은 5분으로 수정
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 좌석에 마우스를 올리면 선택 가능으로 표시되지만 좌석 선택 후 결제 화면으로 이동하지 않음
+- **원인(Cause):** Last 화면이 기존 결제 라우트를 호출하지 않고 화면 내부의 숨겨진 결제 패널만 표시하는 구조였으며, Last allocation을 일반 결제 API와 연결하는 주문 상태도 없었음
+- **해결(Solution):** 좌석 선점 성공 시 `setCurrentOrder()`로 Last 전용 allocation token을 보존한 뒤 `payment/cancel`로 이동하고, 결제 확정·이탈·만료는 Last 전용 API로 분기
+
+## [2026-09-17 18:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/lastCancelTicketing.js]**: Last 공용 풀 좌석의 전체 ID·bare ID를 모두 인식하고, 풀에 포함된 AVAILABLE 좌석은 현재 순번이 아니어도 보라색으로 표시되도록 상태 오버레이를 보완
+- **[src/components/seatMap.js]**: `selectable=false`인 좌석 중 Last 풀의 AVAILABLE 좌석은 비활성 회색으로 분류하지 않도록 변경해 실제 매진 좌석과 구분
+- **[README.md]**: 공용 풀 좌석의 시각적 상태와 선택 권한 분리 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 10석 취소표 풀을 생성했지만 링크 페이지의 공용 풀 좌석이 전부 매진처럼 표시됨
+- **원인(Cause):** 현재 순번이 아닌 사용자의 AVAILABLE 풀 좌석도 `selectable=false`라는 이유만으로 회색 비활성 좌석 배열에 들어갔음
+- **해결(Solution):** 풀에 포함된 좌석에는 `keepAvailableVisual`을 부여해 AVAILABLE 상태는 보라색으로 렌더링하고, 클릭 이벤트에서는 기존 `selectable` 검증으로 선택만 제한
+
+## [2026-09-17 18:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 기존 Local 단계와 Last 공용 풀 단계를 `취소표 시뮬레이션 Final` 단일 관리자 패널로 통합하고, 단계4에서 Last 초기화·후보 확정·풀 공개·Gmail 링크 발급을 순서대로 실행하도록 연결
+- **[src/pages/lastCancelTicketing.js]**: Last mock 화면에서 전체 인터랙티브 좌석맵을 표시하되, Last 링크는 공용 풀 좌석만, Local 링크는 서버 배정 좌석만 선택하도록 분리
+- **[src/utils/cancelSeatMap.js]**: Local 좌석 화면과 Final Last 화면이 공유하는 회차 좌석·상태·선택 가능 여부 변환 유틸리티 추가
+- **[src/pages/admin.js]**: 기존 별도 Last 패널과 Local 코드·화면을 보존하면서 사용자에게는 Final 단일 진입점만 노출
+- **[vite.config.js]**: `/last-simulation` API 요청이 A파트 Fastify 서버로 전달되도록 개발 프록시 추가
+- **[README.md]**: Final 통합 흐름, 공유 좌석맵, 프록시 경로를 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Final 단계4 실행 시 `/admin/last-simulation/init`이 404로 응답하여 Gmail 링크 발급이 시작되지 않음
+- **원인(Cause):** 프론트엔드가 호출하는 Last 관리자 API 경로가 실행 중인 API 프로세스에 반영되지 않았고, 개발 프록시에도 Last 경로가 빠져 있었음
+- **해결(Solution):** Final 패널의 호출 흐름과 `/last-simulation` 프록시를 추가했다. Fastify와 Vite를 최신 소스로 재시작한 후 관리자 페이지를 새로고침해야 한다.
+
+## [2026-09-17 17:46] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 기존 Local 시뮬레이션과 Last 시뮬레이션의 공연 목록을 패널을 펼칠 때마다 재조회하도록 변경하고, 일반 공연 생성·삭제 후 `admin:events-updated` 이벤트로 열린 패널도 즉시 갱신. 시뮬레이션 API의 비정상 HTTP 응답은 오류로 처리해 드롭다운과 로그에 원인을 표시하며, Last 전용 목록 API가 실패하거나 빈 목록을 반환할 때 일반 `/events` 목록을 보조 사용
+- **[README.md]**: 시뮬레이션 패널의 공연 목록 새로고침 동작과 Last 목록의 통합 조회 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 공연 생성 후에도 시뮬레이션의 공연 선택 드롭다운이 이전 상태로 남거나 빈 목록을 표시함
+- **원인(Cause):** 시뮬레이션 패널의 목록 요청이 초기화 시점에만 실행되었고, 목록 요청 실패 시 사용자에게 원인을 표시하지 않았음
+- **해결(Solution):** 패널을 다시 펼칠 때 항상 최신 목록을 요청하고, 공연 관리 목록이 갱신되면 두 시뮬레이션 패널에도 갱신 이벤트를 전달한다. 조회 실패 시 드롭다운에 오류 상태와 시뮬레이션 로그를 표시하도록 보완했다.
+
+## [2026-09-18 09:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/lastCancelTicketing.js]**: 좌석 클릭과 서버 선점을 분리했습니다. 클릭 후에는 선택 카드에서 선택 해제·다른 좌석 재선택이 가능하고, `좌석 확정 후 결제`를 눌러야 `/last-simulation/hold`가 호출됩니다.
+- **[src/pages/lastCancelTicketing.js]**: 좌석 선택·결제를 오른쪽 고정 단계 레일로 구분하고, 제한시간을 레일 최상단에 배치했습니다. 결제 단계에서는 `좌석 선택으로 돌아가기`로 선점을 해제한 뒤 동일 링크에서 다시 고를 수 있습니다.
+- **[src/pages/lastCancelTicketing.js]**: 결제 완료 버튼에 명시적인 버튼 타입과 약관 미동의·결제 실패 안내를 추가해, 클릭했지만 반응이 없는 것처럼 보이던 UI를 보완했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 좌석을 한 번 클릭하면 즉시 결제로 전환되어 비교 선택이 불가능했고, 결제 전 이탈 뒤 같은 링크로 재접속하면 이전 좌석이 남아 다시 선택할 수 없었음
+- **원인(Cause):** 좌석 클릭 이벤트가 곧바로 서버 홀드와 화면 전환을 수행했고, 페이지 종료 시 링크 만료 API를 호출했음
+- **해결(Solution):** 화면 선택 상태와 서버 선점을 분리하고, 결제 전 이탈·이전 단계 이동에는 만료 대신 전용 release API를 호출하도록 변경했습니다. 결제 확정 또는 실제 만료 때만 기존 완료·만료 흐름을 실행합니다.
+
+## [2026-09-18 09:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/lastCancelTicketing.js]**: 취소표 예매 완료 화면의 `예매내역 확인`과 `메인으로` 버튼에 동일한 너비·높이·정렬 규칙을 적용했습니다.
+- **[src/pages/lastCancelTicketing.js]**: 텍스트 링크였던 순번 양도 동작을 `좌석 선택을 포기하고 다음 순번에게 넘기기` 직사각형 버튼으로 변경했습니다. 일반 결제 버튼과 혼동되지 않는 어두운 강조 스타일과 확인 대화상자는 유지합니다.
+
+## [2026-09-18 09:52] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: Final Last 시뮬레이션 단계4 안내를 후보 전체 발급이 아닌 “현재 1번 후보 한 명 발급 → 결제·양도·만료 후 다음 후보 자동 발급” 흐름으로 명확히 변경했습니다.
+
+## [2026-09-17 23:53] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/lastCancelTicketing.js]**: Last 취소표 좌석을 선점한 뒤 일반 `payment/cancel`로 이동하지 않고, 같은 Secret Link 페이지 안의 취소표 전용 결제 화면에서 예매자 정보·결제수단·동의 후 결제를 완료하도록 변경
+- **[src/pages/lastCancelTicketing.js]**: 결제 완료 뒤 서버 대기열을 즉시 동기화하고 예매내역으로 이동할 수 있게 했으며, 좌석 선택 단계에 `원하는 좌석이 없어요 · 다음 순번에게 넘기기` 버튼을 추가해 메인으로 복귀하도록 구현
+- **[src/pages/mypage.js]**: 서버 예약을 복원할 때 회차 날짜·시간을 유지하고, Last 순번 양도 이력을 취소/환불내역에 `결제 없음 · 순번 종료` 안내 행으로 표시하도록 추가
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 링크 흐름이 일반 결제 UI로 전환되어 전용 사이트 경험이 끊기고, 순번 양도 후 사용자가 자신의 처리 결과를 마이페이지에서 확인할 수 없었음
+- **원인(Cause):** 좌석 선점 성공 시 공통 주문 상태를 만든 뒤 일반 결제 라우트로 이동했으며, 결제 없는 순번 종료를 표현할 프론트엔드 이력 조회가 없었음
+- **해결(Solution):** Last 전용 화면 내부에 결제 단계와 완료 화면을 구성하고, 완료·양도 뒤 `loadCancelQueuesFromServer()`로 서버 기준 대기열을 갱신한다. 양도 이력은 전용 API를 통해 환불 내역 화면에만 병합해 실제 환불·예약 데이터와 구분한다.
+
+## [2026-09-17 17:11] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 취소표 시뮬레이션 상태 패널에 일반 standby 수와 구분되는 실제 멤버십 후보 수를 표시하고, 단계4 확인·안내 문구를 본 대기열 참여 및 진입 당시 멤버십 조건에 맞게 수정
+- **[README.md]**: B파트·Local 시뮬레이션의 실제 후보 선별 기준을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 화면에서 standby 전체 수와 실제 단계4 링크 발급 대상이 구분되지 않아 더미 사용자 또는 조건에 맞지 않는 계정이 후보로 오해될 수 있었음
+- **원인(Cause):** 상태 패널이 Redis standby 총량만 보여주고 실제 멤버십 후보 검증 조건을 안내하지 않았음
+- **해결(Solution):** API가 반환하는 `candidateCount`를 별도 표시하고, 본 대기열 참여·대기열 진입 당시 멤버십·시뮬레이션 추적 사용자만 단계4 후보라는 안내를 추가
+
+## [2026-09-17 16:40] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/verifyLink.js]**: Secret Link 검증 응답의 `sessionDate`·`sessionTime`을 `private-link` 라우트의 쿼리로 전달하도록 수정
+- **[src/pages/privateLink.js]**: 회차 정보를 포함해 취소표 상태를 조회하고, 좌석 선택 화면으로 이동할 때도 동일한 회차 정보를 유지하도록 수정
+- **[src/pages/cancelSeatSelect.js]**: Secret Link 회차 정보를 포함해 `/cancel-queue/status`를 호출하도록 수정
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 활성 멤버십과 `waiting_queue` 참여 이력이 정상인데 Secret Link 접속 후 `GET /cancel-queue/status`가 403으로 실패하고, 화면에는 “입장 시간이 만료되었습니다”가 표시됨
+- **원인(Cause):** `privateLink.js`와 `cancelSeatSelect.js`가 상태 조회 시 공연 ID만 전달해 날짜·회차가 빈 값으로 조회됨. 백엔드는 동일 공연의 정확한 회차 참여 이력을 찾지 못해 `main_queue_required`로 응답함
+- **해결(Solution):** `verifyLink.js`에서 검증 응답의 회차 정보를 라우트 쿼리로 전달하고, 개인 링크·좌석 선택 화면의 상태 조회에 `sessionDate`·`sessionTime`을 포함
+
 ## [2026-09-17 10:39] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -940,3 +1099,43 @@
 - **증상(Issue):** B파트 별도 취소표 사이트 추가 후 A파트 local SMTP/fallback 화면이 정리 대상 코드로 오인될 수 있었음
 - **원인(Cause):** A파트와 B파트의 취소표 UI가 별도 운영된다는 보존 정책이 코드와 문서에 충분히 표시되지 않았음
 - **해결(Solution):** Secret Link 검증·개인 입장·좌석 선택 파일에 보존 주석을 추가하고, `allocation.seatId` 유무에 따른 두 가지 선택 정책과 API 흐름을 README에 명시
+## [2026-09-17 17:33] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: `취소표 시뮬레이션 (Last)` 사이드바·관리 패널 추가. 풀 수와 공개 지연을 설정하고 초기화 → 후보 확정 → 풀 공개 → Gmail 링크 일괄 발급을 단계별 실행하도록 구성
+- **[src/pages/lastCancelTicketing.js]**: 첨부 mock 스타일의 A파트 전용 Secret Link 화면 추가. 5분 타이머, 회차별 공용 취소표 풀, 순번 대기, 실시간 좌석 상태, 직접 선택·선점·결제 확정 UI 구현
+- **[src/components/seatMap.js]**: 실시간 상태 갱신 시 `selectable` 플래그도 함께 갱신해 순번 전환 후 좌석 선택 가능 상태가 화면에 반영되도록 보완
+- **[src/main.js]**: `#/last-cancel-ticketing?token=...` 라우트 등록
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 기존 취소표 화면은 서버가 특정 좌석을 먼저 배정하는 흐름을 중심으로 동작해 100석 풀 직접 선택 mock을 별도로 검증할 수 없었음
+- **원인(Cause):** 기존 화면과 B파트 링크 검증 라우트가 `private-link` 중심으로 결합되어 있었음
+- **해결(Solution):** Last 전용 해시 라우트와 API 토큰을 분리하고, 전체 좌석을 Canvas로 표시하되 현재 순번·AVAILABLE 좌석만 실제 클릭 가능하도록 구성했다. 기존 Local/B파트 화면은 그대로 보존했다.
+## [2026-09-17 17:46] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 기존 Local 시뮬레이션과 Last 시뮬레이션의 공연 목록을 패널을 펼칠 때마다 재조회하도록 변경하고, 일반 공연 생성·삭제 후 `admin:events-updated` 이벤트로 열린 패널도 즉시 갱신. 시뮬레이션 API의 비정상 HTTP 응답은 오류로 처리해 드롭다운과 로그에 원인을 표시
+- **[README.md]**: 시뮬레이션 패널의 공연 목록 새로고침 동작과 Last 목록의 통합 조회 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 공연 생성 후에도 시뮬레이션의 공연 선택 드롭다운이 이전 상태로 남거나 빈 목록을 표시함
+- **원인(Cause):** 시뮬레이션 패널의 목록 요청이 초기화 시점에만 실행되었고, 목록 요청 실패 시 사용자에게 원인을 표시하지 않았음
+- **해결(Solution):** 패널을 다시 펼칠 때 항상 최신 목록을 요청하고, 공연 관리 목록이 갱신되면 두 시뮬레이션 패널에도 갱신 이벤트를 전달한다. 조회 실패 시 드롭다운에 오류 상태와 시뮬레이션 로그를 표시하도록 보완했다.
+## [2026-09-18 10:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: B파트 SQS 연동용 기존 `취소표 시뮬레이션` 메뉴·패널·명령 팔레트 이름을 `취소표 시뮬레이션 AWS`로 변경. Final 로컬 검증 패널의 이름과 기능은 유지.
+- **[README.md]**: 관리자 화면에서 AWS 연동 시뮬레이션과 Final 로컬 검증 흐름을 구분해 문서화.
+## [2026-09-18 13:45] 업데이트 로그 — 회차별 좌석 WebSocket 채널 분리
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/zoneSelect.js]**: 좌석 WebSocket 연결 ID에 `공연ID:YYYY-MM-DD_HH-MM` 형식의 회차키를 포함
+- **[src/pages/seatSelect.js]**: 실제 좌석 WebSocket 연결 ID에 선택된 회차키를 포함
+- **[src/utils/realtimeChat.js]**: 변경하지 않음. 호출부에서 완성된 회차별 ID를 전달하도록 처리
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 같은 공연의 여러 회차가 하나의 WebSocket 채널을 공유하여 다른 회차의 좌석 상태가 섞이거나, 회차별 좌석 이벤트를 수신하지 못할 수 있음.
+- **원인(Cause):** WebSocket 연결 ID가 공연 ID만 사용하고 날짜·시간 회차키를 포함하지 않았음.
+- **해결(Solution):** 연결 호출부에서 선택 회차를 `YYYY-MM-DD_HH-MM`으로 조합하여 공연 ID 뒤에 붙였다. 서버의 WebSocket 래퍼는 그대로 유지했다.
+
+---

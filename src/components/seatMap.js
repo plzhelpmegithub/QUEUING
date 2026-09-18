@@ -165,7 +165,10 @@ function showTooltip(tooltipEl, e, seat, secLabel) {
   const grade = secLabel || seat.label || seat.grade;
   const block = seat._block ? ` (${seat._block})` : '';
   const loc = `${seat._displayNum || seat.seatNum}번`;
-  tooltipEl.innerHTML = `<strong>${grade}${block}</strong><br>${loc}<br><span style="opacity:0.7">${statusText[seat.status] || '선택 가능'}</span>`;
+  const displayStatus = seat.status === 'available' && seat.selectable === false
+    ? (seat.keepAvailableVisual ? '현재 순번 전 — 선택 불가' : '선택 불가')
+    : (statusText[seat.status] || '선택 가능');
+  tooltipEl.innerHTML = `<strong>${grade}${block}</strong><br>${loc}<br><span style="opacity:0.7">${displayStatus}</span>`;
   tooltipEl.classList.add('show');
   tooltipEl.style.left = `${e.clientX + 14}px`;
   tooltipEl.style.top = `${e.clientY - 10}px`;
@@ -689,7 +692,10 @@ export function mountSeatMap(el, {
       if (status === 'sold') { soldArr.push(ls); continue; }
       if (status === 'holding') { holdArr.push(ls); continue; }
       if (status === 'mine') { mineArr.push(ls); continue; }
-      if (seat && seat.selectable === false) { disabledArr.push(ls); continue; }
+      // 취소표 Last 화면은 공용 풀에 포함된 AVAILABLE 좌석을
+      // 현재 순번이 아니더라도 보라색으로 보여준다. 선택 가능 여부는
+      // selectable로 별도 차단하므로, 실제 매진/비공개 좌석과 혼동하지 않는다.
+      if (seat && seat.selectable === false && !seat.keepAvailableVisual) { disabledArr.push(ls); continue; }
       if (isOH) {
         availArr.push(ls);
       } else {
@@ -1130,7 +1136,10 @@ export function mountSeatMap(el, {
     updateStatuses(updatedSeats) {
       updatedSeats.forEach((s) => {
         const existing = idToSeat.get(s.id);
-        if (existing) existing.status = s.status;
+        if (existing) {
+          existing.status = s.status;
+          if (s.selectable !== undefined) existing.selectable = s.selectable;
+        }
       });
       paint();
       checkHolding();

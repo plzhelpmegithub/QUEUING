@@ -255,16 +255,21 @@ export const seatSelectPage = {
         mountFrom(live.sections, live.seats);
         usingRealFeed = true;
 
-        // seatId 형식 "evt-171...:VIP-001" → ":"앞이 A파트의 진짜 eventId
+        // WebSocket 채널은 공연 ID와 회차키를 함께 사용한다.
+        // 회차키 형식: 2026-12-05_18-00
         const realEventId = live.seats[0]?.id.split(':')[0];
         if (realEventId) {
-          seatSocketCtrl = connectSeatSocketWithRetry(realEventId, {
+          const sessionSocketKey = session?.date && session?.time
+            ? `${session.date}_${String(session.time).replace(/^([0-9]):/, '0$1:').replace(/:/g, '-')}`
+            : '';
+          const socketEventId = sessionSocketKey ? `${realEventId}:${sessionSocketKey}` : realEventId;
+          seatSocketCtrl = connectSeatSocketWithRetry(socketEventId, {
             onMessage: applyServerSeatEvent,
             onStatusChange: (status) => {
               if (status === 'failed' && !usingRealFeed) sim.start();
             },
           });
-          console.log(`[live] WebSocket 연결 — eventId: ${realEventId}`);
+          console.log(`[live] WebSocket 연결 — eventId: ${socketEventId}`);
         }
         console.log(`[live] A파트 실좌석 ${live.seats.length}석 로딩 완료`);
       })

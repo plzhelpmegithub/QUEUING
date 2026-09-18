@@ -61,7 +61,13 @@ export const verifyLinkPage = {
           refreshToken: '',
         });
 
-        navigate(`private-link/${encodeURIComponent(data.eventId)}`);
+        // 상태 조회 API가 본 티켓팅 참여 여부를 회차별로 확인하므로,
+        // 링크 검증 응답의 회차 정보를 개인 링크 화면까지 이어 전달한다.
+        const sessionQuery = new URLSearchParams();
+        if (data.sessionDate) sessionQuery.set('sessionDate', data.sessionDate);
+        if (data.sessionTime) sessionQuery.set('sessionTime', data.sessionTime);
+        const querySuffix = sessionQuery.toString() ? `?${sessionQuery.toString()}` : '';
+        navigate(`private-link/${encodeURIComponent(data.eventId)}${querySuffix}`);
       })
       .catch(() => {
         container.innerHTML = `
