@@ -1,3 +1,17 @@
+## [2026-09-18 13:37] 업데이트 로그 — 운영 DB 기본값 분리
+
+### 🔄 변경 및 수정 사항
+- **[values.yaml]**: 기본 Helm 값에서 D-Cloud MariaDB의 실제 공인 주소와 계정을 제거하고, DB 연결 키는 운영 override가 누락되었을 때 잘못된 외부 DB로 연결되지 않도록 빈 기본값으로 변경
+- **[values.yaml]**: Redis 연결은 유지하되 AWS 운영용 실제 엔드포인트는 `argocd/values-prod.yaml`에서 관리하도록 역할을 명확히 문서화
+- **[README.md]**: 공통 values와 운영 RDS/ElastiCache override의 적용 순서 및 책임을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 기본 `values.yaml`에 이전 D-Cloud DB 주소가 남아 있어 운영 override 누락 시 API가 잘못된 DB로 연결할 위험이 있었고, 운영 override의 Redis 주소는 `PLACEHOLDER` 상태였다.
+- **원인(Cause):** Helm 기본값과 AWS 운영값의 경계가 명확하지 않았으며, 운영 파일의 Redis placeholder가 기본 Redis 값을 덮어쓸 수 있었다.
+- **해결(Solution):** 기본 파일에서는 D-Cloud 실DB 주소를 제거하고, ArgoCD가 `values.yaml` 후 `values-prod.yaml`을 적용하도록 유지했다. 운영 파일에는 RDS와 실제 ElastiCache 엔드포인트를 명시했다.
+
+---
+
 ## [2026-09-16 14:45] 업데이트 로그 — 대기열 승인 정책 환경변수 추가
 
 ### 🔄 변경 및 수정 사항
@@ -63,5 +77,18 @@
 - **증상(Issue):** JWT Secret을 차트에 넣지 않으면 인증 보호가 우회되거나, Secret 누락 상태가 파드 기동 이후에야 발견될 수 있음.
 - **원인(Cause):** 애플리케이션 코드에 있던 기본 서명 키와 Helm 차트의 인증 Secret 연결이 일관되지 않았음.
 - **해결(Solution):** `auth-credentials`를 필수 Secret 참조로 지정하고 API 코드에서도 32자 미만 키를 거부했다. bootstrap 계정은 별도 Secret과 `auth.bootstrap.enabled`가 동시에 활성화된 경우에만 생성된다.
+
+---
+## [2026-09-18 13:42] 업데이트 로그 — 기본 Helm 값의 RDS 전환
+
+### 🔄 변경 및 수정 사항
+- **[values.yaml]**: 직접 Helm 배포 시에도 RDS를 바라보도록 `dbHost`, `dbPort`, `dbUser`, `dbName`을 RDS 연결값으로 변경
+- **[values.yaml]**: DB 비밀번호 Secret 참조를 `app-secrets/RDS_PASSWORD`로 변경하여 ArgoCD override 없이도 현재 RDS Secret 구조를 사용하도록 조정
+- **[README.md]**: 기본 차트 배포와 ArgoCD 배포 모두 RDS를 사용하는 구조로 설명을 갱신
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** ArgoCD를 담당하지 않는 환경에서 기본 `values.yaml`로 Helm 배포하면 DB 값이 비어 있어 API가 RDS에 연결할 수 없음.
+- **원인(Cause):** RDS 값을 운영 override 파일에만 두고 기본 차트에서는 제거했기 때문.
+- **해결(Solution):** 기본 `values.yaml` 자체를 RDS 엔드포인트와 `app-secrets/RDS_PASSWORD` 참조로 변경했다. D-Cloud 주소는 기본값에서 제거했다.
 
 ---

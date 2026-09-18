@@ -18,7 +18,8 @@ QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설
 ## ⚙️ Core Logic & Code Description
 ### `values.yaml`
 - **목적:** 배포 환경별 설정을 템플릿과 분리하고, 이미지·네트워크·리소스 값을 재사용한다.
-- **주요 기능:** `env`에는 비밀이 아닌 연결 설정을 보관하고, `dbPasswordSecret`, `auth.secret`, `auth.bootstrap.secret`, `smtp.secret`에는 이미 클러스터에 생성된 Secret의 이름과 키만 기록한다. `autoAdmissionEnabled`, `autoAdmissionIntervalMs`, `batchSize`, `admissionTimeout`, `admissionTimeoutCheckIntervalMs`로 대기열 자동 승인과 승인 만료 정책을 제어한다. `lastSimulationEnabled`는 Final 공용 좌석 풀·Gmail 링크 검증용 로컬 라우트의 등록 여부를 제어하며, 운영 기본값은 `false`다.
+- **주요 기능:** `env`에는 비밀이 아닌 연결 설정을 보관하고, `dbPasswordSecret`, `auth.secret`, `auth.bootstrap.secret`, `smtp.secret`에는 이미 클러스터에 생성된 Secret의 이름과 키만 기록한다. 현재 기본 `values.yaml`의 관계형 DB 대상은 RDS이며, 과거 D-Cloud 주소는 제거했다. `autoAdmissionEnabled`, `autoAdmissionIntervalMs`, `batchSize`, `admissionTimeout`, `admissionTimeoutCheckIntervalMs`로 대기열 자동 승인과 승인 만료 정책을 제어한다. `lastSimulationEnabled`는 Final 공용 좌석 풀·Gmail 링크 검증용 로컬 라우트의 등록 여부를 제어하며, 운영 기본값은 `false`다.
+- **Helm 값 적용 순서:** 기본 차트만 배포해도 RDS 설정이 사용된다. ArgoCD를 사용하는 경우 `values.yaml`을 먼저 읽고 `argocd/values-prod.yaml`을 마지막에 읽으며, 같은 키가 있으면 뒤의 운영 파일이 최종값이 된다.
 - **RDS 비밀번호 주입:** `dbPasswordSecret`은 AWS Secrets Manager를 직접 읽지 않는다. 운영 override에서 AWS Secrets Manager 원본 `queuing-persistent/app-secrets`의 `RDS_PASSWORD`를 동기화한 Kubernetes Secret(`queuing-a/app-secrets`)을 참조한다. 동기화가 없으면 Deployment가 `CreateContainerConfigError`로 기동하지 않는다.
 - **API 명세 / 라우팅 규칙:** API 컨테이너는 기본적으로 3000번 포트를 사용하며, 기본 Service 타입은 NodePort다.
 

@@ -90,8 +90,9 @@ service:
 # -----------------------------------------------------------------------------
 env:
   # --- Redis 연결 (redis.js / timerService.js) ---
-  # C파트(지예님)가 realtime 네임스페이스에 배포한 Redis 마스터.
   # 대기열, 좌석 상태, 이벤트 캐시 등 실시간 데이터 저장소.
+  # AWS 운영용 실제 엔드포인트는 argocd/values-prod.yaml에서 마지막에
+  # override한다. 아래 값은 기존 차트 단독 렌더링/호환성을 위한 공통값이다.
   redisHost: "queuing-redis.wxbnsp.ng.0001.apn2.cache.amazonaws.com"
   redisPort: "6379"
 
@@ -116,11 +117,12 @@ env:
   # 승인 만료 여부를 확인하는 주기(밀리초).
   admissionTimeoutCheckIntervalMs: "1000"
 
-  # --- MariaDB 연결 (mariadb.js) ---
-  # shared-infra/mariadb.yaml로 배포된 MariaDB (네임스페이스: queuing-db).
+  # --- 관계형 DB 연결 (mariadb.js) ---
   # 회원 정보, 예매 내역 등 영속적 데이터 저장.
-  dbHost: "211.46.52.164"
-  dbPort: "13306"
+  # 현재 AWS 배포 대상은 EKS에서 접근하는 RDS MariaDB다.
+  # 온프레미스/D-Cloud로 되돌릴 때는 별도 local values override를 사용한다.
+  dbHost: "queuing-mariadb.cto8u6c4yxyv.ap-northeast-2.rds.amazonaws.com"
+  dbPort: "3306"
   dbUser: "team2"
   dbName: "queuing_db"
 
@@ -188,14 +190,12 @@ smtp:
 
 # -----------------------------------------------------------------------------
 # [DB 비밀번호 시크릿] 평문 커밋 방지를 위해 K8s Secret으로 분리.
-# 배포 전에 아래 명령으로 시크릿을 먼저 생성해야 함:
-#   kubectl create secret generic mariadb-credentials \
-#     -n <이 차트가 배포되는 네임스페이스> \
-#     --from-literal=MARIADB_ROOT_PASSWORD='<실제 비밀번호>'
+# RDS 비밀번호는 queuing-a/app-secrets의 RDS_PASSWORD 키에서 주입한다.
+# AWS Secrets Manager 원본은 External Secrets Operator 또는 CSI 동기화가 필요하다.
 # -----------------------------------------------------------------------------
 dbPasswordSecret:
-  name: "mariadb-credentials"
-  key: "MARIADB_ROOT_PASSWORD"
+  name: "app-secrets"
+  key: "RDS_PASSWORD"
 
 # -----------------------------------------------------------------------------
 # [API 인증 Secret] 세션 JWT와 대기열 Admission Token의 서명 키.
