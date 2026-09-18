@@ -223,6 +223,45 @@ resource "aws_iam_role_policy" "b_lambda" {
   })
 }
 
+# ── Lambda 를 VPC 안에 넣는다 (2026-09-18) ──
+#
+# D-Cloud 는 공인 IP 라 VPC 밖 Lambda 도 인터넷으로 붙을 수 있었다. RDS 는
+# publicly_accessible = false 인 VPC 안 프라이빗 DB 라, b_lambda_use_rds = true 로
+# 주소만 바꾸면 물리적으로 닿지 않는다(건아님이 VpcConfig: null 로 찾아냈다).
+#
+# RDS 보안그룹(sg-rds)을 Lambda 에 그대로 붙이면 안 된다. 그 그룹은 "EKS 노드에서
+# 온 3306" 만 받는 규칙이라 자기 자신에게서 오는 연결은 허용하지 않는다. 그래서
+# Lambda 전용 그룹을 따로 만들고 RDS 쪽에서 이 그룹을 허용한다(security_groups.tf).
+#
+# 프라이빗 서브넷은 0.0.0.0/0 이 NAT 로 나가므로 VPC 안에 들어가도 SES·Step Functions·
+# SQS 호출은 그대로 된다.
+resource "aws_security_group" "b_lambda" {
+  count       = local.b_wf
+  name_prefix = "${var.project}-b-lambda-"
+  vpc_id      = aws_vpc.main.id
+  description = "B-part Lambda - outbound only (RDS, AWS APIs via NAT)"
+
+  egress {
+    description = "RDS 3306 and AWS APIs through NAT"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${var.project}-sg-b-lambda" }
+
+  lifecycle { create_before_destroy = true }
+}
+
+# VPC 에 들어가는 Lambda 는 ENI 를 스스로 만들어야 한다. 이 권한이 없으면
+# vpc_config 를 붙이는 apply 가 InvalidParameterValueException 으로 실패한다.
+resource "aws_iam_role_policy_attachment" "b_lambda_vpc" {
+  count      = local.b_wf
+  role       = aws_iam_role.b_lambda[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 # Lambda 가 처음 호출될 때 스스로 만들면 terraform 이 모르는 채로 남아 매일 쌓인다. 먼저 만든다.
 resource "aws_cloudwatch_log_group" "b_lambda" {
   for_each          = var.b_resale_workflow ? local.b_functions : {}
@@ -254,7 +293,16 @@ resource "aws_lambda_function" "b" {
   # 위해서였다. 이제 Secrets Manager 에서 항상 읽으므로 빈 값이 될 일이 없다.
   # 떼지 않으면 b_lambda_use_rds 를 바꿔도 기존 함수에 반영되지 않는다.
 
-  depends_on = [aws_cloudwatch_log_group.b_lambda, aws_iam_role_policy_attachment.b_lambda_logs]
+  # RDS 를 볼 때만 VPC 에 넣는다. D-Cloud(공인 IP)로 되돌리면 VPC 밖으로 나온다.
+  dynamic "vpc_config" {
+    for_each = local.b_db_on_rds ? [1] : []
+    content {
+      subnet_ids         = aws_subnet.private[*].id
+      security_group_ids = [aws_security_group.b_lambda[0].id]
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.b_lambda, aws_iam_role_policy_attachment.b_lambda_logs, aws_iam_role_policy_attachment.b_lambda_vpc]
 }
 
 # ── Step Functions ──

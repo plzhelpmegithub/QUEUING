@@ -140,7 +140,17 @@ resource "aws_lambda_function" "b_callback" {
   # DB 비밀번호와 A↔B 공유 비밀값을 모두 Secrets Manager 에서 읽으므로
   # 빈 값으로 덮일 일이 없다. 사유는 b_part_resale_workflow.tf 주석 참고.
 
-  depends_on = [aws_cloudwatch_log_group.b_callback, aws_iam_role_policy_attachment.b_lambda_logs]
+  # 워크플로 Lambda 와 같은 조건·같은 보안그룹으로 VPC 에 넣는다.
+  # ALB → Lambda 타겟그룹 호출은 VPC 여부와 무관하게 그대로 된다.
+  dynamic "vpc_config" {
+    for_each = local.b_db_on_rds ? [1] : []
+    content {
+      subnet_ids         = aws_subnet.private[*].id
+      security_group_ids = [aws_security_group.b_lambda[0].id]
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.b_callback, aws_iam_role_policy_attachment.b_lambda_logs, aws_iam_role_policy_attachment.b_lambda_vpc]
 }
 
 # ── ALB 타겟그룹 (target_type = lambda) ──

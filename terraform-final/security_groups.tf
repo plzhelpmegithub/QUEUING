@@ -140,6 +140,20 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.eks_nodes.id]
   }
 
+  # B파트 Lambda 가 RDS 를 볼 때만 연다 (2026-09-18, b_part_resale_workflow.tf 참고).
+  # 규칙을 별도 리소스(aws_vpc_security_group_ingress_rule)로 빼면 위 인라인 규칙과
+  # 충돌해서 apply 할 때마다 서로 지운다. 인라인으로 같이 둔다.
+  dynamic "ingress" {
+    for_each = local.b_wf == 1 && local.b_db_on_rds ? [1] : []
+    content {
+      description     = "MariaDB from B-part Lambda"
+      from_port       = 3306
+      to_port         = 3306
+      protocol        = "tcp"
+      security_groups = [aws_security_group.b_lambda[0].id]
+    }
+  }
+
   egress {
     description = "RDS outbound (backup and monitoring), inbound is what matters"
     from_port   = 0
