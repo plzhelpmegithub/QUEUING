@@ -1,22 +1,26 @@
 """
-POST /b-callback/verify-link/complete  (ALB 타겟그룹 — A파트가 좌석·결제 확정 시 호출)
+POST /b-callback/verify-link/complete  (ALB 콜백 라우트 — A파트가 좌석·결제 확정 후 호출)
 
 [2026-09-16 patch] 요청 필드를 token/seatId 기반에서 A파트 최종 확정 스펙
 (user_id/event_id/seat_id/allocation_id, token 없음) 기준으로 변경.
 
-함께 고친 두 가지 (원인 분석 결과):
+함께 고쳐둔 두 가지 (원인 분석 결과):
 1. cancellation_link.status ENUM은 ('unused','in_progress','completed','expired')뿐이고
-   'used'는 없음. 그런데 update_allocation_status.py가 완료 시 'used'로 UPDATE하고
-   있어서, 이 핸들러가 'completed'로 체크해도 절대 안 맞았음.
-   → update_allocation_status.py의 _LINK_STATUS_MAP을 "COMPLETED": "used" 에서
-     "COMPLETED": "completed" 로 같이 고쳐야 함 (별도 파일, 이 patch 범위 밖).
-2. cancellation_link는 allocation_id에 유니크 제약이 없어 재시도마다 새 행이
-   쌓일 수 있음 → allocation_id로 조회할 때 반드시 ORDER BY issued_at DESC
-   LIMIT 1로 최신 행만 집어야 함 (FOR UPDATE로 잠그기 위해 서브쿼리 사용).
+   'used'는 없다. update_allocation_status.py가 완료 시 'completed'로 UPDATE하고
+   있으니, 이 핸들러도 'completed'로 체크해야 앞뒤가 맞는다.
+2. cancellation_link는 allocation_id에 유니크 제약이 없어 재시도마다 여러 행이
+   쌓일 수 있음 → allocation_id로 조회할 때는 반드시 ORDER BY issued_at DESC
+   LIMIT 1로 최신 행만 집어야 한다 (FOR UPDATE로 락걸기 위해 서브쿼리 사용).
 
-역할 분리는 기존과 동일하게 유지: 이 핸들러는 seat_id 확정(재검증+저장)만
-책임지고, cancel_allocations/cancellation_link의 status 갱신은 SFN의
-MarkCompleted → UpdateAllocationStatus가 전담한다.
+역할 분리는 기존과 동일하게 유지: 이 핸들러는 seat_id 확정(및 이번에 추가된
+reservation_id 저장, cancel_pool_seats 판매 반영)만 책임지고, cancel_allocations/
+cancellation_link의 status 갱신은 SFN의 MarkCompleted → UpdateAllocationStatus가
+전담한다.
+
+[2026-09-18 patch] 취소표 풀 관리 구조가 A파트 seats/reservations 조인 방식에서
+B파트 직접 관리(cancel_pool_seats 테이블)로 전환됨에 따라 좌석 재검증 쿼리 교체.
+A파트가 결제 확정 필드로 reservation_id를 항상 함께 보내는 것으로 확정되어
+필수 필드 검증 및 저장 로직 추가.
 """
 
 import json
@@ -30,8 +34,8 @@ from common.db import db_transaction
 
 sfn_client = boto3.client("stepfunctions")
 
-# allocation_id로 최신 cancellation_link 행 1개를 잠그고, 매칭되는
-# cancel_allocations의 event_id/user_id도 같이 가져온다.
+# allocation_id로 최신 cancellation_link 한 개를 잠그고, 매칭되는
+# cancel_allocations의 event_id/user_id를 같이 가져온다
 FIND_LINK_SQL = """
     SELECT cl.token, cl.status AS link_status, cl.task_token,
            ca.event_id, ca.user_id
@@ -43,18 +47,19 @@ FIND_LINK_SQL = """
     FOR UPDATE
 """
 
+# B파트가 취소 좌석 풀을 직접 관리 — 재판매 가능 여부의 원본은
+# cancel_pool_seats.status='AVAILABLE'이다 (seats/reservations 조인 방식은 폐기)
 SEAT_AVAILABLE_SQL = """
-    SELECT s.seat_id
-    FROM seats s
-    JOIN reservations r ON r.seat_id = s.seat_id AND r.event_id = s.event_id
-    WHERE s.event_id = %s AND s.seat_id = %s
-      AND s.status = 'AVAILABLE' AND r.status = 'CANCELLED'
+    SELECT seat_id
+    FROM cancel_pool_seats
+    WHERE event_id = %s AND seat_id = %s
+      AND status = 'AVAILABLE'
     FOR UPDATE
 """
 
 UPDATE_ALLOCATION_SEAT_SQL = """
     UPDATE cancel_allocations
-    SET seat_id = %s
+    SET seat_id = %s, reservation_id = %s
     WHERE allocation_id = %s AND status = 'LINK_SENT'
 """
 
@@ -62,6 +67,14 @@ UPDATE_LINK_SEAT_SQL = """
     UPDATE cancellation_link
     SET seat_id = %s
     WHERE allocation_id = %s
+"""
+
+# 판매 완료 반영 — 안 하면 다음 후보자에게 이미 팔린 좌석이 계속
+# AVAILABLE로 보이게 된다
+UPDATE_POOL_SEAT_SOLD_SQL = """
+    UPDATE cancel_pool_seats
+    SET status = 'SOLD'
+    WHERE event_id = %s AND seat_id = %s
 """
 
 
@@ -76,8 +89,9 @@ def handler(event, context):
     allocation_id = body.get("allocation_id")
     event_id_req = body.get("event_id")
     seat_id = body.get("seat_id")
+    reservation_id = body.get("reservation_id")
 
-    if not allocation_id or not event_id_req or not seat_id:
+    if not allocation_id or not event_id_req or not seat_id or not reservation_id:
         return alb_response(400, {"success": False, "reason": "missing_fields"})
 
     with db_transaction() as cur:
@@ -87,7 +101,7 @@ def handler(event, context):
         if link is None:
             return alb_response(404, {"success": False, "reason": "allocation_not_found"})
 
-        # ENUM 값 'completed' 기준 (update_allocation_status.py 매핑 수정 후 유효)
+        # ENUM 값 'completed' 기준 (update_allocation_status.py 매핑과 일치)
         if link["link_status"] == "completed":
             return alb_response(200, {"success": True, "reason": "already_completed"})
         if link["link_status"] not in ("unused", "in_progress"):
@@ -97,11 +111,12 @@ def handler(event, context):
         if cur.fetchone() is None:
             return alb_response(409, {"success": False, "reason": "seat_no_longer_available"})
 
-        cur.execute(UPDATE_ALLOCATION_SEAT_SQL, (seat_id, allocation_id))
+        cur.execute(UPDATE_ALLOCATION_SEAT_SQL, (seat_id, reservation_id, allocation_id))
         if cur.rowcount == 0:
             return alb_response(409, {"success": False, "reason": "allocation_state_conflict"})
 
         cur.execute(UPDATE_LINK_SEAT_SQL, (seat_id, allocation_id))
+        cur.execute(UPDATE_POOL_SEAT_SOLD_SQL, (event_id_req, seat_id))
 
         task_token = link["task_token"]
         token = link["token"]
@@ -109,11 +124,11 @@ def handler(event, context):
         user_id = link["user_id"]
 
     if not task_token:
-        # 좌석은 확정됐는데 SFN을 깨울 수 없는 상태 — 즉시 500으로 드러낸다.
+        # 좌석은 확정됐는데 SFN을 깨울 방법이 없는 상태 — 즉시 500으로 드러낸다.
         return alb_response(500, {"success": False, "reason": "task_token_missing"})
 
     # ASL의 MarkCompleted가 $.event_id/$.user_id/$.token을 그대로 참조하므로
-    # (SendTaskSuccess output이 다음 상태 입력 전체를 대체함) 반드시 포함시킨다.
+    # (SendTaskSuccess output이 다음 상태 입력 전체를 대체함) 반드시 포함시켜야 한다
     try:
         sfn_client.send_task_success(
             taskToken=task_token,
@@ -136,4 +151,5 @@ def handler(event, context):
         "userId": user_id,
         "seatId": seat_id,
         "allocationId": allocation_id,
+        "reservationId": reservation_id,
     })
