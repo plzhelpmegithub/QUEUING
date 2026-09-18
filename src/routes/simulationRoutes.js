@@ -11,6 +11,7 @@ const {
   publishCancellationEvent,
 } = require('../services/cancellationEventPublisher');
 const { normalizeSessionContext, getScopedKey } = require('../services/sessionContext');
+const { listEventCards } = require('../services/eventCatalogService');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 const EVENT_LIST_KEY = 'events:list';
@@ -37,13 +38,27 @@ function simulationStandbyUsersKey(eventId, mode = 'b') {
   return `${simulationStateKey(eventId, mode)}:standby-users`;
 }
 
+function isActualSimulationMember(row) {
+  const userId = String(row?.user_id || '').trim();
+  return Boolean(
+    userId &&
+    !userId.startsWith(SIM_USER_PREFIX) &&
+    Number(row?.membership_at_join) === 1,
+  );
+}
+
 async function getCurrentSimulationMemberStandby(context, mode = 'b') {
   const [memberRows, trackedUserIds] = await Promise.all([
     queueService.getActiveStandbyMembers(context),
     redis.smembers(simulationStandbyUsersKey(context.eventId, mode)),
   ]);
   const tracked = new Set(trackedUserIds.map(String));
-  return memberRows.filter((row) => tracked.has(String(row.user_id)));
+  // 시뮬레이션 Hash가 존재한 뒤 실제 서비스 경로로 진입한 사용자만
+  // 후보로 사용한다. 더미 ID·대기열 진입 당시 비회원·다른 테스트의
+  // standby 행이 단계4 링크 발급 대상에 섞이지 않도록 이중 방어한다.
+  return memberRows.filter((row) => (
+    isActualSimulationMember(row) && tracked.has(String(row.user_id))
+  ));
 }
 
 const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
@@ -230,7 +245,10 @@ async function simulationRoutes(fastify, options = {}) {
           throw new Error('로컬 Secret Link 토큰을 발급하지 못했습니다.');
         }
 
-        const link = `${localFrontendBaseUrl()}/#/verify-link?linkToken=${encodeURIComponent(token)}&source=local-simulation`;
+        // Local Gmail 링크도 Last 전용 화면으로 진입시킨다.
+        // A파트가 서버에서 발급한 토큰·배정 좌석 규칙은 그대로 유지하고,
+        // 화면과 좌석맵만 Last 화면으로 통일한다.
+        const link = `${localFrontendBaseUrl()}/#/last-cancel-ticketing?token=${encodeURIComponent(token)}&source=local-simulation`;
         const emailResult = await sendEmail(
           targetUserEmail,
           `[QUEUING][Local] ${eventName} 취소표 Secret Link 발급`,
@@ -281,6 +299,8 @@ async function simulationRoutes(fastify, options = {}) {
       targetUserId: firstSent?.targetUserId || targetStandby.user_id,
       targetUserEmail: firstSent?.targetUserEmail || targetStandby.user_id,
       targetQueueId: String(memberStandbyRows.find((row) => String(row.user_id) === String(firstSent?.targetUserId))?.queue_id || targetStandby.queue_id || ''),
+      candidateCount: String(memberStandbyRows.length),
+      candidateQueueIds: memberStandbyRows.map((row) => String(row.queue_id || '')).filter(Boolean).join(','),
       localEmailSent: String(sentResults.length),
       cancellationEventsPublished: String(sentResults.length),
       cancellationEventsOutboxed: '0',
@@ -322,25 +342,7 @@ async function simulationRoutes(fastify, options = {}) {
   }
 
   fastify.get(route('/events'), adminAuth, async (request, reply) => {
-    const events = await redis.hgetall(EVENT_LIST_KEY);
-    if (!events || Object.keys(events).length === 0) {
-      return reply.send({ events: [] });
-    }
-    const list = Object.entries(events).map(([id, json]) => {
-      try {
-        const e = JSON.parse(json);
-        return {
-          eventId: id,
-          eventName: e.eventName || id,
-          eventDate: e.eventDate || '',
-          venue: e.venue || '',
-          totalSeats: e.totalSeats || 0,
-          sessions: e.sessions || [],
-        };
-      } catch (_) {
-        return { eventId: id, eventName: id };
-      }
-    });
+    const list = await listEventCards();
     return reply.send({ events: list });
   });
 
@@ -854,6 +856,8 @@ async function simulationRoutes(fastify, options = {}) {
       targetUserId,
       targetUserEmail,
       targetQueueId: String(targetStandby.queue_id || ''),
+      candidateCount: String(memberStandbyRows.length),
+      candidateQueueIds: memberStandbyRows.map((row) => String(row.queue_id || '')).filter(Boolean).join(','),
       cancellationEventsPublished: published.toString(),
       cancellationEventsOutboxed: outboxed.toString(),
       cancellationEventsFailed: failed.toString(),
@@ -1210,6 +1214,12 @@ async function simulationRoutes(fastify, options = {}) {
         failed: parseInt(simData.cancellationEventsFailed, 10) || 0,
       },
       realUser: trackedUserStatus,
+      candidateCount: memberStandbyRows.length,
+      candidateUsers: memberStandbyRows.map((row) => ({
+        userId: String(row.user_id),
+        queueId: row.queue_id,
+        queueIndex: row.queue_index,
+      })),
       memberStandbyCount: memberStandbyRows.length,
       allocations: allocHistory.slice(0, 20),
       createdAt: simData.createdAt,

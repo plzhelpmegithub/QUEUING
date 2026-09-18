@@ -51,6 +51,21 @@ fastify.register(cancelQueueRoutes);
 const simulationRoutes = require('./routes/simulationRoutes');
 fastify.register(simulationRoutes);
 fastify.register(simulationRoutes, { mode: 'local' });
+// Final 공용 풀 시뮬레이션은 로컬 검증용이다. 개발 환경에서는 기존 테스트
+// 흐름을 보존하기 위해 기본 활성화하고, production에서는 명시적으로 켜지 않는
+// 한 라우트·만료 스위퍼·전용 테이블 초기화를 등록하지 않는다.
+const lastSimulationEnabledValue = String(
+  process.env.LAST_SIMULATION_ENABLED ?? (process.env.NODE_ENV === 'production' ? 'false' : 'true'),
+).trim().toLowerCase();
+const lastSimulationEnabled = ['true', '1', 'yes', 'on'].includes(lastSimulationEnabledValue);
+
+if (lastSimulationEnabled) {
+  // B파트 연동/기존 Local 시뮬레이션과 분리된 100석 공용 풀 로컬 검증 흐름.
+  const lastSimulationRoutes = require('./routes/lastSimulationRoutes');
+  fastify.register(lastSimulationRoutes);
+} else {
+  fastify.log.info('Final 취소표 시뮬레이션은 LAST_SIMULATION_ENABLED=false로 비활성화되었습니다.');
+}
 
 fastify.get('/health', async () => ({ status: 'ok' }));
 

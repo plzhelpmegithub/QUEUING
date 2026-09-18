@@ -73,6 +73,8 @@ spec:
               value: {{ .Values.env.autoAdmissionEnabled | quote }}
             - name: AUTO_ADMISSION_INTERVAL_MS
               value: {{ .Values.env.autoAdmissionIntervalMs | quote }}
+            - name: LAST_SIMULATION_ENABLED
+              value: {{ .Values.env.lastSimulationEnabled | quote }}
             - name: BATCH_SIZE
               value: {{ .Values.env.batchSize | quote }}
             - name: ADMISSION_TIMEOUT

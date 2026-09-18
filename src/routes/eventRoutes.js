@@ -6,6 +6,7 @@ const { recoverAll } = require('../services/redisRecoveryService');
 const { sendEmail, notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
 const { publishSeatEvent, EVENT_TYPE } = require('../services/eventService');
 const { buildSeatId } = require('../services/sessionContext');
+const { listEventCards } = require('../services/eventCatalogService');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
@@ -472,24 +473,7 @@ async function eventRoutes(fastify) {
   });
 
   fastify.get('/events', async (request, reply) => {
-    const all = await redis.hgetall(EVENT_LIST_KEY);
-    let events = Object.values(all || {}).map(v => JSON.parse(v));
-
-    if (events.length === 0) {
-      try {
-        const rows = await pool.query(`SELECT * FROM events ORDER BY created_at DESC`);
-        events = rows.map(eventCardFromRow);
-        if (events.length > 0) {
-          const pipeline = redis.pipeline();
-          events.forEach(e => pipeline.hset(EVENT_LIST_KEY, e.eventId, JSON.stringify(e)));
-          await pipeline.exec();
-        }
-      } catch (dbErr) {
-        console.error('[Event] MariaDB 폴백 조회 실패:', dbErr.message);
-      }
-    }
-
-    events.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const events = await listEventCards();
     return reply.send({ events, count: events.length });
   });
 

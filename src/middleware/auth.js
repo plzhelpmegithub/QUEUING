@@ -38,10 +38,23 @@ function authenticate(request, reply, done) {
     request.authUser.scope = 'cancel_queue';
     request.authUser.eventId = result.eventId;
     request.authUser.allocationId = result.allocationId;
-    const urlPath = request.url.split('?')[0];
-    const allowed = urlPath.startsWith('/cancel-queue')
+    // 프록시·Fastify prefix 환경에 따라 request.url이 축약될 수 있다.
+    // 실제 라우트 메타데이터와 원본 URL도 함께 확인해 취소표 전용
+    // API가 scope 제한에 걸리지 않도록 한다.
+    const routePaths = [
+      request.routeOptions?.url,
+      request.routerPath,
+      request.url,
+      request.raw?.url,
+    ]
+      .filter(Boolean)
+      .map((value) => String(value).split('?')[0]);
+    const allowed = routePaths.some((urlPath) => (
+      urlPath.startsWith('/cancel-queue')
       || urlPath.startsWith('/verify-link')
-      || urlPath.startsWith('/seats');
+      || urlPath.startsWith('/seats')
+      || urlPath.startsWith('/last-simulation')
+    ));
     if (!allowed) {
       reply.status(403).send({
         success: false,
@@ -114,7 +127,8 @@ function getPresentedCancelLinkToken(request) {
 
 function allowUserOrCancelLink(request, reply, done) {
   const header = request.headers.authorization || '';
-  if (header) {
+  const bearerToken = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (bearerToken) {
     authenticate(request, reply, done);
     return;
   }
@@ -148,7 +162,7 @@ function requireSelfOrLink(request, reply, done) {
     const requestedAllocationId = getRequestValue(request, 'allocationId');
     const linkMatches = String(request.cancelLink.userId) === String(requestedUserId)
       && (!requestedEventId || !request.cancelLink.eventId || String(request.cancelLink.eventId) === String(requestedEventId))
-      && (!requestedSeatId || String(request.cancelLink.seatId) === String(requestedSeatId))
+      && (!requestedSeatId || !request.cancelLink.seatId || String(request.cancelLink.seatId) === String(requestedSeatId))
       && (!requestedAllocationId || String(request.cancelLink.allocationId) === String(requestedAllocationId));
 
     if (linkMatches) {

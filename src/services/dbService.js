@@ -174,7 +174,72 @@ async function initTable() {
       INDEX idx_status (status)
     )
   `);
-  console.log('[MariaDB] 전체 테이블 (11개) 준비 완료');
+  // [보존 / LAST LOCAL SIMULATION]
+  // B파트의 cancel_allocations 스키마를 변경하지 않고, A파트 로컬에서만
+  // 회차별 취소표 풀·후보 순번을 재현하기 위한 전용 테이블이다.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cancel_last_campaigns (
+      campaign_id VARCHAR(80) PRIMARY KEY,
+      event_id VARCHAR(100) NOT NULL,
+      session_date VARCHAR(50) NOT NULL DEFAULT '',
+      session_time VARCHAR(10) NOT NULL DEFAULT '',
+      pool_size INT NOT NULL DEFAULT 100,
+      status VARCHAR(30) NOT NULL DEFAULT 'INITIALIZED',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      open_at DATETIME NULL,
+      closed_at DATETIME NULL,
+      issued_at DATETIME NULL,
+      INDEX idx_last_campaign_session (event_id, session_date, session_time),
+      INDEX idx_last_campaign_status (status)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cancel_last_pool_seats (
+      campaign_id VARCHAR(80) NOT NULL,
+      seat_id VARCHAR(100) NOT NULL,
+      section VARCHAR(50) DEFAULT '',
+      price INT NOT NULL DEFAULT 0,
+      original_status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE',
+      status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (campaign_id, seat_id),
+      INDEX idx_last_pool_status (campaign_id, status)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cancel_last_candidates (
+      campaign_id VARCHAR(80) NOT NULL,
+      sequence_no INT NOT NULL,
+      queue_id INT NOT NULL,
+      user_id VARCHAR(100) NOT NULL,
+      queue_index INT NOT NULL DEFAULT 0,
+      allocation_id INT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'WAITING',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (campaign_id, user_id),
+      UNIQUE KEY uk_last_candidate_sequence (campaign_id, sequence_no),
+      INDEX idx_last_candidate_status (campaign_id, status),
+      INDEX idx_last_candidate_queue (campaign_id, queue_index)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cancel_last_history (
+      history_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      allocation_id INT NULL,
+      campaign_id VARCHAR(80) NULL,
+      user_id VARCHAR(100) NOT NULL,
+      event_id VARCHAR(100) NOT NULL,
+      session_date VARCHAR(50) NOT NULL DEFAULT '',
+      session_time VARCHAR(10) NOT NULL DEFAULT '',
+      seat_id VARCHAR(100) NULL,
+      action VARCHAR(30) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_last_history_allocation_action (allocation_id, action),
+      INDEX idx_last_history_user (user_id, created_at),
+      INDEX idx_last_history_campaign (campaign_id)
+    )
+  `);
+  console.log('[MariaDB] 전체 테이블 + Last 로컬 시뮬레이션 테이블 준비 완료');
 }
 
 function toItem(row) {

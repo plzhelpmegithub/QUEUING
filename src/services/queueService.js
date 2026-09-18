@@ -256,9 +256,9 @@ function queueKeys(context = {}) {
   };
 }
 
-// 취소표 대기열은 멤버십 회원만 대상이다. Redis standby에는 과거 테스트에서
-// 들어간 비회원 ID가 남아 있을 수 있으므로, 표시용 순번·전체 인원은 Redis의
-// zrank/zcard가 아니라 MariaDB의 활성 멤버십과 waiting_queue를 기준으로 계산한다.
+// 취소표 대기열은 본 티켓팅 대기열에 참여한 멤버십 회원만 대상이다. Redis
+// standby에는 과거 테스트에서 들어간 비회원·더미 ID가 남아 있을 수 있으므로,
+// 표시용 순번·전체 인원과 시뮬레이션 후보는 MariaDB를 기준으로 계산한다.
 async function getActiveStandbyMembers(context = {}) {
   const keys = queueKeys(context);
   if (!keys.eventId) return [];
@@ -266,7 +266,7 @@ async function getActiveStandbyMembers(context = {}) {
   const params = [keys.eventId, keys.sessionDate, keys.sessionTime];
   try {
     return await pool.query(
-      `SELECT w.user_id, w.queue_id, w.queue_index
+      `SELECT w.user_id, w.queue_id, w.queue_index, w.membership_at_join
        FROM waiting_queue w
        INNER JOIN memberships m ON m.user_id = w.user_id
        WHERE w.event_id = ?
@@ -274,8 +274,20 @@ async function getActiveStandbyMembers(context = {}) {
          AND w.session_time = ?
          AND w.queue_type = 'standby'
          AND w.status = 'WAITING'
+         AND w.membership_at_join = 1
+         AND w.user_id NOT LIKE 'sim-user-%'
          AND m.is_membership = TRUE
          AND m.expires_at > UTC_TIMESTAMP()
+         AND EXISTS (
+           SELECT 1
+           FROM waiting_queue main_queue
+           WHERE main_queue.user_id = w.user_id
+             AND main_queue.event_id = w.event_id
+             AND main_queue.session_date = w.session_date
+             AND main_queue.session_time = w.session_time
+             AND main_queue.queue_type = 'eligible'
+             AND main_queue.status IN ('WAITING', 'ADMITTED', 'PROMOTED', 'COMPLETED', 'EXPIRED', 'CANCELLED', 'STANDBY')
+         )
        ORDER BY w.queue_index ASC, w.queue_id ASC`,
       params,
     );
@@ -284,15 +296,26 @@ async function getActiveStandbyMembers(context = {}) {
     // 대기열 API 전체를 중단하지 않고, 가입 당시 저장한 플래그로 보완한다.
     console.warn('[Queue] 활성 멤버십 standby 집계 fallback:', err.message);
     return pool.query(
-      `SELECT user_id, queue_id, queue_index
-       FROM waiting_queue
-       WHERE event_id = ?
+        `SELECT user_id, queue_id, queue_index, membership_at_join
+         FROM waiting_queue
+         WHERE event_id = ?
          AND session_date = ?
          AND session_time = ?
          AND queue_type = 'standby'
          AND status = 'WAITING'
          AND membership_at_join = 1
-       ORDER BY queue_index ASC, queue_id ASC`,
+         AND user_id NOT LIKE 'sim-user-%'
+         AND EXISTS (
+           SELECT 1
+           FROM waiting_queue main_queue
+           WHERE main_queue.user_id = waiting_queue.user_id
+             AND main_queue.event_id = waiting_queue.event_id
+             AND main_queue.session_date = waiting_queue.session_date
+             AND main_queue.session_time = waiting_queue.session_time
+             AND main_queue.queue_type = 'eligible'
+             AND main_queue.status IN ('WAITING', 'ADMITTED', 'PROMOTED', 'COMPLETED', 'EXPIRED', 'CANCELLED', 'STANDBY')
+         )
+        ORDER BY queue_index ASC, queue_id ASC`,
       params,
     );
   }

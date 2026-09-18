@@ -23,7 +23,7 @@ replicaCount: 2
 image:
   repository: "mover14/redis-api-backend"
   pullPolicy: IfNotPresent
-  tag: "2.1.9"
+  tag: "2.2.0"
 
 # -----------------------------------------------------------------------------
 # [이미지 풀 시크릿] 프라이빗 레지스트리 인증이 필요할 때 사용.
@@ -100,6 +100,12 @@ env:
   # 운영에서는 false를 유지하고, 실제 대기열 운영 정책에 맞춰 별도 검토한다.
   autoAdmissionEnabled: true
   autoAdmissionIntervalMs: "1000"
+
+  # --- Final 취소표 시뮬레이션 ---
+  # A파트의 로컬 검증 전용 공용 좌석 풀·Gmail 링크 라우트 활성화 여부.
+  # 운영 AWS에서는 false로 유지해 /admin/last-simulation, /last-simulation 라우트와
+  # 전용 테이블 초기화·만료 스위퍼를 등록하지 않는다.
+  lastSimulationEnabled: false
 
   # --- 승인 풀/만료 정책 ---
   # admitted 상태로 유지할 수 있는 최대 사용자 수.

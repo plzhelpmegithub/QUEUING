@@ -1,3 +1,150 @@
+## [2026-09-18 07:40] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/middleware/auth.js]**: `allowUserOrCancelLink` 미들웨어에서 빈 Bearer 토큰(`Bearer `)도 truthy로 인식해 `authenticate` 경로로 진입하던 문제 수정 — 실제 토큰 값이 있을 때만 Bearer 인증을 시도하고, 없으면 cancel link token 폴백 경로로 진행. `requireSelfOrLink`에서 cancel link token의 `seatId`가 비어있을 때(Last 공용 풀 모드) 사용자 선택 좌석과의 불일치로 403이 발생하던 문제 수정 — `seatId`가 미배정인 경우 미들웨어 레벨 검증을 건너뛰고 route handler에서 좌석 유효성 검증
+- **[src/routes/lastSimulationRoutes.js]**: `POST /last-simulation/verify-link` 핸들러에서 `currentCandidate()` 호출을 읽기 전용 쿼리로 교체 — 기존 `currentCandidate()`는 만료된 allocation을 EXPIRED로 변경하는 부작용이 있어, 링크 검증 시점에 사용자 자신의 allocation이 만료 처리될 위험이 있었음
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Last 취소표 링크 페이지에서 "선택 가능" 표시는 정상이나, 좌석 클릭 시 아무 반응 없음. 네트워크 탭에서 모든 `/last-simulation/*` 인증 요청(pool 폴링, hold)이 403 Forbidden 반환
+- **원인(Cause):** 세 가지 원인이 겹쳐 발생.
+  1. `JWT_AUTH_SECRET` 미설정 시 `issueScopedCancelToken()`이 `null` 반환 → 프론트엔드가 `Authorization: Bearer ` (빈 토큰)을 전송 → `allowUserOrCancelLink` 미들웨어가 빈 헤더도 truthy로 판단해 `authenticate()` 경로 진입 → cancel link token 폴백 미작동
+  2. `verify-link`에서 `currentCandidate()` 호출 시 side effect로 만료된 allocation/candidate 상태를 EXPIRED로 변경하여 후속 API 호출에서 `allocation.status !== 'LINK_SENT'` 조건 불일치
+  3. `requireSelfOrLink`의 seatId 검증: Last 공용 풀 모드에서 cancel link token의 `seatId`가 비어있는데(`allocation.seatId = null`), POST /hold 요청에는 사용자가 선택한 좌석 ID가 포함 → `'' !== '선택좌석ID'` → `linkMatches = false` → 403
+- **해결(Solution):** 
+  1. `allowUserOrCancelLink`: `header` 존재 여부가 아닌 Bearer 뒤의 실제 토큰 값(`bearerToken`) 확인으로 변경
+  2. `verify-link`: `currentCandidate()` 대신 `cancel_last_candidates`에 대한 읽기 전용 SELECT 쿼리 사용
+  3. `requireSelfOrLink`: cancel link token에 `seatId`가 미배정(`''`)이면 seatId 검증 건너뜀 — `!request.cancelLink.seatId` 조건 추가
+  4. 프론트엔드: `lastHeaders()`에서 토큰이 비어있으면 Authorization 헤더 미전송, 모든 API 호출에 `linkToken` 파라미터 추가하여 Bearer 토큰 실패 시 cancel link token으로 폴백
+
+## [2026-09-18 01:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: `POST /last-simulation/verify-link` 응답에 `currentSequenceNo`와 `canSelect` 필드를 추가하여 프론트엔드 초기 렌더링 시 현재 순번 여부를 즉시 판별할 수 있도록 변경
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Last 취소표 링크를 열면 DB에 정상 데이터(allocation LINK_SENT, sequence_no=1)가 있어도 초기 화면에 "현재 순번 전"이 표시되고 좌석 선택 불가. 2초 후 첫 폴링이 성공해야 수정되지만, 폴링 실패 시 계속 "순번 전" 상태로 남음
+- **원인(Cause):** `verify-link` 응답에 `currentSequenceNo`가 없어서 프론트엔드 `renderValid()`가 `data.sequenceNo === data.currentSequenceNo` → `1 === undefined` → `false`로 평가, 초기 렌더링에서 모든 좌석의 `selectable`을 `false`로 설정
+- **해결(Solution):** `verify-link`에서 후보 행이 있는 경우 `currentCandidate(campaign_id)`를 호출해 현재 활성 순번을 조회하고, `currentSequenceNo`와 `canSelect`를 응답에 포함. 프론트엔드가 첫 폴링 전에도 순번을 정확히 판별
+
+## [2026-09-17 23:08] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/middleware/auth.js]**: 취소표 scoped token의 경로 허용 검사를 `request.url` 하나에 의존하지 않고 Fastify 라우트 메타데이터·원본 URL까지 함께 확인하도록 보완
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Last 좌석 화면의 `/last-simulation/pool` 요청이 `403 scope_restricted`로 반복되어, 실제 순번 1번 사용자도 좌석을 선택하거나 결제 화면으로 이동할 수 없었음
+- **원인(Cause):** 프록시 또는 라우트 prefix 환경에서 scoped token 검증 시 실제 취소표 라우트 경로를 인식하지 못해 허용 목록에서 제외될 수 있었음
+- **해결(Solution):** `request.routeOptions.url`, `request.routerPath`, `request.url`, `request.raw.url`을 함께 검사해 `/last-simulation` 경로를 안정적으로 허용. 사용자 식별·allocation·순번 검증은 그대로 유지
+
+## [2026-09-17 21:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: Final 시뮬레이션 정리 API에 `eventId` 기준 일괄 삭제 경로를 추가하고, 해당 공연의 Last 캠페인·후보·취소표 풀·미처리 allocation을 함께 정리하도록 변경
+- **[src/routes/lastSimulationRoutes.js]**: 아직 결제 확정되지 않은 취소표 좌석만 복원하고, `RESPONDED`/`COMPLETED` 상태의 좌석은 실제 예약 보호를 위해 강제 해제하지 않도록 보완
+- **[src/routes/lastSimulationRoutes.js]**: Last 시뮬레이션 삭제 결과에 실제 삭제된 `cancel_last_pool_seats` 좌석 수를 포함하고, 선택한 공연의 공용 풀 삭제 여부를 관리자 응답 메시지에서 확인할 수 있도록 보완
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Final 시뮬레이션에서 `데이터 삭제`를 실행해도 `cancel_last_campaigns`, `cancel_last_candidates`, `cancel_last_pool_seats`의 이전 테스트 데이터가 남아 있었음
+- **원인(Cause):** 화면 새로고침으로 `campaignId`가 사라지면 기존 Local 정리 API만 호출되었고, Last 전용 테이블은 캠페인별 삭제 API를 별도로 호출해야 했으며 풀 삭제 결과도 확인하기 어려웠음
+- **해결(Solution):** `POST /admin/last-simulation/cleanup-event`를 추가해 선택한 `event_id`의 모든 Last 테스트 캠페인과 공용 풀을 정리하고, Final 화면이 Local 정리 후 이 API를 호출하도록 연결했다. 캠페인별 풀 좌석 수를 `poolSeatsDeleted`로 응답한다.
+
+## [2026-09-17 18:59] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: Last 전용 `confirm` 및 `expire` API가 기존 결제 화면에서 전달되는 allocation·좌석·scoped token 요청을 처리하도록 유지
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 좌석 선점 이후 결제 화면으로 이동하면 일반 `/seats/confirm` 경로로 빠져 Last 후보·공용 풀 상태가 갱신되지 않을 수 있었음
+- **원인(Cause):** 기존 결제 페이지는 모든 취소표 주문을 일반 좌석 확정 API로 처리했음
+- **해결(Solution):** 프론트엔드가 Last allocation을 식별해 전용 `/last-simulation/confirm`을 호출하도록 분기하고, scoped token으로 사용자·allocation 소유권을 검증
+
+## [2026-09-17 18:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: Final 취소표 풀의 공개 시각을 UTC SQL 문자열로 저장하고 MariaDB `UTC_TIMESTAMP()` 기준으로 공개 여부를 판정하도록 변경
+- **[README.md]**: Final 화면의 공개 지연 기본값이 즉시(`openDelaySeconds=0`)이며 Secret Link 유효 시간이 5분임을 명시
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 풀을 10석으로 생성했는데 링크 화면에서 좌석이 전부 매진처럼 보이고, 즉시 링크 발급 단계에서도 “아직 취소표 공개 시간 전” 오류가 발생할 수 있었음
+- **원인(Cause):** 좌석의 `AVAILABLE` 상태와 현재 순번의 `selectable` 권한을 같은 회색 표시로 처리해 공용 풀 좌석이 매진으로 오인되었고, MariaDB `DATETIME`에 JS `Date`를 직접 저장할 때 애플리케이션·DB 타임존 차이로 `open_at`이 미래로 판정될 수 있었음
+- **해결(Solution):** Last 공용 풀의 AVAILABLE 좌석은 현재 순번이 아니어도 보라색으로 표시하되 클릭은 차단하고, 공개 시각은 UTC 문자열로 저장한 뒤 MariaDB `UTC_TIMESTAMP()`와 비교하도록 수정
+
+## [2026-09-17 18:35] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: Final Last 공용 풀 화면에서 기존 Local SMTP Secret Link도 검증할 수 있도록 `mode: 'local'` 호환 분기를 추가하고, 배정 좌석 홀드·결제 확정·만료/좌석 해제를 연결
+- **[src/routes/lastSimulationRoutes.js]**: `seat_id=NULL` allocation은 회차의 AVAILABLE 좌석을 검증한 뒤 선택 좌석을 allocation에 기록하고 기존 좌석 분산 락으로 홀드하도록 보강
+- **[src/routes/lastSimulationRoutes.js]**: Final 캠페인 후보 조회 기준 시각을 Local 시뮬레이션 시작 시각과 연계해 Local 단계 이후 실제 본 대기열에 들어온 멤버십 사용자가 누락되지 않도록 수정
+- **[README.md]**: Local 단계와 Last 공용 풀을 하나의 Final 흐름으로 사용하는 API 동작 및 로컬 링크 호환 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자에서 `POST /admin/last-simulation/init` 요청 시 `Route POST:/admin/last-simulation/init not found` 404가 발생하고 API 터미널에도 요청 로그가 남지 않음
+- **원인(Cause):** 현재 소스에는 `lastSimulationRoutes` 등록과 해당 라우트가 존재하지만, 실행 중인 Fastify 프로세스가 라우트 추가 전 코드로 기동되어 최신 라우트를 로드하지 않은 상태였음. 또한 Vite 개발 프록시에 `/last-simulation` 경로가 없으면 Last 화면 API가 A파트 서버로 전달되지 않음
+- **해결(Solution):** `app.js`의 `lastSimulationRoutes` 등록을 유지하고 Vite에 `/last-simulation` 프록시를 추가했다. API 프로세스와 Vite 개발 서버를 최신 소스로 재시작해야 새 라우트가 실제 실행 환경에 반영된다.
+
+## [2026-09-17 17:46] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/eventCatalogService.js]**: Redis `events:list`와 MariaDB `events`를 공연 ID 기준으로 병합하는 공통 카탈로그 조회 로직을 추가하고, Redis 카드에 회차가 없을 때 MariaDB `seats`에서 날짜·시간을 보완
+- **[src/routes/eventRoutes.js]**: 일반 공연 목록 API가 통합 카탈로그를 사용하도록 변경해 Redis에 누락된 DB 공연도 목록에 포함
+- **[src/routes/simulationRoutes.js]**: 기존 취소표 시뮬레이션의 공연 선택 API가 통합 카탈로그를 사용하도록 변경
+- **[src/routes/lastSimulationRoutes.js]**: Last 시뮬레이션의 공연 선택 API가 통합 카탈로그를 사용하도록 변경
+- **[src/routes/lastSimulationRoutes.js]**: Last 공연 목록 조회에서 전용 테이블 초기화를 분리해 테이블 권한·스키마 오류가 드롭다운 조회를 차단하지 않도록 보완
+- **[README.md]**: 공연 목록 조회의 Redis·MariaDB 병합 및 회차 보완 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 어드민에서 공연을 생성했는데 취소표 시뮬레이션의 “공연을 선택하세요” 드롭다운에 공연이 나타나지 않음
+- **원인(Cause):** 시뮬레이션 목록 API가 Redis `events:list`만 조회했고, 패널도 페이지 진입 시 한 번만 목록을 불러와 MariaDB에만 남은 공연이나 생성 이후 추가된 공연을 반영하지 못함
+- **해결(Solution):** Redis와 MariaDB를 모두 조회해 `eventId` 기준으로 병합하고, Redis 회차 정보가 없으면 좌석 테이블에서 회차를 복원하도록 수정했다. 일반·기존 시뮬레이션·Last 시뮬레이션 목록 API에 동일 로직을 적용했다.
+
+## [2026-09-18 09:52] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: Last 시뮬레이션의 링크 발급을 후보 전체 일괄 발송에서 현재 순번 1명 발송으로 변경했습니다. 후보 상태를 `ISSUING`으로 원자적으로 점유한 뒤 메일 발송 성공 시에만 `LINK_SENT`로 전환합니다.
+- **[src/routes/lastSimulationRoutes.js]**: 1번 사용자의 결제 완료, 순번 양도, 링크 만료 후 다음 `WAITING` 후보에게 새 5분 Secret Link를 자동 발급하도록 추가했습니다. 미접속 링크 만료도 프로세스 타이머로 처리하고, 재시작 뒤에는 기존 DB 만료 확인으로 보완합니다.
+- **[src/routes/lastSimulationRoutes.js]**: 이전 일괄 발송 테스트에서 남은 후순위 `LINK_SENT` 링크는 무효화하고 `WAITING`으로 되돌려, 앞 순번 종료 뒤 새 링크가 발급되도록 보정했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 1번과 2번 후보가 모두 5분 Secret Link 이메일을 동시에 받아 순번 제어가 무력화됨
+- **원인(Cause):** 관리자 링크 발급 API가 취소표 풀 수만큼 모든 `WAITING` 후보를 순회하며 allocation 생성과 SMTP 발송을 수행했음
+- **해결(Solution):** 유효 링크가 하나라도 있으면 다음 발급을 중단하고, 앞 순번의 `COMPLETED`·`PASSED`·`EXPIRED` 전환 뒤에만 다음 후보를 원자적으로 발급한다. 후순위에 미리 생성된 allocation도 정리해 새 순번 시점에 새 이메일이 발송되도록 했다.
+
+## [2026-09-18 09:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: Last Secret Link의 활성 상태는 유지한 채 Redis 선점만 해제하는 `POST /last-simulation/release` API를 추가했습니다. Last 공용 풀 후보는 해제 시 allocation의 `seat_id`, 풀 좌석, 후보 상태를 다시 선택 가능한 상태로 복구합니다.
+- **[src/routes/lastSimulationRoutes.js]**: 링크 재접속 시 `cancel_allocations.seat_id`만 남고 Redis `HELD` 상태가 사라진 stale 선택을 자동 정리합니다. 실제 Redis 선점이 남아 있는 경우에만 `heldSeatId`를 반환해 결제 단계로 안전하게 복구합니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 결제 전에 페이지를 이탈하거나 다시 열면 기존 선택 좌석이 계속 선택 중으로 남아, 링크 만료 전에도 다른 좌석을 고를 수 없었음
+- **원인(Cause):** 화면 이탈을 링크 만료 처리로 연결했고, allocation의 좌석 기록과 Redis 실제 선점 상태를 구분하지 않았음
+- **해결(Solution):** 링크 만료와 좌석 선점 해제를 분리했습니다. 해제 API는 Redis 좌석을 `AVAILABLE`로 되돌리고 Last 후보의 allocation 연결만 지우며, 재접속 검증 시에도 실제 Redis `HELD` 상태를 기준으로 이전 결제 단계를 복원합니다.
+
+## [2026-09-17 23:53] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/lastSimulationRoutes.js]**: Last 취소표 링크 메일 제목과 본문에 `evt-*` ID 대신 통합 공연 카탈로그의 공연명을 사용하도록 변경하고, 취소표 전용 결제가 완료되면 결제수단 저장·MariaDB 예약 확정·완료 메일 발송을 한 흐름으로 처리하도록 보완
+- **[src/routes/lastSimulationRoutes.js]**: 결제 완료 또는 `다음 순번에게 넘기기` 처리 시 해당 `waiting_queue` standby 행을 `COMPLETED`로 종료하도록 추가. 순번 양도는 `cancel_last_history`에 별도 기록하고, `GET /last-simulation/history/mine` 및 `POST /last-simulation/pass` API를 신설
+- **[src/routes/lastSimulationRoutes.js]**: Last 공용 풀의 좌석 홀드 도중 예외가 발생하면 방금 기록한 allocation 좌석을 조건부로 되돌리도록 보강
+- **[src/services/dbService.js]**: 서버 기동 시 `cancel_last_history` 테이블을 함께 생성하도록 추가
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Last Secret Link에서 좌석을 골라도 일반 예매 결제 화면으로 이동했고, 완료 후 대기열 행이 남거나 원하는 좌석이 없을 때 순번을 명시적으로 포기할 수 없었음
+- **원인(Cause):** Last 전용 좌석 선점 이후의 결제·대기열 종료·안내 이력이 일반 결제 화면과 분리되어 있지 않았고, 결제하지 않은 순번 양도를 저장할 영속 이력이 없었음
+- **해결(Solution):** Last 전용 confirm 흐름에서 예약·메일·standby 종료를 원자적 순서로 연결했다. 순번 양도는 좌석을 해제하고 후보 상태를 `PASSED`로 전환한 뒤, 예약을 만들지 않고 별도 이력 테이블에 기록한다.
+
+## [2026-09-17 17:11] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: 취소표 standby 대상 조회에 `membership_at_join=1`, 본 대기열 참여 이력 존재, 시뮬레이션 더미 ID 제외 조건을 추가해 실제 멤버십 참여자만 집계하도록 보강
+- **[src/routes/simulationRoutes.js]**: B파트·Local 시뮬레이션의 단계4 후보를 시뮬레이션 추적 Set과 MariaDB 검증 결과의 교집합으로 제한하고, 실제 후보 수·queue_id 목록을 상태에 기록
+- **[README.md]**: 실제 멤버십 후보 선별 조건과 단계4 동작을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 취소표 시뮬레이션 단계4가 현재 활성 멤버십만 확인하면 대기열 진입 당시 비회원이었던 계정이나 시뮬레이션과 무관한 standby 데이터가 후보로 섞일 수 있었음
+- **원인(Cause):** 후보 조회에 `membership_at_join`, 본 대기열 참여 이력, 시뮬레이션 참여 추적 여부를 동시에 적용하지 않았음
+- **해결(Solution):** MariaDB에서 진입 당시 멤버십·본 대기열 참여·활성 standby를 검증하고, 시뮬레이션 Hash 이후 실제 서비스 경로로 기록된 사용자 Set과 교차 필터링했다. 더미 ID는 별도로 제외하여 단계4 링크 발급 대상이 실제 멤버십 사용자로 한정되도록 수정
+
 ## [2026-09-17 11:47] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -1216,3 +1363,45 @@
 - **증상(Issue):** 좌석 선택 요청이 인증·토큰 검증에서 실패해도 그 전에 기록된 `cancel_allocations.seat_id`가 남을 수 있었음
 - **원인(Cause):** NULL 모드의 allocation 좌석 기록이 토큰 검증보다 먼저 실행됨
 - **해결(Solution):** 인증과 토큰 확인을 완료한 뒤에만 `assignSeatById()`를 실행하고, 이후 좌석 홀드 실패 시에만 해당 요청의 기록을 조건부 NULL 복구하도록 정리
+## [2026-09-17 17:33] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: B파트 `db_git` 스키마를 변경하지 않고 공용 취소표 풀 검증에 필요한 `cancel_last_campaigns`, `cancel_last_pool_seats`, `cancel_last_candidates` 전용 테이블을 자동 생성하도록 추가
+- **[src/routes/lastSimulationRoutes.js]**: 회차별 임의 취소표 풀, 본 티켓팅 참여 멤버십 후보 스냅샷, 순번별 5분 Gmail Secret Link, 공용 좌석 직접 선점·결제·만료 API를 신설. Last confirm은 B파트 콜백을 호출하지 않도록 분리
+- **[src/services/seatService.js]**: 기존 좌석 확정 로직을 유지하면서 Last 로컬 테스트가 B파트 complete 콜백을 건너뛸 수 있는 선택 옵션 추가
+- **[src/middleware/auth.js]**: Last 취소표 scoped JWT가 전용 좌석 API에 접근할 수 있도록 허용 경로 추가
+- **[src/app.js]**: Last 로컬 시뮬레이션 라우트 등록
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 기존 Local 시뮬레이션은 취소 좌석을 사용자별로 1:1 사전 배정하므로, 100석 공용 풀에서 멤버십 순번대로 직접 선택하는 흐름과 B파트 연동 없이 테스트하는 흐름을 검증하기 어려웠음
+- **원인(Cause):** 기존 `simulationRoutes.js`는 B파트 이벤트 또는 A파트 Local 1:1 allocation을 기준으로 동작하고, B파트 `cancel_allocations.seat_id` 스키마는 담당 영역이었음
+- **해결(Solution):** A파트에 Last 전용 캠페인·풀·후보 테이블과 API를 분리했다. `seat_id=NULL` allocation을 생성한 뒤 현재 순번만 `seatService.holdSeat()`로 공용 풀 좌석을 선점하게 하고, confirm은 MariaDB 예약 저장·Redis SOLD 전환만 수행해 AWS B 콜백과 충돌하지 않도록 했다.
+## [2026-09-17 17:46] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/eventCatalogService.js]**: Redis `events:list`와 MariaDB `events`를 공연 ID 기준으로 병합하는 공통 카탈로그 조회 로직을 추가하고, Redis 카드에 회차가 없을 때 MariaDB `seats`에서 날짜·시간을 보완
+- **[src/routes/eventRoutes.js]**: 일반 공연 목록 API가 통합 카탈로그를 사용하도록 변경해 Redis에 누락된 DB 공연도 목록에 포함
+- **[src/routes/simulationRoutes.js]**: 기존 취소표 시뮬레이션의 공연 선택 API가 통합 카탈로그를 사용하도록 변경
+- **[src/routes/lastSimulationRoutes.js]**: Last 시뮬레이션의 공연 선택 API가 통합 카탈로그를 사용하도록 변경
+- **[README.md]**: 공연 목록 조회의 Redis·MariaDB 병합 및 회차 보완 정책을 문서화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 어드민에서 공연을 생성했는데 취소표 시뮬레이션의 “공연을 선택하세요” 드롭다운에 공연이 나타나지 않음
+- **원인(Cause):** 시뮬레이션 목록 API가 Redis `events:list`만 조회했고, 패널도 페이지 진입 시 한 번만 목록을 불러와 MariaDB에만 남은 공연이나 생성 이후 추가된 공연을 반영하지 못함
+- **해결(Solution):** Redis와 MariaDB를 모두 조회해 `eventId` 기준으로 병합하고, Redis 회차 정보가 없으면 좌석 테이블에서 회차를 복원하도록 수정했다. 일반·기존 시뮬레이션·Last 시뮬레이션 목록 API에 동일 로직을 적용했다.
+## [2026-09-18 10:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/app.js]**: `LAST_SIMULATION_ENABLED` 환경변수가 `true`일 때만 Final 공용 좌석 풀 시뮬레이션 라우트를 등록하도록 변경. 개발 환경은 미설정 시 기존처럼 활성화하고, production은 기본 비활성화해 Final 전용 테이블 초기화·만료 스위퍼가 실행되지 않도록 분리.
+- **[redis-api-chart/values.yaml / templates/deployment.yaml / Chart.yaml]**: `env.lastSimulationEnabled` Helm 값과 `LAST_SIMULATION_ENABLED` Pod 환경변수를 추가하고 운영 기본값을 `false`로 설정. 템플릿 변경에 따라 차트 버전을 `2.2.3`으로 증가.
+- **[.env.example / README.md / redis-api-chart/README.md / ../argocd/values-prod.yaml]**: 로컬 활성화·AWS 운영 비활성화 기준과 배포 override 값을 문서화.
+## [2026-09-18 11:49] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[../argocd/values-prod.yaml]**: AWS API 배포의 DB 연결 대상을 D-Cloud MariaDB(`211.46.52.164:13306`)에서 RDS MariaDB(`queuing-mariadb.cto8u6c4yxyv.ap-northeast-2.rds.amazonaws.com:3306`)로 전환하고, `DB_PASSWORD`를 `app-secrets/RDS_PASSWORD` Kubernetes Secret 참조로 분리.
+- **[redis-api-chart/README.md]**: Helm `secretKeyRef`가 AWS Secrets Manager 원본을 직접 읽지 않으며, External Secrets Operator 또는 Secrets Store CSI를 통한 Kubernetes Secret 동기화가 선행되어야 함을 명시.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Secrets Manager에만 RDS 비밀번호가 있는 상태에서 API Pod가 DB 비밀번호를 주입받지 못할 수 있음.
+- **원인(Cause):** Helm Deployment는 Kubernetes Secret 참조만 생성하며 AWS Secrets Manager API 호출 기능이 없음.
+- **해결(Solution):** RDS 비밀번호의 원본은 Secrets Manager에 유지하고, `queuing-a/app-secrets`의 `RDS_PASSWORD` 키를 동기화 대상으로 지정.

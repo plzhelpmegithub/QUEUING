@@ -339,7 +339,7 @@ async function cleanupEventSeats(eventId) {
   return { deleted };
 }
 
-async function confirmSeat(userId, seatId, requestedContext = {}) {
+async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) {
   const seatKey = `${SEAT_PREFIX}${seatId}`;
   const seatInfo = await redis.hgetall(seatKey);
   const status = seatInfo.status;
@@ -404,7 +404,7 @@ async function confirmSeat(userId, seatId, requestedContext = {}) {
     const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
     if (allocation) {
       const payload = { userId, eventId, seatId, allocationId: allocation.id };
-      if (bCallback.isConfigured()) {
+      if (!options.skipBCallback && bCallback.isConfigured()) {
         try {
           await bCallback.callbackComplete(payload);
         } catch (err) {

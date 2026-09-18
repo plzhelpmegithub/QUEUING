@@ -18,7 +18,8 @@ QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설
 ## ⚙️ Core Logic & Code Description
 ### `values.yaml`
 - **목적:** 배포 환경별 설정을 템플릿과 분리하고, 이미지·네트워크·리소스 값을 재사용한다.
-- **주요 기능:** `env`에는 비밀이 아닌 연결 설정을 보관하고, `dbPasswordSecret`, `auth.secret`, `auth.bootstrap.secret`, `smtp.secret`에는 이미 클러스터에 생성된 Secret의 이름과 키만 기록한다. `autoAdmissionEnabled`, `autoAdmissionIntervalMs`, `batchSize`, `admissionTimeout`, `admissionTimeoutCheckIntervalMs`로 대기열 자동 승인과 승인 만료 정책을 제어한다.
+- **주요 기능:** `env`에는 비밀이 아닌 연결 설정을 보관하고, `dbPasswordSecret`, `auth.secret`, `auth.bootstrap.secret`, `smtp.secret`에는 이미 클러스터에 생성된 Secret의 이름과 키만 기록한다. `autoAdmissionEnabled`, `autoAdmissionIntervalMs`, `batchSize`, `admissionTimeout`, `admissionTimeoutCheckIntervalMs`로 대기열 자동 승인과 승인 만료 정책을 제어한다. `lastSimulationEnabled`는 Final 공용 좌석 풀·Gmail 링크 검증용 로컬 라우트의 등록 여부를 제어하며, 운영 기본값은 `false`다.
+- **RDS 비밀번호 주입:** `dbPasswordSecret`은 AWS Secrets Manager를 직접 읽지 않는다. 운영 override에서 AWS Secrets Manager 원본 `queuing-persistent/app-secrets`의 `RDS_PASSWORD`를 동기화한 Kubernetes Secret(`queuing-a/app-secrets`)을 참조한다. 동기화가 없으면 Deployment가 `CreateContainerConfigError`로 기동하지 않는다.
 - **API 명세 / 라우팅 규칙:** API 컨테이너는 기본적으로 3000번 포트를 사용하며, 기본 Service 타입은 NodePort다.
 
 ### `templates/deployment.yaml`
@@ -38,6 +39,7 @@ QUEUING API를 Kubernetes에 배포하는 Helm 차트다. 애플리케이션 설
 - `env.batchSize`는 회차별 admitted 풀의 최대 인원이며 API Pod에 `BATCH_SIZE`로 전달된다. 기본값은 100명이다.
 - `env.admissionTimeout`은 승인된 사용자가 좌석 선택 단계로 이동할 수 있도록 유지되는 제한시간(초)이며 `ADMISSION_TIMEOUT`으로 전달된다. 기본값 420초(7분)다.
 - `env.admissionTimeoutCheckIntervalMs`는 만료된 승인 사용자를 정리하고 다음 eligible 사용자를 보충하는 점검 주기(밀리초)이며 `ADMISSION_TIMEOUT_CHECK_INTERVAL_MS`로 전달된다.
+- `env.lastSimulationEnabled`는 `LAST_SIMULATION_ENABLED`로 전달된다. `false`면 Final 시뮬레이션의 `/admin/last-simulation/*`, `/last-simulation/*` 라우트와 전용 테이블 초기화·만료 스위퍼가 API 프로세스에 등록되지 않는다. AWS 운영에서는 `false`를 유지한다.
 - `JWT_SECRET`이 32자 미만이면 워커는 자동 승인을 수행하지 않으므로 인증 Secret을 먼저 생성해야 한다.
 - 자동 승인은 `JWT_SECRET`로 Admission Token을 발급하고 MariaDB의 대기 상태를 `ADMITTED`로 변경한다. `standby` 취소표 대기자는 대상이 아니다.
 - API 파드가 여러 개여도 회차별 Redis 분산 락을 사용하지만, 운영 환경에서는 자동 승인 배치 크기와 좌석 정책을 별도로 검토해야 한다.
@@ -50,6 +52,7 @@ env:
   batchSize: "100"
   admissionTimeout: "420"
   admissionTimeoutCheckIntervalMs: "1000"
+  lastSimulationEnabled: false
 ```
 
 ## 🔐 API 인증 Secret 설정
