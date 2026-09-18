@@ -253,6 +253,19 @@ variable "db_instance_class" {
   default = "db.t3.small"
 }
 
+variable "db_max_connections" {
+  description = <<-DESC
+    RDS 동시 접속 한도. 기본 파라미터 그룹은 db.t3.small 에서 72 라 api 파드 10개(×풀 10)도
+    못 버텼다. 150 은 남는 메모리(약 980MB) 기준으로 잡은 값이다.
+
+    ⚠️ 커넥션 수요 = api 파드 수 × 10 + backend-counter + Lambda + 관리용 2.
+       api HPA max 가 30 이면 최악 300 이 필요해서 150 으로도 모자란다.
+       api HPA max 를 10 안쪽으로 두거나 인스턴스를 키워야 한다.
+  DESC
+  type        = number
+  default     = 150
+}
+
 variable "db_allocated_storage" {
   description = "초기 스토리지(GiB). 차면 이 값의 2배까지 자동 확장된다"
   type        = number

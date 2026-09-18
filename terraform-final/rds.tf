@@ -44,10 +44,40 @@ locals {
   rds_password = var.db_password != "" ? var.db_password : try(local.app_secrets["RDS_PASSWORD"], "")
 }
 
+# ── 커넥션 한도를 올린다 (2026-09-18) ──
+#
+# 기본 파라미터 그룹(default.mariadb10.11)은 max_connections 를
+# {메모리/25165760}, 즉 커넥션 하나당 24MB 로 잡는다. db.t3.small 에서 72 다.
+# api 파드 10개 × 풀 10 = 100 이 필요해서 한도에 걸렸고, 못 붙은 파드가
+# CrashLoopBackOff 로 죽었다(Max_used_connections 74 확인).
+#
+# 실제로는 대부분 대기 중인 풀 커넥션이라 하나당 1MB 안팎이다. 당시 남은 메모리가
+# 980MB 여서 150 으로 올려도 여유가 있다. 기본 그룹은 수정할 수 없어 전용 그룹을 만든다.
+#
+# ⚠️ 파라미터 그룹을 "바꿔 끼우는" 것은 재부팅해야 적용된다(1~2분 중단).
+#    한 번 붙이고 나면 이후 max_connections 값 변경은 재부팅 없이 바로 된다.
+resource "aws_db_parameter_group" "mariadb" {
+  count = var.use_rds ? 1 : 0
+
+  name_prefix = "${var.project}-mariadb-"
+  family      = "mariadb10.11"
+  description = "QUEUING MariaDB - raise max_connections"
+
+  parameter {
+    name         = "max_connections"
+    value        = tostring(var.db_max_connections)
+    apply_method = "immediate"
+  }
+
+  lifecycle { create_before_destroy = true }
+}
+
 resource "aws_db_instance" "mariadb" {
   count = var.use_rds ? 1 : 0
 
   identifier = "${var.project}-mariadb"
+
+  parameter_group_name = aws_db_parameter_group.mariadb[0].name
 
   engine         = "mariadb"
   engine_version = var.db_engine_version
