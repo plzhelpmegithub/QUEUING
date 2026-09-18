@@ -147,7 +147,7 @@ env:
   # SQS 취소 이벤트 큐 URL과 B파트 콜백 API base 주소.
   # 설정하면 /verify-link 요청은 ${base}/b-callback/verify-link로 전달된다.
   cancellationEventsQueueUrl: "https://sqs.ap-northeast-2.amazonaws.com/230790682749/queuing-cancellation-events"
-  bCallbackBaseUrl: "queuing-alb-1027444978.ap-northeast-2.elb.amazonaws.com"
+  bCallbackBaseUrl: "https://api.queuing.kr"
   # 콜백 인증 시크릿은 Kubernetes Secret에서 주입.
   # bCallbackSecret은 values에 직접 기록하지 않는다.
 
