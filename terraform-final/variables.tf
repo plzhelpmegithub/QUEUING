@@ -223,19 +223,21 @@ variable "use_rds" {
   DESC
   type        = bool
 
-  # ⚠️ 기본값을 false 로 바꿨다 (2026-09-09)
+  # ⚠️ 기본값을 다시 true 로 바꿨다 (2026-09-18)
   #
-  # 통합 당시에는 찬규 안에 RDS 가 있어서 true 로 뒀다. 그런데 찬규님이
-  # 같은 날 14:16 푸시에서 rds.tf 를 주석만 남기고 비우고, "외부 D-Cloud
-  # MariaDB 를 계속 쓴다"로 방향을 정했다.
+  # 2026-09-09 에는 false 였다. 찬규님이 rds.tf 를 비우고 "외부 D-Cloud MariaDB 를
+  # 계속 쓴다"로 정했기 때문이다. 그때 남던 비용은 이랬다 — EKS 파드 → NAT →
+  # 인터넷 → D-Cloud(13306) 구간이 평문이고, D-Cloud 인증서가 자체 서명이라
+  # 클라이언트가 --skip-ssl 로 검증을 끈 상태였다. 그 구간을 지나는 것이
+  # DB 계정과 예매 조회 결과 전체였다.
   #
-  # DB 는 A파트 소유라 파트 담당의 결정을 따른다. 다만 비용은 남는다 —
-  # EKS 파드 → NAT → 인터넷 → D-Cloud(211.46.52.164:13306) 구간이 평문이고,
-  # D-Cloud 인증서가 자체 서명이라 클라이언트가 --skip-ssl 로 검증을 끈 상태다.
-  # 그 구간을 지나는 것은 DB 계정과 예매 조회 결과 전체다.
+  # 2026-09-18 에 RDS 로 이관했다(D-Cloud → RDS 테이블 12개). RDS 는 VPC 안에
+  # 있어 그 구간이 사라지고, 저장 암호화와 자동 백업이 딸려온다.
   #
-  # RDS 로 옮기기로 하면 true 로만 바꾸면 된다. rds.tf 는 지우지 않고 남겼다.
-  default = false
+  # ⚠️ 기본값을 여기서 바꾸는 이유: terraform.tfvars 는 .gitignore 대상이라
+  #    거기 적은 use_rds = true 가 팀에 공유되지 않는다. 기본값이 false 로
+  #    남아 있으면 다른 사람이 clone 해서 apply 할 때 RDS 를 만들지 않는다.
+  default = true
 }
 
 variable "db_engine_version" {
@@ -245,7 +247,10 @@ variable "db_engine_version" {
 
 variable "db_instance_class" {
   description = "개발 db.t3.micro / 부하테스트 db.t3.small 이상"
-  default     = "db.t3.micro"
+
+  # 2026-09-18: 실제 운영 중인 값이 db.t3.small 이다. tfvars 가 .gitignore 라
+  # 기본값이 micro 로 남아 있으면 다른 사람이 apply 할 때 다운그레이드된다.
+  default = "db.t3.small"
 }
 
 variable "db_allocated_storage" {
