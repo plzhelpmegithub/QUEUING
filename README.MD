@@ -504,11 +504,12 @@ complete/expire 콜백은 B파트가 `200` JSON 또는 `204 No Content`로 응�
 - **요청:** `POST ${B_CALLBACK_BASE_URL}/b-callback/verify-link`
 - **헤더:** `Content-Type: application/json`, `X-Callback-Secret: ${B_CALLBACK_SECRET}`
 - **본문:** `{ "token": "B파트가 발급한 Secret Link 토큰" }`
-- **성공 응답:** `200`과 함께 아래 식별자·만료 정보를 반환해야 한다. 필드는 camelCase와 snake_case 중 하나를 사용할 수 있다.
+- **성공 응답:** `200`과 함께 아래 식별자·만료 정보를 반환해야 한다. 성공 표시는 `valid: true` 또는 B Lambda 호환 응답인 `success: true` 중 하나를 사용하며, 식별자·시간 필드는 camelCase와 snake_case 중 하나를 사용할 수 있다.
 
 ```json
 {
   "valid": true,
+  "success": true,
   "user_id": "user@example.com",
   "event_id": "evt-123",
   "allocation_id": 1,
@@ -519,7 +520,7 @@ complete/expire 콜백은 B파트가 `200` JSON 또는 `204 No Content`로 응�
 }
 ```
 
-- A파트는 `valid`, `user_id`, `event_id`, `allocation_id`가 없으면 검증 응답 오류로 처리한다.
+- A파트는 `valid: true` 또는 `success: true`가 없거나, `user_id`, `event_id`, `allocation_id` 식별자가 없으면 검증 응답 오류로 처리한다.
 - A파트는 `allocation_id`가 자사 `cancel_allocations`의 활성 할당과 일치하는지 확인한 뒤, A파트 DB 만료 시각과 B파트 만료 시각 중 더 이른 시간을 클라이언트에 전달한다.
 - 실제 `cancel_allocations.allocation_id`는 `INT AUTO_INCREMENT` 기본 키이므로 B파트가 전달하는 값도 문자열 예시(`ALLOC-001`)가 아닌 A DB에 생성된 정수 ID와 일치해야 한다. `callback_outbox.id`는 별도의 outbox 자동 증가 키다.
 - 토큰이 유효하지 않으면 `401`, 만료되었으면 `410`과 `{ "valid": false, "reason": "expired" }`를 반환해야 한다. B파트 연결 실패나 잘못된 응답은 A파트가 `502`로 반환한다.

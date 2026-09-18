@@ -23,7 +23,7 @@ replicaCount: 2
 image:
   repository: "mover14/redis-api-backend"
   pullPolicy: IfNotPresent
-  tag: "2.2.1"
+  tag: "2.2.2"
 
 # -----------------------------------------------------------------------------
 # [이미지 풀 시크릿] 프라이빗 레지스트리 인증이 필요할 때 사용.

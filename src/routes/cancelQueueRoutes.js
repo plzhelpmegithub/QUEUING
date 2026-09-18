@@ -614,7 +614,10 @@ async function cancelQueueRoutes(fastify) {
           : {};
         const pick = (...keys) => keys.map((key) => source[key]).find((value) => value !== undefined && value !== null && value !== '');
         result = {
-          valid: source.valid === true,
+          // B파트 ALB 검증 Lambda는 기존 계약의 valid 외에 success: true를
+          // 성공 신호로 반환한다. 둘 중 하나만 명시적으로 true일 때만
+          // 통과시켜 실패 응답이나 임의 truthy 값을 성공으로 오인하지 않는다.
+          valid: source.valid === true || source.success === true,
           reason: source.reason || '',
           message: source.message || '',
           allocationId: pick('allocationId', 'allocation_id') ? String(pick('allocationId', 'allocation_id')) : '',

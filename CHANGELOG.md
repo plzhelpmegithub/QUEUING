@@ -1426,3 +1426,13 @@
 - **증상(Issue):** `lastSimulationEnabled: false`인데도 API 재시작 시 Final 전용 `cancel_last_*` 테이블이 생성될 수 있었습니다.
 - **원인(Cause):** 서버 시작 시 항상 호출되는 `initTable()` 내부에 Final 전용 `CREATE TABLE IF NOT EXISTS` 구문이 공통 테이블 초기화와 함께 들어 있었습니다.
 - **해결(Solution):** Final 전용 DDL을 `includeLastSimulation` 조건 블록으로 이동하고, `app.js`가 `LAST_SIMULATION_ENABLED`를 기준으로 해당 옵션을 전달하도록 수정했습니다. 설정을 꺼도 이미 존재하는 테이블·데이터는 삭제하지 않습니다.
+## [2026-09-18 23:23] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: B파트 ALB 검증 Lambda의 성공 응답 `success: true`를 기존 `valid: true`와 동등한 검증 성공 신호로 수용하도록 보완. 응답의 식별자·만료 시각 교차 검증은 그대로 유지한다.
+- **[README.md]**: `/b-callback/verify-link` 연동 계약에 `success: true` 호환 응답을 문서화했다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B Lambda가 유효한 링크에 `200 { "success": true, ... }`를 반환해도 A API가 취소표 링크를 무효로 처리했다.
+- **원인(Cause):** A API 어댑터가 `valid === true`만 성공으로 판정했고, B의 기존 응답 계약인 `success === true`를 읽지 않았다.
+- **해결(Solution):** 성공 판정을 `source.valid === true || source.success === true`로 제한적으로 확장해 두 응답 형식을 모두 수용했다.
