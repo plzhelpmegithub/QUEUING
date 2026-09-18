@@ -1,0 +1,21 @@
+# 팀원 로컬 계정 (2026-09-18)
+#
+# login 만 준다. apiKey 는 주지 않는다 — 토큰을 발급받아 스크립트로 배포할
+# 일이 없고, 토큰은 비밀번호와 달리 새어도 알아채기 어렵다.
+#
+# 권한은 argocd-rbac-cm.yaml 에서 정한다. 계정만 만들고 권한을 안 주면
+# 아무것도 안 보이는 빈 화면이 뜬다.
+#
+# 비밀번호는 여기 적지 않는다. 계정을 만든 뒤 argocd CLI 로 따로 설정한다.
+#   argocd account update-password --account chan
+#
+# ⚠️ merge 로 넣는다(--type merge). apply 로 덮으면 설치본이 넣어둔
+#    resource.exclusions 같은 기본 설정이 지워진다.
+#
+#   kubectl patch configmap argocd-cm -n argocd --type merge --patch-file shared-infra/argocd/argocd-cm.yaml
+data:
+  url: "https://api.queuing.kr/argocd"
+  accounts.choi: "login"
+  accounts.chan: "login"
+  accounts.yeji: "login"
+  accounts.geonah: "login"

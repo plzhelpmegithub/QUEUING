@@ -1,0 +1,18 @@
+# argocd-server 실행 옵션 (2026-09-18)
+#
+# server.rootpath  https://api.queuing.kr/argocd 아래에서 동작하게 한다.
+# server.basehref  화면이 불러오는 JS·CSS 경로도 /argocd 기준으로 맞춘다.
+#
+# TLS 는 끄지 않는다. ALB 가 argocd-server 에 HTTPS 로 붙는다
+# (terraform-final/argocd_access.tf 의 타깃그룹 protocol = HTTPS).
+#
+# ⚠️ 적용 후 argocd-server 를 재시작해야 반영된다.
+# ⚠️ 적용 후에는 port-forward 로 들어갈 때도 주소 뒤에 /argocd 를 붙여야 한다.
+#      kubectl port-forward svc/argocd-server -n argocd 8080:443
+#      → https://localhost:8080/argocd
+#
+#   kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge --patch-file shared-infra/argocd/argocd-cmd-params-cm.yaml
+#   kubectl rollout restart deployment argocd-server -n argocd
+data:
+  server.rootpath: "/argocd"
+  server.basehref: "/argocd"

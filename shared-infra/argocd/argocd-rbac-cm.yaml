@@ -1,0 +1,24 @@
+# 팀원 권한 (2026-09-18)
+#
+#   누구나        앱 전체를 볼 수 있다 (role:readonly)
+#   찬규(chan)    queuing-api-a 만 Sync
+#   예지(yeji)    queuing-monitor-d 만 Sync
+#   건아(geonah)  보기만 — B파트는 Lambda 라 ArgoCD 앱이 없다 (terraform 으로 배포)
+#   지예(choi)    전부 (role:admin)
+#
+# 남의 파트를 실수로 배포하지 않게 Sync 는 자기 앱만 준다.
+# 앱을 새로 등록하면 여기에 한 줄씩 추가해야 해당 담당자가 Sync 할 수 있다.
+#
+#   kubectl patch configmap argocd-rbac-cm -n argocd --type merge --patch-file shared-infra/argocd/argocd-rbac-cm.yaml
+#
+# 권한 확인 (argocd CLI, admin 으로 로그인한 뒤)
+#   argocd admin settings rbac can chan sync applications default/queuing-api-a   → Yes
+#   argocd admin settings rbac can chan sync applications default/realtime-ws     → No
+data:
+  policy.default: role:readonly
+  policy.csv: |
+    p, role:part-a, applications, sync, default/queuing-api-a, allow
+    p, role:part-d, applications, sync, default/queuing-monitor-d, allow
+    g, chan, role:part-a
+    g, yeji, role:part-d
+    g, choi, role:admin
