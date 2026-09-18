@@ -61,10 +61,13 @@ locals {
   b_cb = var.b_resale_workflow && var.b_callback_api ? 1 : 0
 
   # 키 = zip 이름(callback-<키>.zip). 우선순위는 긴 경로를 먼저 본다.
+  # verify_link_complete 만 handler 가 다르다 (2026-09-18). 건아님이 이 함수만
+  # verify_link_complete.py 로 다시 만들어 직접 올렸다. handler.handler 로 두면
+  # apply 때 없는 파일을 가리켜 ImportModuleError 가 난다.
   b_callback_functions = {
-    verify_link_complete = { suffix = "verify-link-complete", path = "/b-callback/verify-link/complete", priority = 40 }
-    verify_link_expire   = { suffix = "verify-link-expire", path = "/b-callback/verify-link/expire", priority = 41 }
-    verify_link          = { suffix = "verify-link", path = "/b-callback/verify-link", priority = 42 }
+    verify_link_complete = { suffix = "verify-link-complete", path = "/b-callback/verify-link/complete", priority = 40, handler = "verify_link_complete.handler" }
+    verify_link_expire   = { suffix = "verify-link-expire", path = "/b-callback/verify-link/expire", priority = 41, handler = "handler.handler" }
+    verify_link          = { suffix = "verify-link", path = "/b-callback/verify-link", priority = 42, handler = "handler.handler" }
   }
 
   # ⚠️ 워크플로 Lambda 와 이름이 다르다 (common/db.py 기준)
@@ -121,7 +124,7 @@ resource "aws_lambda_function" "b_callback" {
   role          = aws_iam_role.b_lambda[0].arn
   runtime       = "python3.12"
   architectures = ["x86_64"]
-  handler       = "handler.handler" # 세 함수 모두 handler.py 의 handler
+  handler       = each.value.handler
   timeout       = 30
   memory_size   = 256
 
