@@ -482,15 +482,29 @@ function handleSeatEventMessage(message) {
     return;
   }
 
-  // seatId 형식: "evt-171...:VIP-001" → 앞부분이 eventId, 이걸로 어느 콘서트
-  // 화면에 브로드캐스트할지 결정. seat.sold_out처럼 seatId가 'ALL'이면(A쪽 코드가
-  // eventId를 안 실어보냄) eventId를 못 뽑으므로, 현재 좌석 채널에 붙어있는
-  // 모든 방에 그냥 다 뿌린다 (A가 활성 이벤트 1개만 가정하고 만든 구조라 임시로는 안전함).
-  const eventId = event.seatId && event.seatId.includes(':') ? event.seatId.split(':')[0] : null;
+  // seatId 형식: "evt-30:2026-12-05_18-00:Floor-554"
+  //   [0] eventId   [1] 회차(날짜_시간)   [2] 좌석코드
+  //
+  // ⚠️ 회차까지 봐야 한다 (2026-09-18)
+  //   예전에는 split(':')[0] 으로 eventId 만 뽑아 seats:{eventId} 한 곳에 뿌렸다.
+  //   그런데 같은 공연에 회차가 여럿이다 — evt-30 은 12-05 18:00 과 12-06 17:00 이
+  //   둘 다 있다. A파트는 event_id + 날짜 + 시간으로 좌석을 나누는데 여기서 다시
+  //   합쳐버려서, 다른 회차 사람 화면에도 남의 좌석이 잠긴 것처럼 보였다.
+  //
+  //   회차 채널로만 보내지 않는 이유: 프론트(realtimeChat.js)가 아직
+  //   /ws/seats/{eventId} 로만 접속한다. 좁히기만 하면 기존 화면에 아무것도 안 간다.
+  //   그래서 둘 다 보낸다. 한 클라이언트는 둘 중 한 채널에만 있으므로 중복 수신은 없다.
+  //   프론트가 회차를 실어 보내기 시작하면 그 클라이언트부터 자기 회차만 받는다.
+  const parts = event.seatId && event.seatId.includes(':') ? event.seatId.split(':') : [];
+  const eventId = parts[0] || null;
+  const sessionKey = parts.length >= 3 ? `${parts[0]}:${parts[1]}` : null;
+
+  if (sessionKey) broadcastToChannel(`seats:${sessionKey}`, message);
 
   if (eventId) {
     broadcastToChannel(`seats:${eventId}`, message);
   } else {
+    // seatId 가 'ALL' 인 매진 알림 등 — eventId 를 못 뽑으므로 좌석 채널 전체에 뿌린다.
     for (const key of channelClients.keys()) {
       if (key.startsWith('seats:')) broadcastToChannel(key, message);
     }
