@@ -1405,3 +1405,24 @@
 - **증상(Issue):** Secrets Manager에만 RDS 비밀번호가 있는 상태에서 API Pod가 DB 비밀번호를 주입받지 못할 수 있음.
 - **원인(Cause):** Helm Deployment는 Kubernetes Secret 참조만 생성하며 AWS Secrets Manager API 호출 기능이 없음.
 - **해결(Solution):** RDS 비밀번호의 원본은 Secrets Manager에 유지하고, `queuing-a/app-secrets`의 `RDS_PASSWORD` 키를 동기화 대상으로 지정.
+## [2026-09-18 17:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/membershipService.js]**: 멤버십 가입 완료 및 해지 완료 후 사용자 이메일을 조회하여 `notificationService.sendEmail()`로 안내 메일을 발송하도록 추가. 가입/해지 API 응답에 `emailSent`와 메일 실패 사유를 포함하고, 메일 오류가 DB 처리를 실패로 되돌리지 않도록 분리.
+- **[README.md]**: 멤버십 가입/해지 메일 발송 흐름과 SMTP/SES 설정 의존성을 문서화.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 마이페이지에서 멤버십 가입 또는 해지를 완료해도 이메일 안내가 발송되지 않음.
+- **원인(Cause):** `membershipService.js`가 DB 변경과 프론트 응답만 처리하고 `notificationService.sendEmail()`을 호출하지 않음.
+- **해결(Solution):** 가입 성공 후 가입 유형과 만료일을 포함한 메일을, 해지 성공 후 해지 완료 안내 메일을 발송하도록 추가. SMTP/SES 발송 실패는 로그와 `emailSent: false`로 알리되 멤버십 DB 상태는 유지.
+## [2026-09-18 17:32] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: `initTable()`에 `includeLastSimulation` 옵션을 추가하고, `cancel_last_campaigns`, `cancel_last_pool_seats`, `cancel_last_candidates`, `cancel_last_history` 생성을 Final 시뮬레이션 활성화 시에만 수행하도록 분리했습니다.
+- **[src/app.js]**: `LAST_SIMULATION_ENABLED` 값을 `initTable({ includeLastSimulation })`에 전달하도록 변경했습니다. Final 시뮬레이션이 비활성화된 운영 환경에서는 전용 라우트와 전용 테이블 생성이 모두 실행되지 않습니다.
+- **[README.md]**: 기본 테이블과 Final 전용 테이블의 초기화 조건 및 기존 테이블·데이터를 자동 삭제하지 않는 정책을 문서화했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `lastSimulationEnabled: false`인데도 API 재시작 시 Final 전용 `cancel_last_*` 테이블이 생성될 수 있었습니다.
+- **원인(Cause):** 서버 시작 시 항상 호출되는 `initTable()` 내부에 Final 전용 `CREATE TABLE IF NOT EXISTS` 구문이 공통 테이블 초기화와 함께 들어 있었습니다.
+- **해결(Solution):** Final 전용 DDL을 `includeLastSimulation` 조건 블록으로 이동하고, `app.js`가 `LAST_SIMULATION_ENABLED`를 기준으로 해당 옵션을 전달하도록 수정했습니다. 설정을 꺼도 이미 존재하는 테이블·데이터는 삭제하지 않습니다.

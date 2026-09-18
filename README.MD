@@ -97,7 +97,7 @@ api/
 - Prometheus 메트릭 엔드포인트 (`GET /metrics`) 등록
 - HTTP 요청 응답 시간 측정 미들웨어 (`onRequest` / `onResponse` 훅)
 - 헬스체크 (`GET /health`)
-- 서버 시작 시 초기화: Redis 만료 리스너, MariaDB 9개 테이블 생성, 관리자 계정 생성
+- 서버 시작 시 초기화: Redis 만료 리스너, MariaDB 기본 11개 테이블 생성, 관리자 계정 생성. Final 시뮬레이션이 활성화된 경우에만 `cancel_last_*` 4개 전용 테이블을 추가 생성
 - 서버 시작 시 MariaDB 기준 Redis 자동 복구를 최대 3회 시도하고, 이후 주기적 정합성 점검 시작
 - `AUTO_ADMISSION_ENABLED=true`일 때 DB의 대기 중인 회차를 찾아 빈 입장 슬롯만큼(최대 `BATCH_SIZE`) 주기적으로 자동 승인하고 Admission Token을 발급
 - `SIGINT` 시그널 수신 시 Redis 리스너·자동 복구 타이머 정리 후 graceful shutdown
@@ -194,8 +194,8 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 ### src/routes/lastSimulationRoutes.js — 취소표 시뮬레이션 Final 공용 풀
 
-- B파트 SQS·Lambda·Step Functions를 호출하지 않고 A파트 Fastify·Redis·MariaDB·Gmail SMTP만으로 취소표 공용 풀을 검증하는 Final 후반부 엔진이다. 관리자 화면에서는 기존 Local의 초기화·매진·조기 마감·취소표 생성 단계와 이 라우트의 풀·후보·링크 단계를 하나의 흐름으로 연결한다. `cancel_last_campaigns`, `cancel_last_pool_seats`, `cancel_last_candidates` 전용 테이블을 생성하므로 `db_git`의 B파트 스키마를 변경하지 않는다.
-- `LAST_SIMULATION_ENABLED=true`일 때만 앱에 등록한다. 로컬은 미설정 시 활성화해 기존 검증 흐름을 보존하고, `NODE_ENV=production` 또는 Helm 운영값에서는 기본 비활성화한다. 비활성화하면 Last 관리자·사용자 라우트, 전용 테이블 초기화와 만료 스위퍼가 시작되지 않는다.
+- B파트 SQS·Lambda·Step Functions를 호출하지 않고 A파트 Fastify·Redis·MariaDB·Gmail SMTP만으로 취소표 공용 풀을 검증하는 Final 후반부 엔진이다. 관리자 화면에서는 기존 Local의 초기화·매진·조기 마감·취소표 생성 단계와 이 라우트의 풀·후보·링크 단계를 하나의 흐름으로 연결한다. `LAST_SIMULATION_ENABLED=true`로 기동한 경우에만 `cancel_last_campaigns`, `cancel_last_pool_seats`, `cancel_last_candidates`, `cancel_last_history` 전용 테이블을 준비하므로 `db_git`의 B파트 스키마를 변경하지 않는다.
+- `LAST_SIMULATION_ENABLED=true`일 때만 앱에 등록하고 전용 테이블 초기화와 만료 스위퍼를 시작한다. 로컬은 미설정 시 활성화해 기존 검증 흐름을 보존하고, `NODE_ENV=production` 또는 Helm 운영값에서는 기본 비활성화한다. 비활성화하면 Last 관리자·사용자 라우트와 전용 테이블 생성이 모두 실행되지 않는다. 이미 존재하는 `cancel_last_*` 테이블과 데이터는 이 설정으로 삭제하지 않는다.
 - `GET /admin/last-simulation/events`는 Last 전용 테이블 초기화와 분리된 `eventCatalogService`를 통해 Redis `events:list`와 MariaDB `events`를 `eventId` 기준으로 병합한다. Redis에 아직 카드가 없거나 복구 전인 공연도 DB에서 표시하며, 카드에 회차가 없으면 `seats.session_date/session_time`에서 회차를 보완한다. Last 테이블 초기화 오류가 공연 선택 목록까지 차단하지 않도록 했다.
 - `POST /admin/last-simulation/init`은 Final의 Local 단계에서 풀린 선택 공연·회차의 `AVAILABLE` 좌석을 최대 1,000석까지 전용 풀로 저장한다. Local 초기화 시각을 후보 조회 기준으로 사용해, Local 단계 후 본 대기열에 실제로 들어온 멤버십 사용자가 누락되지 않도록 한다. `close`는 본 티켓팅에 참여한 활성 멤버십 standby만 `membership_at_join=1`·본 대기열 참여 이력과 함께 검증해 본 대기열 `queue_index` 순서로 후보를 스냅샷한다.
 - `close`의 `openDelaySeconds`로 취소표 공개 시각을 정하며 Final 관리자 화면은 `0`을 전달해 즉시 공개한다. 시각은 UTC 기준으로 저장·비교한다. `open-pool` 이후 `issue-links`는 후보별로 `seat_id=NULL`인 A파트 `cancel_allocations`와 5분 Secret Link를 생성해 Gmail SMTP로 발송한다. 링크는 모든 후보에게 발급되지만 좌석 선점·결제는 현재 순번 한 명만 통과하며, 완료·만료 후 다음 순번이 진행한다.
@@ -642,9 +642,10 @@ Server-Sent Events로 브라우저에 실시간 이벤트 푸시 (서버 → 클
 
 MariaDB 기반 멤버십 CRUD.
 
-- `subscribe()`: 멤버십 가입. tier_name(MONTHLY/ANNUAL)에 따라 만료일 계산. 중복 가입 방지
+- `subscribe()`: 멤버십 가입. tier_name(MONTHLY/ANNUAL)에 따라 만료일 계산. 중복 가입 방지 후 가입 완료 안내 메일 발송을 시도한다.
 - `getMembership()`: 멤버십 조회. 만료 여부 포함
-- `cancelMembership()`: 멤버십 해지 (DB 레코드 삭제)
+- `cancelMembership()`: 멤버십 해지 (DB 레코드 삭제) 후 해지 완료 안내 메일 발송을 시도한다. 메일 실패가 DB 가입/해지 결과를 되돌리지는 않으며 응답의 `emailSent`로 결과를 확인할 수 있다.
+- `sendMembershipEmail()` 내부 흐름: 사용자 `users.email`을 조회하고 `notificationService.sendEmail()`을 호출한다. SMTP 또는 SES 설정을 그대로 따르며, 발송 성공 여부를 `emailSent`로 반환한다.
 - `isPriorityUser()`: 기존 호환용 멤버십 등급 조회. 현재 본 티켓팅 대기열의 순번(score)에는 사용하지 않으며, 멤버십/취소표 정책에서만 필요할 때 사용할 수 있다.
 
 ---
@@ -701,7 +702,7 @@ Redis 상태를 MariaDB에 스냅샷으로 저장하고 복구.
 
 MariaDB 테이블 생성 및 reservations CRUD.
 
-**A파트가 초기화하는 테이블 (11개):**
+**A파트가 초기화하는 기본 테이블 (11개):**
 | 테이블 | 설명 |
 |---|---|
 | `users` | 사용자 계정 |
@@ -717,7 +718,7 @@ MariaDB 테이블 생성 및 reservations CRUD.
 | `reservations` | 예약 확정 기록 |
 
 공연 회차 목록은 Redis 이벤트 카드의 `sessions` 필드에서 관리하고, 실제 MariaDB `events` 테이블에는 회차 JSON을 저장하지 않는다. `seats`, `waiting_queue`, `reservations`, `cancel_allocations`에는 `session_date`·`session_time`을 저장해 날짜가 다른 회차의 좌석·대기열·예약·취소표 할당 기록을 분리한다.
-`initTable()`은 `CREATE TABLE IF NOT EXISTS`만 수행한다. 이미 존재하는 테이블에는 `ALTER TABLE`, `ADD COLUMN`, `MODIFY COLUMN`을 실행하지 않으므로, 기존 DB에 필요한 컬럼이 없으면 API가 컬럼을 자동 생성하지 않고 해당 SQL 오류를 그대로 드러낸다. 운영 DB 스키마 변경은 DB 관리자가 별도 마이그레이션으로 수행해야 한다.
+`initTable({ includeLastSimulation })`은 공통 테이블을 항상 준비하고, `includeLastSimulation=true`일 때만 Final 전용 4개 테이블을 추가로 `CREATE TABLE IF NOT EXISTS`한다. `LAST_SIMULATION_ENABLED=false`이면 Final 라우트와 전용 테이블 생성이 모두 비활성화된다. 이미 존재하는 테이블에는 `ALTER TABLE`, `ADD COLUMN`, `MODIFY COLUMN`을 실행하지 않으며, 비활성화 시 기존 `cancel_last_*` 테이블이나 데이터를 삭제하지 않는다. 운영 DB 스키마 변경은 DB 관리자가 별도 마이그레이션으로 수행해야 한다.
 
 현재 운영 스키마에서 `cancel_allocations.allocation_id`는 정수 `AUTO_INCREMENT` PK이며, `seat_id`는 NULL을 허용한다. `cancellation_link`는 B파트가 관리하는 테이블로 A파트의 초기화 대상이 아니다.
 
@@ -982,7 +983,7 @@ helm upgrade --install api /root/chart/redis-api-chart \
 ### src/services/dbService.js
 
 - **목적:** MariaDB의 A파트 영속 테이블을 기동 시 준비한다.
-- **주요 기능:** `cancel_last_campaigns`, `cancel_last_pool_seats`, `cancel_last_candidates`와 함께 `cancel_last_history`를 생성한다. 순번 양도는 결제가 없으므로 `reservations` 행을 만들지 않고 이 테이블에 별도 보관한다.
+- **주요 기능:** 공통 영속 테이블을 초기화하고, `initTable({ includeLastSimulation: true })`일 때만 `cancel_last_campaigns`, `cancel_last_pool_seats`, `cancel_last_candidates`, `cancel_last_history`를 생성한다. 순번 양도는 결제가 없으므로 `reservations` 행을 만들지 않고 Final 전용 이력 테이블에 별도 보관한다.
 
 ## ⚙️ Core Logic & Code Description — Last 선점 해제·재선택
 

@@ -111,7 +111,7 @@ const start = async () => {
     assertAuthTokenConfigured();
     assertAdmissionTokenConfigured();
     await initExpiryListener();
-    await initTable();
+    await initTable({ includeLastSimulation: lastSimulationEnabled });
     await initUsersTable();
     const recovery = await recoverWithRetry({ reason: 'startup' });
     console.log('[Server] Redis 시작 복구 결과:', JSON.stringify(recovery));
