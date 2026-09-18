@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rds-to-dcloud-backup
+  namespace: realtime
+spec:
+  # Kubernetes 1.27 이상 지원 (KST 기준 직관적 설정)
+  timeZone: "Asia/Seoul"
+  schedule: "0 1 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: mariadb:10.11
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 백업 시작: RDS → D-Cloud"
+
+                  # 1) D-Cloud에 대상 데이터베이스가 없는 경우 생성
+                  echo "D-Cloud 데이터베이스 점검 중..."
+                  MYSQL_PWD="$DCLOUD_PASSWORD" mysql \
+                    -h "$DCLOUD_HOST" \
+                    -P "$DCLOUD_PORT" \
+                    -u "$DCLOUD_USER" \
+                    -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;"
+
+                  # 2) RDS 덤프 후 D-Cloud로 직접 스트리밍 복원 (디스크 사용 X)
+                  echo "RDS 덤프 및 D-Cloud 복원 진행 중..."
+                  MYSQL_PWD="$RDS_PASSWORD" mysqldump \
+                    -h "$RDS_HOST" \
+                    -u "$RDS_USER" \
+                    --single-transaction \
+                    --routines \
+                    --triggers \
+                    "$DB_NAME" | MYSQL_PWD="$DCLOUD_PASSWORD" mysql \
+                    -h "$DCLOUD_HOST" \
+                    -P "$DCLOUD_PORT" \
+                    -u "$DCLOUD_USER" \
+                    "$DB_NAME"
+
+                  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 백업 완료"
+              env:
+                - name: RDS_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: db-backup-secrets
+                      key: RDS_HOST
+                - name: RDS_USER
+                  value: "team2"
+                - name: RDS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: db-backup-secrets
+                      key: RDS_PASSWORD
+                - name: DB_NAME
+                  value: "queuing_db"
+                - name: DCLOUD_HOST
+                  value: "211.46.52.164"
+                - name: DCLOUD_PORT
+                  value: "13306"
+                - name: DCLOUD_USER
+                  value: "team2"
+                - name: DCLOUD_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: db-backup-secrets
+                      key: DCLOUD_PASSWORD
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

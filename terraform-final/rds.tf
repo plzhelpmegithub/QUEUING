@@ -31,6 +31,20 @@ resource "aws_db_subnet_group" "main" {
   tags = { Name = "${var.project}-db-subnet-group" }
 }
 
+# 비밀번호는 Secrets Manager 에서 읽는다 (2026-09-18).
+# queuing-persistent/ 는 terraform 밖에서 관리되는 영구 시크릿이라 destroy 해도 남는다.
+# TF_VAR_db_password 를 매번 넘기던 것을 대체한다. 환경변수를 주면 그쪽이 우선한다.
+data "aws_secretsmanager_secret_version" "app_secrets" {
+  count     = var.use_rds && var.db_password == "" ? 1 : 0
+  secret_id = "queuing-persistent/app-secrets"
+}
+
+locals {
+  rds_password = var.db_password != "" ? var.db_password : (
+    var.use_rds ? try(jsondecode(data.aws_secretsmanager_secret_version.app_secrets[0].secret_string)["RDS_PASSWORD"], "") : ""
+  )
+}
+
 resource "aws_db_instance" "mariadb" {
   count = var.use_rds ? 1 : 0
 
@@ -48,15 +62,14 @@ resource "aws_db_instance" "mariadb" {
 
   db_name  = var.db_name
   username = var.db_username
-  password = var.db_password
+  password = local.rds_password
 
-  # use_rds = true 인데 비밀번호가 비어 있으면 여기서 멈춘다.
-  # 없으면 AWS 가 InvalidParameterValue 로 거부하는데, 그 메시지만 봐서는
-  # 무엇을 안 채웠는지 알기 어렵다.
+  # 비밀번호가 비어 있으면 여기서 멈춘다. 없으면 AWS 가 InvalidParameterValue 로
+  # 거부하는데, 그 메시지만 봐서는 무엇을 안 채웠는지 알기 어렵다.
   lifecycle {
     precondition {
-      condition     = var.db_password != ""
-      error_message = "use_rds = true 이면 db_password 를 채워야 한다. export TF_VAR_db_password='...' 또는 terraform.tfvars 에 넣을 것."
+      condition     = local.rds_password != ""
+      error_message = "RDS 비밀번호를 찾지 못했다. Secrets Manager 의 queuing-persistent/app-secrets 에 RDS_PASSWORD 키가 있는지 확인하거나, TF_VAR_db_password 로 넘길 것."
     }
   }
   port = 3306
@@ -74,10 +87,17 @@ resource "aws_db_instance" "mariadb" {
   backup_window           = "03:00-04:00" # UTC — 한국 시간 정오 무렵
   maintenance_window      = "Mon:04:00-Mon:05:00"
 
-  # 학습 환경에서는 destroy 가 막히면 곤란하므로 prod 가 아닐 때만 완화한다.
-  skip_final_snapshot       = var.environment != "prod"
-  final_snapshot_identifier = var.environment == "prod" ? "${var.project}-mariadb-final" : null
-  deletion_protection       = var.environment == "prod"
+  # ⚠️ 2026-09-18: 매일 destroy 하던 방식을 그만두고 이 DB 에 실제 데이터를 넣었다
+  #    (D-Cloud 에서 테이블 12개 이관). 그래서 학습용 설정을 방어 설정으로 바꾼다.
+  #
+  #    이전에는 environment != "prod" 라서 삭제 방어가 꺼져 있었고 최종 스냅샷도
+  #    남기지 않았다. tfvars 의 use_rds 가 false 로 되돌아가기만 해도 데이터와
+  #    자동 백업이 한꺼번에 사라지는 상태였다.
+  #
+  #    정말로 지워야 할 때는 이 두 줄을 먼저 되돌리고 apply 한 다음 destroy 한다.
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "${var.project}-mariadb-final"
+  deletion_protection       = true
 
   tags = { Name = "${var.project}-mariadb" }
 }
