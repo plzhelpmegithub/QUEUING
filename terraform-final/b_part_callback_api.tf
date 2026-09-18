@@ -39,10 +39,16 @@ variable "b_callback_api" {
 }
 
 variable "b_callback_secret" {
-  description = "A↔B 공유 비밀값. tfvars 에 적지 않는다. queuing-aws.ps1 이 Secrets Manager 에서 읽어 TF_VAR_b_callback_secret 로만 넘긴다."
+  description = "A↔B 공유 비밀값 수동 지정용. 비우면 Secrets Manager 의 queuing-persistent/b-callback-secret 을 읽는다(권장). 채우면 그쪽이 우선한다."
   type        = string
   default     = ""
   sensitive   = true
+}
+
+# queuing-persistent/ 는 terraform 밖에서 관리되는 영구 시크릿이라 destroy 해도 남는다.
+# JSON 이 아니라 평문 문자열로 저장되어 있어 jsondecode 하지 않는다.
+data "aws_secretsmanager_secret_version" "b_callback" {
+  secret_id = "queuing-persistent/b-callback-secret"
 }
 
 variable "b_callback_allowed_cidrs" {
@@ -62,15 +68,21 @@ locals {
   }
 
   # ⚠️ 워크플로 Lambda 와 이름이 다르다 (common/db.py 기준)
+  #    DB 접속 정보는 워크플로 Lambda 와 같은 값을 쓴다(b_part_resale_workflow.tf).
+  #    두 쪽이 갈라지면 같은 전환에서 한쪽만 옮겨가는 사고가 난다.
   b_callback_env = {
-    DB_HOST           = var.dcloud_host
-    DB_PORT           = tostring(var.dcloud_db_port)
+    DB_HOST           = local.b_db_host
+    DB_PORT           = tostring(local.b_db_port)
     DB_USER           = var.dcloud_db_user
-    DB_PASSWORD       = var.b_lambda_db_password
+    DB_PASSWORD       = local.b_db_password
     DB_NAME           = "queuing_db"
     JWT_SECRET        = one(aws_secretsmanager_secret_version.b_link_jwt[*].secret_string)
-    B_CALLBACK_SECRET = var.b_callback_secret
+    B_CALLBACK_SECRET = local.b_callback_token
   }
+
+  # A↔B 공유 비밀값도 Secrets Manager 에서 읽는다. 이것도 비어 있으면
+  # ignore_changes 를 뗀 순간 빈 값으로 덮인다. 평문 문자열로 저장되어 있다.
+  b_callback_token = var.b_callback_secret != "" ? var.b_callback_secret : data.aws_secretsmanager_secret_version.b_callback.secret_string
 
   b_callback_source_cidrs = length(var.b_callback_allowed_cidrs) > 0 ? var.b_callback_allowed_cidrs : ["${aws_nat_gateway.main.public_ip}/32"]
 }
@@ -121,8 +133,9 @@ resource "aws_lambda_function" "b_callback" {
     variables = local.b_callback_env
   }
 
-  # 낮에 손으로 apply 해도(TF_VAR 없음) 비밀번호가 빈 값으로 덮이지 않게 한다.
-  lifecycle { ignore_changes = [environment] }
+  # ignore_changes = [environment] 를 뗐다 (2026-09-18).
+  # DB 비밀번호와 A↔B 공유 비밀값을 모두 Secrets Manager 에서 읽으므로
+  # 빈 값으로 덮일 일이 없다. 사유는 b_part_resale_workflow.tf 주석 참고.
 
   depends_on = [aws_cloudwatch_log_group.b_callback, aws_iam_role_policy_attachment.b_lambda_logs]
 }

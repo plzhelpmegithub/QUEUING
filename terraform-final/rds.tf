@@ -35,14 +35,13 @@ resource "aws_db_subnet_group" "main" {
 # queuing-persistent/ 는 terraform 밖에서 관리되는 영구 시크릿이라 destroy 해도 남는다.
 # TF_VAR_db_password 를 매번 넘기던 것을 대체한다. 환경변수를 주면 그쪽이 우선한다.
 data "aws_secretsmanager_secret_version" "app_secrets" {
-  count     = var.use_rds && var.db_password == "" ? 1 : 0
   secret_id = "queuing-persistent/app-secrets"
 }
 
 locals {
-  rds_password = var.db_password != "" ? var.db_password : (
-    var.use_rds ? try(jsondecode(data.aws_secretsmanager_secret_version.app_secrets[0].secret_string)["RDS_PASSWORD"], "") : ""
-  )
+  # B파트 Lambda 도 같은 시크릿에서 비밀번호를 읽는다(b_part_resale_workflow.tf).
+  app_secrets  = jsondecode(data.aws_secretsmanager_secret_version.app_secrets.secret_string)
+  rds_password = var.db_password != "" ? var.db_password : try(local.app_secrets["RDS_PASSWORD"], "")
 }
 
 resource "aws_db_instance" "mariadb" {

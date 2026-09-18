@@ -49,10 +49,28 @@ variable "b_resale_workflow" {
 }
 
 variable "b_lambda_db_password" {
-  description = "D-Cloud DB 비밀번호. queuing-aws.ps1 이 TF_VAR_b_lambda_db_password 로만 넘긴다. tfvars 에 적지 않는다."
+  description = "B파트 Lambda 의 DB 비밀번호 수동 지정용. 비우면 Secrets Manager 의 queuing-persistent/app-secrets 에서 읽는다(권장). 채우면 그쪽이 우선한다."
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "b_lambda_use_rds" {
+  description = <<-DESC
+    B파트 Lambda 가 RDS 를 볼지 D-Cloud 를 볼지 정한다.
+
+    ⚠️ 찬규님 api 와 반드시 같은 시점에 바꿔야 한다. api 는 Helm values 의
+       DB_HOST·DB_PORT 로 전환하고, Lambda 는 이 값으로 전환한다. 한쪽만
+       넘어가면 취소표 재판매가 서로 다른 DB 를 읽어 깨진다.
+
+    전환 절차:
+      1. 찬규님이 api Helm values 를 RDS 로 바꾸고 helm upgrade
+      2. tfvars 에 b_lambda_use_rds = true 를 넣고 terraform apply
+      3. CronJob rds-to-dcloud-backup 의 suspend 를 푼다
+         (그때부터 RDS 가 원본, D-Cloud 가 백업이라 방향이 맞다)
+  DESC
+  type        = bool
+  default     = false
 }
 
 variable "b_link_base_url" {
@@ -94,11 +112,32 @@ locals {
     PushToDLQ              = { name = "${var.project}-b-push-to-dlq", handler = "push_to_dlq.handler" }
   }
 
+  # ── DB 전환 (2026-09-18) ──
+  #
+  # 찬규님 api 와 B파트 Lambda 는 반드시 같은 DB 를 봐야 한다. 한쪽만 옮기면
+  # 취소표 재판매가 서로 다른 데이터를 읽어 깨진다. 그래서 전환은 두 곳을
+  # 같은 시점에 바꾼다 — api 는 Helm values, Lambda 는 이 변수다.
+  #
+  # use_rds 를 그대로 쓰지 않는 이유: use_rds 는 이미 true 다(RDS 를 만들어 두었다).
+  # 하지만 api 가 아직 D-Cloud 를 보고 있어서 Lambda 만 먼저 넘어가면 안 된다.
+  b_db_on_rds = var.b_lambda_use_rds
+  b_db_host   = local.b_db_on_rds ? one(aws_db_instance.mariadb[*].address) : var.dcloud_host
+  b_db_port   = local.b_db_on_rds ? 3306 : var.dcloud_db_port
+
+  # 비밀번호는 Secrets Manager 에서 읽는다. 예전에는 queuing-aws.ps1 이
+  # TF_VAR_b_lambda_db_password 로만 넘겨서, 그 값 없이 apply 하면 Lambda 환경변수가
+  # 빈 비밀번호로 덮였다. 그걸 막으려고 ignore_changes 를 걸어두었던 것인데,
+  # 이제 값을 항상 얻을 수 있으므로 ignore_changes 가 필요 없다.
+  # 환경변수를 주면 그쪽이 우선한다.
+  b_db_password = var.b_lambda_db_password != "" ? var.b_lambda_db_password : try(
+    local.app_secrets[local.b_db_on_rds ? "RDS_PASSWORD" : "DB_PASSWORD"], ""
+  )
+
   b_db_env = {
-    MYSQL_HOST     = var.dcloud_host
-    MYSQL_PORT     = tostring(var.dcloud_db_port)
+    MYSQL_HOST     = local.b_db_host
+    MYSQL_PORT     = tostring(local.b_db_port)
     MYSQL_USER     = var.dcloud_db_user
-    MYSQL_PASSWORD = var.b_lambda_db_password
+    MYSQL_PASSWORD = local.b_db_password
     MYSQL_DB       = "queuing_db"
   }
 
@@ -209,8 +248,11 @@ resource "aws_lambda_function" "b" {
     variables = merge(local.b_db_env, local.b_extra_env[each.key])
   }
 
-  # 낮에 손으로 apply 해도(TF_VAR 없음) DB 비밀번호가 빈 값으로 덮이지 않게 한다.
-  lifecycle { ignore_changes = [environment] }
+  # ignore_changes = [environment] 를 뗐다 (2026-09-18).
+  #
+  # 걸어둔 이유는 TF_VAR 없이 apply 하면 비밀번호가 빈 값으로 덮이는 것을 막기
+  # 위해서였다. 이제 Secrets Manager 에서 항상 읽으므로 빈 값이 될 일이 없다.
+  # 떼지 않으면 b_lambda_use_rds 를 바꿔도 기존 함수에 반영되지 않는다.
 
   depends_on = [aws_cloudwatch_log_group.b_lambda, aws_iam_role_policy_attachment.b_lambda_logs]
 }
