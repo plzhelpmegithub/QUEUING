@@ -73,7 +73,10 @@ export const membershipCheckoutPage = {
       btn.textContent = '처리 중...';
       subscribeMembership(plan).then((result) => {
         if (result.success) {
-          showToast({ title: '멤버십 결제 완료', body: '취소표 Private Link 이용이 가능합니다.', type: 'success' });
+          const mailNotice = result.emailSent === false
+            ? '가입은 완료되었지만 안내 메일 발송에 실패했습니다. 이메일 설정을 확인해주세요.'
+            : '가입 안내 메일을 발송했습니다. 취소표 Private Link 이용이 가능합니다.';
+          showToast({ title: '멤버십 결제 완료', body: mailNotice, type: 'success' });
           const back = popReturnTo();
           navigate(back || 'mypage/membership');
         } else {

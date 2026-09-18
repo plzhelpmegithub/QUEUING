@@ -660,7 +660,10 @@ export const myPage = {
           cancelMembership().then((result) => {
             if (result.success) {
               closeModal();
-              showToast({ title: '멤버십이 해지되었습니다', body: '재가입은 멤버십 페이지에서 언제든 가능합니다.', type: 'success' });
+              const mailNotice = result.emailSent === false
+                ? '해지는 완료되었지만 해지 안내 메일 발송에 실패했습니다. 이메일 설정을 확인해주세요.'
+                : '해지 안내 메일을 발송했습니다. 재가입은 멤버십 페이지에서 언제든 가능합니다.';
+              showToast({ title: '멤버십이 해지되었습니다', body: mailNotice, type: 'success' });
               renderMembership();
             } else {
               if (btn) { btn.disabled = false; btn.textContent = '해지하기'; }
