@@ -13,8 +13,8 @@ service:
 env:
   # ⚠️ TODO: RDS 생성 후 실제 엔드포인트로 교체 필요
   # 예: queuing-db.xxxxxxxxxx.ap-northeast-2.rds.amazonaws.com
-  dbHost: "211.46.52.164"
-  dbPort: "13306"
+  dbHost: "queuing-mariadb.cto8u6c4yxyv.ap-northeast-2.rds.amazonaws.com"
+  dbPort: "3306"
   dbUser: "team2"
   # K8s 서비스 이름 방식 - AWS EKS에서도 네임스페이스 구조 동일하게 유지하면 그대로 사용 가능
   dbName: "queuing_db"                   # 👈 새로 추가 — JDBC URL에 DB 이름이 필요함
