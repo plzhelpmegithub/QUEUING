@@ -383,6 +383,14 @@ resource "aws_iam_role_policy_attachment" "b_trigger_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# 2026-09-19 건아 코드부터 trigger 도 DB 를 본다 (같은 공연에 LINK_SENT 가 살아 있으면 건너뛴다).
+# 그래서 다른 B파트 Lambda 처럼 VPC 에 들어가야 하고, ENI 를 만들 권한이 필요하다.
+resource "aws_iam_role_policy_attachment" "b_trigger_vpc" {
+  count      = local.b_wf
+  role       = aws_iam_role.b_trigger[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy" "b_trigger" {
   count = local.b_wf
   name  = "${var.project}-b-trigger"
@@ -429,11 +437,20 @@ resource "aws_lambda_function" "b_trigger" {
   filename         = local.b_zip
   source_code_hash = fileexists(local.b_zip) ? filebase64sha256(local.b_zip) : null
 
+  # MYSQL_* 가 없으면 KeyError 로 배치 전체가 실패하고, 5번 재시도 뒤 DLQ 로 간다 (2026-09-19 12:26 실제로 그랬다).
   environment {
-    variables = { STATE_MACHINE_ARN = aws_sfn_state_machine.b_resale[0].arn }
+    variables = merge(local.b_db_env, { STATE_MACHINE_ARN = aws_sfn_state_machine.b_resale[0].arn })
   }
 
-  depends_on = [aws_cloudwatch_log_group.b_trigger, aws_iam_role_policy_attachment.b_trigger_logs]
+  dynamic "vpc_config" {
+    for_each = local.b_db_on_rds ? [1] : []
+    content {
+      subnet_ids         = aws_subnet.private[*].id
+      security_group_ids = [aws_security_group.b_lambda[0].id]
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.b_trigger, aws_iam_role_policy_attachment.b_trigger_logs, aws_iam_role_policy_attachment.b_trigger_vpc]
 }
 
 resource "aws_lambda_event_source_mapping" "b_trigger" {
