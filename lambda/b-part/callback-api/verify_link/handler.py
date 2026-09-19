@@ -1,20 +1,26 @@
 """
-POST /b-callback/verify-link  (ALB 타겟그룹 — A파트 백엔드가 서버 대 서버로 호출)
+POST /b-callback/verify-link  (ALB 콜백 라우트 — A파트 백엔드가 서버 대 서버로 호출)
 
-[2026-09-14 ALB 형식 대응] API Gateway가 아니라 ALB 타겟그룹으로 연결되므로
-common.alb의 parse_json_body/alb_response를 사용해 이벤트/응답 형식을 맞춘다.
+[2026-09-14 ALB 형식 전환] API Gateway가 아니라 ALB 콜백라우트으로 연결되므로
+common.alb의 parse_json_body/alb_response를 사용해 이벤트/응답 형식을 맞췄다.
 
-브라우저는 A파트의 /verify-link를 그대로 호출하고, A파트 서버가 내부에서
-이 엔드포인트(/b-callback/verify-link)로 프록시한다 — A의 자체 JWT 검증 로직은
-제거하고 이 호출로 대체하는 것으로 합의됨 (2026-09-14).
+브라우저에서 A파트의 /verify-link를 그대로 호출하고, A파트 서버가 내부에서
+이 엔드포인트(/b-callback/verify-link)로 프록시한다. A가 자체 JWT 검증 로직을
+거쳐서 이 호출로만 도착하는 것으로 합의됨 (2026-09-14).
 
 역할:
 1. X-Callback-Secret 헤더 검증
 2. token 서명 검증 (JWT_SECRET)
 3. cancellation_link.status가 'unused'/'in_progress'인지 확인 (1회성 보장)
 4. cancel_allocations.status가 LINK_SENT(유효)인지 확인
-5. 재판매 가능 좌석 풀 반환 (reservations.status=CANCELLED로 걸러낸 좌석만)
+5. 재판매 가능 좌석 목록 반환 (reservations.status=CANCELLED로 걸러진 좌석만)
 6. status를 'in_progress'로 전이
+
+[2026-09-19 patch] expiresAt을 timezone 정보 없는 naive datetime 그대로
+내보내서, 프론트가 그 값을 한국시간(KST)으로 오해해 9시간 일찍 만료된
+것으로 판단하는 버그가 있었다. DB는 UTC로 저장하고 있으므로(common/db.py의
+SET time_zone = '+00:00') +00:00을 명시적으로 붙여서 ISO 8601 형식으로
+내보낸다.
 """
 
 import os
@@ -53,6 +59,12 @@ MARK_IN_PROGRESS_SQL = """
     UPDATE cancellation_link SET status = 'in_progress'
     WHERE token = %s AND status = 'unused'
 """
+
+
+def _iso_utc(dt):
+    """DB에 UTC naive datetime으로 저장된 값을 +00:00을 명시한 ISO 8601
+    문자열로 변환한다. dt가 None이면 None을 그대로 반환."""
+    return dt.replace(tzinfo=datetime.timezone.utc).isoformat() if dt else None
 
 
 def handler(event, context):
@@ -114,7 +126,7 @@ def handler(event, context):
         "allocationId": alloc["allocation_id"],
         "userId": user_id,
         "eventId": event_id,
-        "expiresAt": alloc["expires_at"],
+        "expiresAt": _iso_utc(alloc["expires_at"]),
         "sessionDate": alloc["session_date"] or "",
         "sessionTime": alloc["session_time"] or "",
         "availableSeats": [{"seatId": s["seat_id"], "section": s["section"]} for s in seats],
