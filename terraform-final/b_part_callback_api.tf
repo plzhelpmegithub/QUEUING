@@ -61,11 +61,16 @@ locals {
   b_cb = var.b_resale_workflow && var.b_callback_api ? 1 : 0
 
   # 키 = zip 이름(callback-<키>.zip). 우선순위는 긴 경로를 먼저 본다.
-  # verify_link_complete 만 handler 가 다르다 (2026-09-18). 건아님이 이 함수만
-  # verify_link_complete.py 로 다시 만들어 직접 올렸다. handler.handler 로 두면
-  # apply 때 없는 파일을 가리켜 ImportModuleError 가 난다.
+  #
+  # ⚠️ 세 함수 모두 handler.handler 다. 저장소 구조가 callback-api/<함수>/handler.py 라서
+  #    빌드한 zip 최상위에 handler.py 가 들어간다.
+  #    2026-09-18 에 verify_link_complete 만 verify_link_complete.handler 로 바꿨던 적이 있다.
+  #    건아님이 16:06 에 그 이름으로 콘솔 업로드했다가 16:11 에 handler.py 로 다시 올렸는데,
+  #    앞의 것만 보고 맞추는 바람에 16:55 apply 가 올바른 설정을 되돌려 이 함수가 import 에
+  #    실패하는 상태가 됐다(2026-09-19 발견). 한 번도 호출되지 않아 피해는 없었다.
+  #    handler 를 바꾸기 전에 AWS 에 올라간 zip 최상위 파일을 직접 열어 확인할 것.
   b_callback_functions = {
-    verify_link_complete = { suffix = "verify-link-complete", path = "/b-callback/verify-link/complete", priority = 40, handler = "verify_link_complete.handler" }
+    verify_link_complete = { suffix = "verify-link-complete", path = "/b-callback/verify-link/complete", priority = 40, handler = "handler.handler" }
     verify_link_expire   = { suffix = "verify-link-expire", path = "/b-callback/verify-link/expire", priority = 41, handler = "handler.handler" }
     verify_link          = { suffix = "verify-link", path = "/b-callback/verify-link", priority = 42, handler = "handler.handler" }
   }
