@@ -121,7 +121,7 @@ env:
   # 회원 정보, 예매 내역 등 영속적 데이터 저장.
   # 현재 AWS 배포 대상은 EKS에서 접근하는 RDS MariaDB다.
   # 온프레미스/D-Cloud로 되돌릴 때는 별도 local values override를 사용한다.
-  dbHost: "queuing-mariadb.cto8u6c4yxyv.ap-northeast-2.rds.amazonaws.com"
+  dbHost: "queuing-mariadb-proxy.proxy-cto8u6c4yxyv.ap-northeast-2.rds.amazonaws.com"
   dbPort: "3306"
   dbUser: "team2"
   dbName: "queuing_db"
