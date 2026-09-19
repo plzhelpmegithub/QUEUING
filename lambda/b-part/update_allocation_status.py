@@ -51,7 +51,7 @@ def _get_mysql_conn():
 # cancellation_link.status는 기존에 'unused'/'used' 같은 소문자 값을 썼으므로
 # (스키마 초기 설계 기준) cancel_allocations 쪽 대문자 상태값과 별도로 맞춰준다.
 _LINK_STATUS_MAP = {
-    "COMPLETED": "completed",
+    "COMPLETED": "used",
     "EXPIRED": "expired",
 }
 
