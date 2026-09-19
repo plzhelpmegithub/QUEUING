@@ -253,6 +253,18 @@ variable "db_instance_class" {
   default = "db.t3.small"
 }
 
+variable "db_multi_az" {
+  description = <<-DESC
+    RDS 다중 AZ. 켜면 다른 AZ 에 대기 인스턴스가 생겨 AZ 장애 때 1~2분 안에 넘어간다.
+    인스턴스·스토리지 비용이 두 배다. 끄면 7일 시점 복구만 남는다.
+
+    단일 → 다중으로 바꿀 때 서비스 중단은 없지만, 대기 인스턴스를 만드는 동안
+    (20~40분) 쓰기 지연이 늘 수 있다.
+  DESC
+  type        = bool
+  default     = true
+}
+
 variable "db_max_connections" {
   description = <<-DESC
     RDS 동시 접속 한도. 기본 파라미터 그룹은 db.t3.small 에서 72 라 api 파드 10개(×풀 10)도

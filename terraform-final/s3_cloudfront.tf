@@ -28,6 +28,15 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
   signing_protocol                  = "sigv4"
 }
 
+# /verify-link* 경로가 쓰는 AWS 관리형 정책 (이름으로 찾는다. ID 는 AWS 가 고정해 둔 값)
+data "aws_cloudfront_cache_policy" "caching_disabled" {
+  name = "Managed-CachingDisabled"
+}
+
+data "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
+  name = "Managed-AllViewerExceptHostHeader"
+}
+
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   default_root_object = "index.html"
@@ -160,7 +169,8 @@ resource "aws_cloudfront_distribution" "frontend" {
     #    중복이라 슬래시 형태로 둔다.
     #
     # ⚠️ CloudFront 의 캐시 동작 수 기본 한도는 25 개다.
-    #    지금 17(아래) + 2(/ws) + 1(기본) = 20 개. 더 늘리려면 한도 상향이 필요하다.
+    #    지금 18(아래) + 2(/ws) + 1(기본) = 21 개. 더 늘리려면 한도 상향이 필요하다.
+    #    "/verify-link*" 는 설정이 달라 아래에 따로 둔다.
     for_each = [
       "/events*", "/event/*", "/seats*", "/auth*",
       "/queue*", "/cancel-queue*",
@@ -186,6 +196,26 @@ resource "aws_cloudfront_distribution" "frontend" {
       default_ttl            = 0
       max_ttl                = 0
     }
+  }
+
+  # ── 취소표 메일 링크 (찬규님이 2026-09-19 00:29 콘솔에서 추가한 것을 그대로 옮겼다) ──
+  #
+  # 메일 속 링크가 A파트 /verify-link 로 가야 해서 ALB 로 보낸다. 여기 없으면 다음
+  # apply 때 지워져 링크가 프론트엔드로 가버린다.
+  #
+  # 위 경로들과 설정 방식이 다르다. 찬규님은 AWS 관리형 정책을 썼고, 그중
+  # AllViewerExceptHostHeader 는 Host 헤더를 ALB 로 넘기지 않는다. 위 경로들처럼
+  # forwarded_values 로 바꾸면 Host 가 www.queuing.kr 로 넘어가 동작이 달라질 수 있어
+  # 찬규님이 고른 설정을 그대로 둔다. 목록의 맨 끝(20번째)이라는 순서도 같다.
+  ordered_cache_behavior {
+    path_pattern             = "/verify-link*"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    target_origin_id         = "alb-backend"
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
+    compress                 = true
+    viewer_protocol_policy   = "redirect-to-https"
   }
 
   custom_error_response {

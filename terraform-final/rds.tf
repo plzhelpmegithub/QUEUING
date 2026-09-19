@@ -109,8 +109,14 @@ resource "aws_db_instance" "mariadb" {
   # 프라이빗 서브넷 안에서만 접근된다. 인터넷에서 직접 붙을 수 없다.
   publicly_accessible = false
 
-  # prod 에서만 다중 AZ. 대기 인스턴스가 하나 더 떠서 비용이 두 배가 된다.
-  multi_az = var.environment == "prod"
+  # 다중 AZ (2026-09-19 켬). 다른 AZ 에 대기 인스턴스를 두고 실시간으로 복제한다.
+  # 한쪽 AZ 가 죽으면 1~2분 안에 대기 쪽으로 넘어가고 엔드포인트 주소는 그대로다.
+  # 인스턴스 비용이 두 배가 된다 (서울 db.t3.small 월 $37.96 → $75.92).
+  multi_az = var.db_multi_az
+
+  # 변경을 다음 유지보수 창(월요일 새벽)까지 미루지 않고 apply 할 때 바로 반영한다.
+  # ⚠️ 이 뒤로 instance_class 를 바꾸면 그 즉시 재시작된다. 시연 중에는 바꾸지 말 것.
+  apply_immediately = true
 
   backup_retention_period = 7
   backup_window           = "03:00-04:00" # UTC — 한국 시간 정오 무렵

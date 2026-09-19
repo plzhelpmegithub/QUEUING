@@ -68,15 +68,22 @@ variable "b_lambda_use_rds" {
       2. tfvars 에 b_lambda_use_rds = true 를 넣고 terraform apply
       3. CronJob rds-to-dcloud-backup 의 suspend 를 푼다
          (그때부터 RDS 가 원본, D-Cloud 가 백업이라 방향이 맞다)
+
+    2026-09-18 전환 완료. 기본값을 실제 상태인 true 로 둔다. terraform.tfvars 는
+    .gitignore 대상이라, 기본값이 false 면 다른 사람이 clone 해서 apply 할 때
+    Lambda 가 D-Cloud 로 되돌아간다.
   DESC
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "b_link_base_url" {
-  description = "취소표 메일 속 링크 주소. 실제로 /verify-link 를 받는 곳이 정해지면 바꾼다."
+  description = "취소표 메일 속 링크 주소."
   type        = string
-  default     = "https://www.queuing.kr/verify-link"
+
+  # 2026-09-18 19:31 찬규님이 콘솔에서 해시 라우팅 주소(/#/verify-link)로 바꾼 값이다.
+  # 프론트엔드가 해시 라우터라 /#/ 없이는 화면이 열리지 않는다.
+  default = "https://www.queuing.kr/#/verify-link"
 }
 
 variable "b_hold_duration_seconds" {
@@ -121,8 +128,14 @@ locals {
   # use_rds 를 그대로 쓰지 않는 이유: use_rds 는 이미 true 다(RDS 를 만들어 두었다).
   # 하지만 api 가 아직 D-Cloud 를 보고 있어서 Lambda 만 먼저 넘어가면 안 된다.
   b_db_on_rds = var.b_lambda_use_rds
-  b_db_host   = local.b_db_on_rds ? one(aws_db_instance.mariadb[*].address) : var.dcloud_host
-  b_db_port   = local.b_db_on_rds ? 3306 : var.dcloud_db_port
+  # b_lambda_use_proxy 를 켜면 RDS 대신 Proxy 로 붙는다 (rds_proxy.tf).
+  # 포트·계정·비밀번호는 같아서 주소만 바뀐다.
+  b_db_host = local.b_db_on_rds ? (
+    var.b_lambda_use_proxy && local.rds_proxy_on
+    ? one(aws_db_proxy.mariadb[*].endpoint)
+    : one(aws_db_instance.mariadb[*].address)
+  ) : var.dcloud_host
+  b_db_port = local.b_db_on_rds ? 3306 : var.dcloud_db_port
 
   # 비밀번호는 Secrets Manager 에서 읽는다. 예전에는 queuing-aws.ps1 이
   # TF_VAR_b_lambda_db_password 로만 넘겨서, 그 값 없이 apply 하면 Lambda 환경변수가

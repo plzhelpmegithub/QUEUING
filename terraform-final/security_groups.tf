@@ -154,6 +154,20 @@ resource "aws_security_group" "rds" {
     }
   }
 
+  # RDS Proxy 에서 오는 3306 (2026-09-19, rds_proxy.tf 참고).
+  # 위의 직접 연결 규칙은 남겨둔다. 앱들을 한 곳씩 Proxy 로 옮기는 동안 둘 다 열려 있어야 하고,
+  # 백업 CronJob 은 계속 직접 붙는다.
+  dynamic "ingress" {
+    for_each = var.use_rds && var.rds_proxy_enabled ? [1] : []
+    content {
+      description     = "MariaDB from RDS Proxy"
+      from_port       = 3306
+      to_port         = 3306
+      protocol        = "tcp"
+      security_groups = [aws_security_group.rds_proxy[0].id]
+    }
+  }
+
   egress {
     description = "RDS outbound (backup and monitoring), inbound is what matters"
     from_port   = 0
