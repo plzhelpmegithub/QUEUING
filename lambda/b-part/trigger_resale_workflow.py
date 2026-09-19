@@ -112,8 +112,22 @@ INSERT_POOL_SEAT_SQL = """
 """
 
 ACQUIRE_LOCK_SQL = """
-    INSERT INTO cancel_active_lock (lock_key) VALUES (%s)
+    INSERT INTO cancel_active_lock (lock_key, updated_at) VALUES (%s, NOW())
+    ON DUPLICATE KEY UPDATE
+        updated_at = IF(updated_at < DATE_SUB(NOW(), INTERVAL %s SECOND), NOW(), updated_at)
 """
+
+RELEASE_LOCK_SQL = """
+    DELETE FROM cancel_active_lock WHERE lock_key = %s
+"""
+
+# 워크플로우가 States.FAILED로 죽거나(GetNextUser/GenerateSignedLink/
+# MarkCompleted/MarkExpired/PushToDLQ는 Catch가 없어 에러 시 그냥 종료됨)
+# 콘솔에서 수동으로 중지되면, 락 해제 로직(get_next_user.py/
+# update_allocation_status.py)을 거치지 못해 락이 영원히 안 풀리는 문제가
+# 있었다. 락은 살아있는 워크플로우가 GenerateSignedLink를 돌 때마다 갱신되므로,
+# 이 시간 이상 갱신이 없으면 죽은 것으로 보고 다음 취소 이벤트가 가져가도 된다.
+LOCK_STALE_SECONDS = int(os.environ.get("LOCK_STALE_SECONDS", 1800))
 
 
 def lambda_handler(event, context):
@@ -152,31 +166,46 @@ def lambda_handler(event, context):
             # 실행 이름을 event_id+회차로 고정하는 방법도 검토했으나, Step
             # Functions는 완료된 실행 이름도 90일간 재사용을 막기 때문에 같은
             # 회차에서 나중에 또 취소표가 나오면 영구히 막히는 문제가 있어 채택
-            # 안 함. 이 락은 워크플로우가 끝날 때(GetNextUser가 후보 없음을
-            # 발견하거나, update_allocation_status가 더 팔 좌석 없음을 발견할
-            # 때) 명시적으로 해제되므로 다음 취소 웨이브는 다시 정상 동작한다.
+            # 안 함.
+            #
+            # [2026-09-19 재재수정] 정상 종료 경로(GetNextUser 후보 없음,
+            # update_allocation_status 남은 좌석 없음)에서만 락을 해제하다보니,
+            # 워크플로우가 처리되지 않은 에러로 FAILED되거나(GetNextUser/
+            # GenerateSignedLink/MarkCompleted/MarkExpired/PushToDLQ는 Catch가
+            # 없음) 콘솔에서 수동으로 중지되면 락이 영원히 안 풀리는 문제가
+            # 있었다. ON DUPLICATE KEY UPDATE로 "기존 락이 LOCK_STALE_SECONDS
+            # 이상 갱신 안 됐으면 새로 가져간다"는 TTL 조건을 추가 — 락은
+            # generate_signed_link.py가 매 후보 처리 사이클마다 갱신하므로,
+            # 살아있는 워크플로우는 절대 stale 판정을 안 받는다.
             lock_key = f"{event_id}|{session_date}|{session_time}"
             with conn.cursor() as cur:
-                try:
-                    cur.execute(ACQUIRE_LOCK_SQL, (lock_key,))
-                except pymysql.err.IntegrityError:
-                    # 이미 같은 회차에 활성 워크플로우가 돌고 있다 — 좌석은
-                    # 방금 풀에 넣었으니 그 워크플로우가 다음 후보를 고를 때
-                    # 자연스럽게 보게 된다. 새 실행은 시작하지 않는다.
+                cur.execute(ACQUIRE_LOCK_SQL, (lock_key, LOCK_STALE_SECONDS))
+                if cur.rowcount == 0:
+                    # 이미 같은 회차에 활성(아직 stale 안 된) 워크플로우가 돌고
+                    # 있다 — 좌석은 방금 풀에 넣었으니 그 워크플로우가 다음
+                    # 후보를 고를 때 자연스럽게 보게 된다. 새 실행은 시작 안 함.
                     continue
 
-            _sfn.start_execution(
-                stateMachineArn=state_machine_arn,
-                name=f"resale-{message_id}",
-                input=json.dumps({
-                    "event_id": event_id,
-                    "session_date": session_date,
-                    "session_time": session_time,
-                }),
-            )
-        except _sfn.exceptions.ExecutionAlreadyExists:
-            # 같은 SQS 메시지가 중복 전달된 경우 — 이미 시작된 실행이 있으므로 정상 처리로 간주
-            pass
+            try:
+                _sfn.start_execution(
+                    stateMachineArn=state_machine_arn,
+                    name=f"resale-{message_id}",
+                    input=json.dumps({
+                        "event_id": event_id,
+                        "session_date": session_date,
+                        "session_time": session_time,
+                    }),
+                )
+            except _sfn.exceptions.ExecutionAlreadyExists:
+                # 같은 SQS 메시지가 중복 전달된 경우 — 이미 시작된 실행이 있으므로 정상 처리로 간주
+                pass
+            except Exception:
+                # 락은 획득했는데 실행 시작 자체가 실패한 경우 — TTL이 지날
+                # 때까지 기다리지 않고 그 자리에서 바로 락을 풀어줘야 다음
+                # 재시도(SQS 재전달 등)가 곧바로 성공할 수 있다.
+                with conn.cursor() as cur:
+                    cur.execute(RELEASE_LOCK_SQL, (lock_key,))
+                raise
         except Exception as exc:
             print(f"[TriggerResaleWorkflow] failed for messageId={message_id}: {exc}")
             batch_item_failures.append({"itemIdentifier": message_id})

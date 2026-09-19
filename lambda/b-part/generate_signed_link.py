@@ -25,6 +25,11 @@ $.Payload.session_time을 꺼내는데, 이 Lambda가 session_date/session_time�
 verify-link가 sessionDate/sessionTime을 응답으로 돌려줘야 프론트가 회차를 알 수
 있으므로, 여기서 비워두면 그쪽도 빈 값이 된다.
 
+[2026-09-19 재수정] trigger_resale_workflow.py의 cancel_active_lock이 워크플로우가
+살아있는 동안 stale 판정을 받지 않도록, 매 후보 처리 사이클(=이 Lambda가 호출될
+때)마다 락의 updated_at을 갱신한다 — 이 Lambda가 이번 사이클에서 DB에 처음
+쓰는 지점이라 여기가 자연스러운 갱신 시점이다.
+
 타임존 버그 재발 방지: 반드시 datetime.now(timezone.utc)를 쓴다.
 (datetime.utcnow()는 naive datetime이라 .timestamp()를 호출하면 로컬 타임존
  기준으로 잘못 해석되어 exp가 9시간 앞당겨졌던 사고가 있었다.)
@@ -112,6 +117,14 @@ def handler(event, context=None):
             """,
             (event_id, user_id, hold_duration_seconds, issued_at, expires_at,
              session_date, session_time),
+        )
+
+        # trigger_resale_workflow.py의 cancel_active_lock이 이 워크플로우가
+        # 살아있는 동안 stale 판정을 받지 않도록 갱신 — 매 후보 처리 사이클마다
+        # 호출되므로, 죽은(에러/수동중지) 워크플로우만 자연스럽게 stale이 된다.
+        cur.execute(
+            "UPDATE cancel_active_lock SET updated_at = NOW() WHERE lock_key = %s",
+            (f"{event_id}|{session_date}|{session_time}",),
         )
 
         # [2026-09-16 추가] 방금 upsert된 allocation_id를 확정 조회해서
