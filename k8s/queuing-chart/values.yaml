@@ -13,7 +13,7 @@ service:
 env:
   # ⚠️ TODO: RDS 생성 후 실제 엔드포인트로 교체 필요
   # 예: queuing-db.xxxxxxxxxx.ap-northeast-2.rds.amazonaws.com
-  dbHost: "queuing-mariadb.cto8u6c4yxyv.ap-northeast-2.rds.amazonaws.com"
+  dbHost: "queuing-mariadb-proxy.proxy-cto8u6c4yxyv.ap-northeast-2.rds.amazonaws.com"
   dbPort: "3306"
   dbUser: "team2"
   # K8s 서비스 이름 방식 - AWS EKS에서도 네임스페이스 구조 동일하게 유지하면 그대로 사용 가능
