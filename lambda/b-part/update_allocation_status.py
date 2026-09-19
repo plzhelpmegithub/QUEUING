@@ -1,25 +1,42 @@
 """
-UpdateAllocationStatus (신규 Lambda)
+UpdateAllocationStatus (트리거 Lambda)
 
 Step Functions ASL의 MarkCompleted/MarkExpired 두 상태에서 공용으로 쓰는
-작은 유틸 Lambda. status 값만 다르게 넘겨서 재사용한다.
+작은 유틸 Lambda. status 값만 다르게 넘겨받아 사용한다.
 
 - MarkCompleted에서 호출: status="COMPLETED" — 사용자가 /verify-link로 링크를
-  클릭해서 SendTaskSuccess가 호출된 뒤, 워크플로우가 정상 종료되기 전에 최종
+  클릭해서 SendTaskSuccess가 호출됐음 → 워크플로우가 정상 종료되기 전에 최종
   상태를 기록
 - MarkExpired에서 호출: status="EXPIRED" — hold_duration_seconds 안에 아무도
-  클릭하지 않아 Step Functions가 States.Timeout을 던진 뒤, 다음 순번으로
+  클릭하지 않아 Step Functions가 States.Timeout을 던진 경우 → 다음 순번으로
   넘어가기 전에 이 사용자의 시도를 만료 처리
 
 cancel_allocations.status와 cancellation_link.status를 함께 갱신한다.
-(cancel_allocations는 이미 status 컬럼이 있었음 — LINK_SENT/SEND_FAILED 등
+(cancel_allocations에는 이미 status 컬럼이 있었으니 LINK_SENT/SEND_FAILED 등
 기존 값들과 같은 컬럼에 COMPLETED/EXPIRED를 추가하는 것)
+
+[2026-09-18 patch] 이 event_id에 아직 재판매 가능한(cancel_pool_seats.status
+='AVAILABLE') 좌석이 남아있는지 확인해서 has_more_seats로 같이 리턴한다.
+ASL이 이 값을 보고 다음 후보를 이어서 처리할지, 여기서 끝낼지 분기한다
+(MarkCompleted가 지금까지 End: true라 첫 사용자만 처리하고 워크플로우가
+끝나버리던 문제 해결용).
 
 입력:
   {
     "event_id": "evt-9", "user_id": "chlwldp0224@gmail.com", "token": "<JWT>",
     "status": "COMPLETED" 또는 "EXPIRED"   (ASL Parameters에서 리터럴로 지정)
   }
+
+출력:
+  {
+    "event_id": "evt-9", "user_id": "...", "status": "COMPLETED",
+    "has_more_seats": true 또는 false,
+    "session_date": "2026-11-14", "session_time": "18:00"
+  }
+
+[2026-09-19 patch] session_date/session_time도 같이 리턴하도록 추가 — ASL의
+HasMoreSeats?가 GetNextUser로 순환할 때 회차 정보가 끊기지 않게 하기 위함
+(GetNextUser Task가 최상위 $.session_date/$.session_time을 필요로 함).
 
 환경변수: MYSQL_HOST/PORT/USER/PASSWORD/DB
 """
@@ -48,12 +65,26 @@ def _get_mysql_conn():
     return _mysql_conn
 
 
-# cancellation_link.status는 기존에 'unused'/'used' 같은 소문자 값을 썼으므로
-# (스키마 초기 설계 기준) cancel_allocations 쪽 대문자 상태값과 별도로 맞춰준다.
+# cancellation_link.status는 기존에 'unused'/'used' 같은 소문자 값을 쓰므로
+# (스키마 초기 설계 기준) cancel_allocations 쪽의 대문자 상태값과 별도로 맞춰준다
 _LINK_STATUS_MAP = {
-    "COMPLETED": "used",
+    "COMPLETED": "completed",
     "EXPIRED": "expired",
 }
+
+CHECK_REMAINING_SEATS_SQL = """
+    SELECT seat_id FROM cancel_pool_seats
+    WHERE event_id = %s AND status = 'AVAILABLE'
+    LIMIT 1
+"""
+
+# HasMoreSeats?에서 GetNextUser로 다시 순환할 때, GetNextUser Task는 최상위
+# $.session_date/$.session_time을 참조하므로 여기서도 반드시 같이 실어 보내야
+# 한다 (방금 UPDATE한 이 행 자체에 이미 회차가 저장돼 있으므로 그대로 재사용).
+SELECT_ALLOCATION_SESSION_SQL = """
+    SELECT session_date, session_time FROM cancel_allocations
+    WHERE event_id = %s AND user_id = %s
+"""
 
 
 def handler(event, context=None):
@@ -74,7 +105,22 @@ def handler(event, context=None):
                 (_LINK_STATUS_MAP[status], token),
             )
 
-    return {"event_id": event_id, "user_id": user_id, "status": status}
+        cur.execute(CHECK_REMAINING_SEATS_SQL, (event_id,))
+        has_more_seats = cur.fetchone() is not None
+
+        cur.execute(SELECT_ALLOCATION_SESSION_SQL, (event_id, user_id))
+        session_row = cur.fetchone()
+        session_date = session_row["session_date"] if session_row else None
+        session_time = session_row["session_time"] if session_row else None
+
+    return {
+        "event_id": event_id,
+        "user_id": user_id,
+        "status": status,
+        "has_more_seats": has_more_seats,
+        "session_date": str(session_date) if session_date else None,
+        "session_time": str(session_time) if session_time else None,
+    }
 
 
 if __name__ == "__main__":

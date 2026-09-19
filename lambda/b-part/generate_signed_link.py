@@ -1,19 +1,25 @@
 """
 GenerateSignedLink (MySQL 버전)
 
-기존 DynamoDB 버전과 동일한 로직(서명된 1회용 JWT 발급)이지만, 두 군데 저장소가
-DynamoDB PutItem -> MySQL INSERT로 바뀐다.
+기존 DynamoDB 버전과 동일한 로직(서명된 1회용 JWT 발급)이되, 이번 구버전 대신
+DynamoDB PutItem -> MySQL INSERT로 바뀌었다.
 
 - cancellation_link: token을 PK로 신규 행 INSERT (status='unused').
-  seat_id는 아직 모르므로 NULL로 넣는다 (schema_fixes.sql 적용 후에만 가능).
+  seat_id는 아직 모르므로 NULL로 둔다.
 - cancel_allocations: {event_id, user_id, status='LINK_SENT', hold_duration, expires_at}
-  INSERT. Step Functions가 이 Task를 재시도할 경우 같은 (event_id, user_id)로
-  다시 들어올 수 있어서, schema_fixes.sql에서 추가한 uk_event_user 유니크 키를
-  이용해 INSERT ... ON DUPLICATE KEY UPDATE로 멱등하게 처리한다.
+  INSERT. Step Functions가 이 Task를 재시행할 경우 같은 (event_id, user_id)로
+  다시 들어올 수 있어서, schema_fixes.sql에서 추가한 uk_event_user 유니크 인덱스
+  덕분에 INSERT ... ON DUPLICATE KEY UPDATE로 멱등하게 처리한다.
+
+[2026-09-16 추가] A파트 연동을 위해 complete/expire 콜백이 allocation_id만으로
+task_token을 찾을 수 있어야 한다. cancel_allocations를 upsert한 직후, 방금
+확정된 allocation_id를 다시 SELECT로 가져와서 cancellation_link.allocation_id에
+같이 저장해둔다. (INSERT ... ON DUPLICATE KEY UPDATE는 cursor.lastrowid가
+항상 신뢰할 수 있는 값을 주지 않으므로, 별도 SELECT로 확정한다.)
 
 타임존 버그 재발 방지: 반드시 datetime.now(timezone.utc)를 쓴다.
-(datetime.utcnow()의 naive datetime에 .timestamp()를 호출하면 로컬 타임존
- 기준으로 잘못 해석되어 exp가 9시간 어긋났던 사고가 있었음)
+(datetime.utcnow()는 naive datetime이라 .timestamp()를 호출하면 로컬 타임존
+ 기준으로 잘못 해석되어 exp가 9시간 앞당겨졌던 사고가 있었다.)
 
 환경변수: MYSQL_HOST/PORT/USER/PASSWORD/DB, JWT_SECRET, HOLD_DURATION_SECONDS(기본 600)
 """
@@ -94,6 +100,36 @@ def handler(event, context=None):
             (event_id, user_id, hold_duration_seconds, issued_at, expires_at),
         )
 
+        # [2026-09-16 추가] 방금 upsert된 allocation_id를 확정 조회해서
+        # cancellation_link에 같이 저장 — complete/expire 콜백이
+        # allocation_id만으로 task_token을 찾을 수 있게 하기 위함.
+        cur.execute(
+            """
+            SELECT allocation_id
+            FROM cancel_allocations
+            WHERE event_id = %s AND user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (event_id, user_id),
+        )
+        alloc_row = cur.fetchone()
+        allocation_id = alloc_row["allocation_id"] if alloc_row else None
+
+        if allocation_id is not None:
+            cur.execute(
+                "UPDATE cancellation_link SET allocation_id = %s WHERE token = %s",
+                (allocation_id, token),
+            )
+        else:
+            # 방금 upsert한 행을 못 찾는다는 건 로직상 있어서는 안 되는 상황.
+            # 여기서 조용히 넘어가면 나중에 complete/expire가 절대 못 찾는
+            # 상태가 되므로, 확실히 드러나도록 예외를 던진다.
+            raise RuntimeError(
+                f"cancel_allocations row not found right after upsert "
+                f"(event_id={event_id}, user_id={user_id}) — allocation_id 저장 실패"
+            )
+
     return {
         "event_id": event_id,
         "user_id": user_id,
@@ -101,6 +137,7 @@ def handler(event, context=None):
         "token": token,
         "expires_at": expires_at.isoformat(),
         "hold_duration_seconds": hold_duration_seconds,
+        "allocation_id": allocation_id,
     }
 
 
