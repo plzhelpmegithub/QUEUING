@@ -218,25 +218,11 @@ resource "aws_cloudfront_distribution" "frontend" {
     viewer_protocol_policy   = "redirect-to-https"
   }
 
-  custom_error_response {
-    error_code         = 403
-    response_code      = 200
-    response_page_path = "/index.html"
-
-    # 찬규 안에서 가져옴. 지정하지 않으면 기본 300초라, 배포 직후 잘못 캐시된
-    # 403/404 가 5분간 유지된다. 시연 중에 이러면 원인을 찾기 어렵다.
-    error_caching_min_ttl = 10
-  }
-
-  custom_error_response {
-    error_code         = 404
-    response_code      = 200
-    response_page_path = "/index.html"
-
-    # 찬규 안에서 가져옴. 지정하지 않으면 기본 300초라, 배포 직후 잘못 캐시된
-    # 403/404 가 5분간 유지된다. 시연 중에 이러면 원인을 찾기 어렵다.
-    error_caching_min_ttl = 10
-  }
+    # 403/404 → index.html 변환을 뺐다 (2026-09-19).
+  # 프론트가 해시 라우터(/#/...)라 브라우저는 서버에 늘 "/" 만 요청하고,
+  # "/" 는 default_root_object 가 처리한다. 이 변환은 라우팅에 필요 없었고,
+  # 오히려 API 의 403/404 JSON 을 200 + HTML 로 바꿔 "Unexpected token '<'" 로
+  # 원인을 가렸다 (관리자 공연 삭제 오류가 이것 때문에 안 보였다).
 
   restrictions {
     geo_restriction { restriction_type = "none" }
