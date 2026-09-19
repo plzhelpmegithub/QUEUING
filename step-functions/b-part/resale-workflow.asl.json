@@ -8,7 +8,9 @@
       "Parameters": {
         "FunctionName": "arn:aws:lambda:ap-northeast-2:230790682749:function:queuing-b-get-next-user",
         "Payload": {
-          "event_id.$": "$.event_id"
+          "event_id.$": "$.event_id",
+          "session_date.$": "$.session_date",
+          "session_time.$": "$.session_time"
         }
       },
       "ResultSelector": {
@@ -50,13 +52,18 @@
         "Payload": {
           "event_id.$": "$.candidate.event_id",
           "user_id.$": "$.candidate.user_id",
-          "queue_index.$": "$.candidate.queue_index"
+          "queue_index.$": "$.candidate.queue_index",
+          "session_date.$": "$.candidate.session_date",
+          "session_time.$": "$.candidate.session_time"
         }
       },
       "ResultSelector": {
         "event_id.$": "$.Payload.event_id",
         "user_id.$": "$.Payload.user_id",
         "queue_index.$": "$.Payload.queue_index",
+        "session_date.$": "$.Payload.session_date",
+        "session_time.$": "$.Payload.session_time",
+        "allocation_id.$": "$.Payload.allocation_id",
         "token.$": "$.Payload.token",
         "expires_at.$": "$.Payload.expires_at",
         "hold_duration_seconds.$": "$.Payload.hold_duration_seconds"
@@ -129,7 +136,13 @@
           "status": "COMPLETED"
         }
       },
-      "End": true
+      "ResultSelector": {
+        "event_id.$": "$.Payload.event_id",
+        "has_more_seats.$": "$.Payload.has_more_seats",
+        "session_date.$": "$.Payload.session_date",
+        "session_time.$": "$.Payload.session_time"
+      },
+      "Next": "HasMoreSeats?"
     },
 
     "MarkExpired": {
@@ -145,9 +158,28 @@
         }
       },
       "ResultSelector": {
-        "event_id.$": "$.Payload.event_id"
+        "event_id.$": "$.Payload.event_id",
+        "has_more_seats.$": "$.Payload.has_more_seats",
+        "session_date.$": "$.Payload.session_date",
+        "session_time.$": "$.Payload.session_time"
       },
-      "Next": "GetNextUser"
+      "Next": "HasMoreSeats?"
+    },
+
+    "HasMoreSeats?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.has_more_seats",
+          "BooleanEquals": true,
+          "Next": "GetNextUser"
+        }
+      ],
+      "Default": "AllSeatsSold"
+    },
+
+    "AllSeatsSold": {
+      "Type": "Succeed"
     },
 
     "PushToDLQ": {
@@ -162,9 +194,7 @@
           "token.$": "$.token"
         }
       },
-      "ResultSelector": {
-        "event_id.$": "$.Payload.event_id"
-      },
+      "ResultPath": "$.dlq_result",
       "Next": "GetNextUser"
     }
   }
