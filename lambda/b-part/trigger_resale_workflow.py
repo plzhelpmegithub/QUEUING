@@ -63,6 +63,15 @@ GenerateSignedLink가 cancel_allocations에 빈 회차로 INSERT하는 버그가
 Step Functions 입력에 실어 보내도록 수정 — 이후 GetNextUser/GenerateSignedLink도
 이 값을 받아 회차 필터링·저장을 하도록 맞춰야 완전히 해결된다.
 
+[2026-09-19 재수정] 좌석 5개가 동시에 취소되어 같은 사용자에게 메일 5통이 간
+사고 발생. 원인은 "SELECT로 활성 allocation 확인 → 없으면 실행 시작" 사이에
+시간차가 있어서, 거의 동시에 도착한 메시지 여러 개가 전부 그 SELECT를
+통과해버린 것 (check-then-act 레이스 컨디션 — DB 체크만으론 막을 수 없음).
+cancel_active_lock 테이블에 INSERT를 시도해서 성공한 것만 실행을 시작하는
+방식으로 교체 — INSERT 자체가 원자적이라 여러 개가 동시에 시도해도 딱 하나만
+성공한다. 이 락은 get_next_user.py(후보 없음 발견 시)와
+update_allocation_status.py(더 팔 좌석 없음 발견 시)에서 해제된다.
+
 환경변수:
   STATE_MACHINE_ARN — resale-workflow 상태머신 ARN (값이 terraform apply 시 채워줘야 함)
   MYSQL_HOST/PORT/USER/PASSWORD/DB — cancel_pool_seats 적재 및 활성 allocation 확인용
@@ -102,10 +111,8 @@ INSERT_POOL_SEAT_SQL = """
     ON DUPLICATE KEY UPDATE status = 'AVAILABLE'
 """
 
-CHECK_ACTIVE_ALLOCATION_SQL = """
-    SELECT allocation_id FROM cancel_allocations
-    WHERE event_id = %s AND status = 'LINK_SENT'
-    LIMIT 1
+ACQUIRE_LOCK_SQL = """
+    INSERT INTO cancel_active_lock (lock_key) VALUES (%s)
 """
 
 
@@ -137,14 +144,25 @@ def lambda_handler(event, context):
                     (event_id, session_date, session_time, seat_id),
                 )
 
-                # 이미 이 event_id에 LINK_SENT 상태(=누군가 링크를 받고 아직
-                # 응답 안 한 상태)인 allocation이 있으면, 새 워크플로우를
-                # 또 시작하지 않는다 — 그게 지금 같은 사용자에게 메일이
-                # 여러 통 가는 원인이었다. 이 사람이 완료/만료되면 콜백이
-                # 다음 후보를 처리하게 된다 (ASL MarkCompleted가 다음
-                # 후보로 이어지도록 별도 수정 필요 — 현재는 End: true).
-                cur.execute(CHECK_ACTIVE_ALLOCATION_SQL, (event_id,))
-                if cur.fetchone() is not None:
+            # [2026-09-19 재수정] "SELECT로 확인 후 INSERT" 방식은 여러 메시지가
+            # 거의 동시에 도착하면 전부 통과해버리는 레이스 컨디션이 있었다
+            # (실제로 좌석 5개가 동시에 취소되어 같은 사용자에게 메일 5통이
+            # 간 사고 발생). INSERT 자체의 원자성(PRIMARY KEY 충돌)으로 막는
+            # 방식으로 교체 — 몇 개가 동시에 시도해도 락 획득은 딱 1개만 성공한다.
+            # 실행 이름을 event_id+회차로 고정하는 방법도 검토했으나, Step
+            # Functions는 완료된 실행 이름도 90일간 재사용을 막기 때문에 같은
+            # 회차에서 나중에 또 취소표가 나오면 영구히 막히는 문제가 있어 채택
+            # 안 함. 이 락은 워크플로우가 끝날 때(GetNextUser가 후보 없음을
+            # 발견하거나, update_allocation_status가 더 팔 좌석 없음을 발견할
+            # 때) 명시적으로 해제되므로 다음 취소 웨이브는 다시 정상 동작한다.
+            lock_key = f"{event_id}|{session_date}|{session_time}"
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(ACQUIRE_LOCK_SQL, (lock_key,))
+                except pymysql.err.IntegrityError:
+                    # 이미 같은 회차에 활성 워크플로우가 돌고 있다 — 좌석은
+                    # 방금 풀에 넣었으니 그 워크플로우가 다음 후보를 고를 때
+                    # 자연스럽게 보게 된다. 새 실행은 시작하지 않는다.
                     continue
 
             _sfn.start_execution(

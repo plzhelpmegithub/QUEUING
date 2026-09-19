@@ -86,15 +86,27 @@ _QUERY = f"""
 """
 
 
+RELEASE_LOCK_SQL = """
+    DELETE FROM cancel_active_lock WHERE lock_key = %s
+"""
+
+
 def handler(event, context=None):
     event_id = event["event_id"]
     session_date = event["session_date"]
     session_time = event["session_time"]
+    lock_key = f"{event_id}|{session_date}|{session_time}"
 
     conn = _get_mysql_conn()
     with conn.cursor() as cur:
         cur.execute(_QUERY, (event_id, session_date, session_time))
         row = cur.fetchone()
+
+        if row is None:
+            # 이번 회차에 더 이상 돌릴 후보가 없다 — 이 워크플로우는 여기서
+            # 끝나므로(NoCandidateAvailable), 다음 취소 웨이브가 다시 새
+            # 워크플로우를 시작할 수 있도록 락을 해제한다.
+            cur.execute(RELEASE_LOCK_SQL, (lock_key,))
 
     if row is None:
         return {

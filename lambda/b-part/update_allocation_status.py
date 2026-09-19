@@ -86,6 +86,12 @@ SELECT_ALLOCATION_SESSION_SQL = """
     WHERE event_id = %s AND user_id = %s
 """
 
+# has_more_seats=false(=이 회차의 좌석이 다 팔림)면 워크플로우가 AllSeatsSold로
+# 끝나므로, 다음 취소 웨이브가 다시 시작될 수 있도록 락을 해제한다.
+RELEASE_LOCK_SQL = """
+    DELETE FROM cancel_active_lock WHERE lock_key = %s
+"""
+
 
 def handler(event, context=None):
     event_id = event["event_id"]
@@ -105,13 +111,17 @@ def handler(event, context=None):
                 (_LINK_STATUS_MAP[status], token),
             )
 
-        cur.execute(CHECK_REMAINING_SEATS_SQL, (event_id,))
-        has_more_seats = cur.fetchone() is not None
-
         cur.execute(SELECT_ALLOCATION_SESSION_SQL, (event_id, user_id))
         session_row = cur.fetchone()
         session_date = session_row["session_date"] if session_row else None
         session_time = session_row["session_time"] if session_row else None
+
+        cur.execute(CHECK_REMAINING_SEATS_SQL, (event_id,))
+        has_more_seats = cur.fetchone() is not None
+
+        if not has_more_seats:
+            lock_key = f"{event_id}|{session_date}|{session_time}"
+            cur.execute(RELEASE_LOCK_SQL, (lock_key,))
 
     return {
         "event_id": event_id,
