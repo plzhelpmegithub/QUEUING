@@ -681,6 +681,7 @@ function Invoke-Up {
     $script:StoreDirty = $false
     $S = @{
         Db        = Get-StoredSecret $store "DB_PASSWORD"             "D-Cloud DB 비밀번호"
+        Rds       = Get-StoredSecret $store "RDS_PASSWORD"            "RDS MariaDB 비밀번호 (terraform rds.tf 가 같은 값을 쓴다)"
         Redis     = Get-StoredSecret $store "REDIS_COUNTER_PASSWORD"  "D파트 Redis 비밀번호 (새로 정해도 된다)"
         Recap3    = Get-StoredSecret $store "RECAPTCHA_SECRET_KEY"    "reCAPTCHA v3 Secret Key (40자)" -Length 40
         Recap2    = Get-StoredSecret $store "RECAPTCHA_V2_SECRET_KEY" "reCAPTCHA v2 Secret Key (40자)" -Length 40
@@ -746,7 +747,11 @@ function Invoke-Up {
     Set-K8sSecret "queuing-a"  "mariadb-credentials"    ([ordered]@{ MARIADB_ROOT_PASSWORD = $S.Db })
     Set-K8sSecret "queuing-a"  "auth-credentials"       ([ordered]@{ JWT_AUTH_SECRET = $S.JwtAuth; JWT_SECRET = $S.JwtAdmit })
     Set-K8sSecret "queuing-a"  "recaptcha-credentials"  ([ordered]@{ RECAPTCHA_SECRET_KEY = $S.Recap3; RECAPTCHA_V2_SECRET_KEY = $S.Recap2 })
-    Set-K8sSecret "queuing-d"  "backend-counter-secret" ([ordered]@{ "db-password" = $S.Db; "redis-password" = $S.Redis })
+    # 2026-09-19: api·counter 가 D-Cloud 에서 RDS(Proxy)로 옮겨서 RDS 비밀번호를 넣는다.
+    # api 차트는 queuing-a/app-secrets 의 RDS_PASSWORD 를 읽는다 (redis-api-chart values 의 dbPasswordSecret).
+    # 09-18 이관 때 손으로 만든 Secret 이라 스크립트에 없었다. 없으면 새로 올릴 때 api 가 DB 에 못 붙는다.
+    Set-K8sSecret "queuing-a"  "app-secrets"            ([ordered]@{ RDS_PASSWORD = $S.Rds })
+    Set-K8sSecret "queuing-d"  "backend-counter-secret" ([ordered]@{ "db-password" = $S.Rds; "redis-password" = $S.Redis })
     Set-K8sSecret "redis"      "redis-counter-secret"   ([ordered]@{ password = $S.Redis })
     Set-K8sSecret "realtime"   "stats-redis-secret"     ([ordered]@{ password = $S.Redis })
     # A파트 파드가 B 콜백을 부를 때 보내는 헤더 값. Lambda 쪽 B_CALLBACK_SECRET 과 같아야 한다.

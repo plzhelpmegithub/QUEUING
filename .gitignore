@@ -12,3 +12,6 @@
 /yeji-chart/
 /geonah-chart/
 /tf-ref/
+
+# ArgoCD CLI 실행 파일 (240MB, 각자 받아서 쓴다)
+/argocd.exe

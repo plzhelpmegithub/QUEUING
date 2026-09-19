@@ -89,7 +89,9 @@ variable "b_link_base_url" {
 variable "b_hold_duration_seconds" {
   description = "링크 유효 시간(초). 이 시간이 지나면 다음 대기자에게 넘어간다."
   type        = number
-  default     = 600
+  # 지금 돌고 있는 값(300)에 맞췄다 (2026-09-19). 전에는 tfvars 에만 있었다.
+  # 건아 코드의 기본값은 600 이다. 시연 시간을 줄이려고 300 으로 쓰는 중.
+  default = 300
 }
 
 variable "b_trigger_enabled" {
@@ -142,7 +144,11 @@ locals {
   # 빈 비밀번호로 덮였다. 그걸 막으려고 ignore_changes 를 걸어두었던 것인데,
   # 이제 값을 항상 얻을 수 있으므로 ignore_changes 가 필요 없다.
   # 환경변수를 주면 그쪽이 우선한다.
-  b_db_password = var.b_lambda_db_password != "" ? var.b_lambda_db_password : try(
+  #
+  # ⚠️ RDS 를 볼 때는 var.b_lambda_db_password 를 무시한다 (2026-09-19).
+  #    queuing-aws.ps1 up 이 이 변수에 D-Cloud 비밀번호를 넣는데 RDS 비밀번호와 다르다.
+  #    그대로 쓰면 스크립트로 apply 하는 순간 B파트 Lambda 가 전부 DB 로그인에 실패한다.
+  b_db_password = !local.b_db_on_rds && var.b_lambda_db_password != "" ? var.b_lambda_db_password : try(
     local.app_secrets[local.b_db_on_rds ? "RDS_PASSWORD" : "DB_PASSWORD"], ""
   )
 

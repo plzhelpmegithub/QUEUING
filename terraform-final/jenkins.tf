@@ -274,5 +274,7 @@ resource "aws_eip" "jenkins" {
 variable "jenkins_ami_id" {
   description = "비워두면 새로 설치, AMI ID 를 넣으면 그 백업으로 Jenkins 를 만든다 (destroy 전에 aws ec2 create-image 로 뜬 것)."
   type        = string
-  default     = ""
+  # 2026-09-15 백업(queuing-jenkins-backup-20260915). 전에는 tfvars 에만 있어서
+  # tfvars 없이 apply 하면 빈 Jenkins 로 새로 설치됐다. 새 백업을 뜨면 이 값도 바꾼다.
+  default = "ami-0daca25ad1451379e"
 }

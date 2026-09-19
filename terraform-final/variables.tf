@@ -140,9 +140,12 @@ variable "create_route53_zone" {
   description = <<-DESC
     true  = Route 53 호스팅 영역을 새로 만든다 (등록기관에서 네임서버 변경 필요)
     false = 콘솔에서 이미 만들어둔 영역을 찾아서 쓴다
+
+    기본값 false (2026-09-19): queuing.kr 영역은 이미 있고 등록기관 네임서버도 그 영역을 본다.
+    true 로 apply 하면 영역이 하나 더 생겨서 ACM 검증이 끝나지 않는다.
   DESC
   type        = bool
-  default     = true
+  default     = false
 }
 
 # ── Frontend ──
@@ -528,8 +531,10 @@ variable "jenkins_allowed_cidr" {
     ⚠️ 깃허브 웹훅을 쓰려면 깃허브 IP 대역도 열어야 한다. 대신 젠킨스에서
        주기적으로 폴링하게 하면 인바운드를 열지 않아도 된다.
   DESC
+  # 기본값을 학원 공인 IP 로 좁혔다 (2026-09-19). 전에는 tfvars 에만 있어서
+  # tfvars 없이 apply 하면 8080 이 인터넷 전체에 열렸다.
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = ["118.131.22.85/32"]
 }
 
 variable "nat_eip_allocation_id" {
@@ -544,7 +549,10 @@ variable "nat_eip_allocation_id" {
 
     현재 EIP 를 계속 쓰는 방법은 vpc.tf 의 aws_eip.nat 주석 참고.
     붙어 있지 않은 EIP 는 시간당 $0.005 (월 약 $3.6).
+
+    기본값에 지금 쓰는 EIP 를 넣었다 (2026-09-19). 전에는 tfvars 에만 있어서
+    tfvars 없이 apply 하면 NAT 가 새 EIP 로 바뀌었다.
   DESC
   type        = string
-  default     = ""
+  default     = "eipalloc-00af0438a56a0a5c7"
 }
