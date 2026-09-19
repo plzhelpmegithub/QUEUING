@@ -1436,3 +1436,13 @@
 - **증상(Issue):** B Lambda가 유효한 링크에 `200 { "success": true, ... }`를 반환해도 A API가 취소표 링크를 무효로 처리했다.
 - **원인(Cause):** A API 어댑터가 `valid === true`만 성공으로 판정했고, B의 기존 응답 계약인 `success === true`를 읽지 않았다.
 - **해결(Solution):** 성공 판정을 `source.valid === true || source.success === true`로 제한적으로 확장해 두 응답 형식을 모두 수용했다.
+## [2026-09-19 09:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/bPartCallbackService.js]**: B파트 완료·만료 콜백 경로를 ALB 리스너 규칙과 동일한 `/b-callback/verify-link/complete`, `/b-callback/verify-link/expire`로 변경. 기존 경로는 ALB의 B Lambda 대상 그룹 규칙과 일치하지 않아 기본 대상 그룹으로 전달될 수 있었음.
+- **[README.md]**: 취소표 완료·만료 API, B파트 콜백 서비스, 외부 연동 표, `B_CALLBACK_BASE_URL` 환경변수 설명을 실제 ALB 경로로 갱신.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 결제 완료 또는 링크 만료 시 A API가 B파트 콜백 Lambda에 상태를 전달하지 못할 수 있음.
+- **원인(Cause):** 검증 콜백만 `/b-callback/verify-link`를 사용하고 완료·만료 콜백은 `/verify-link/complete`, `/verify-link/expire`로 호출해 ALB 리스너의 경로 기반 규칙과 불일치.
+- **해결(Solution):** 세 콜백을 모두 `/b-callback/verify-link/*` 네임스페이스로 통일해 ALB가 각각의 Lambda 대상 그룹으로 라우팅하도록 수정.

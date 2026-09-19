@@ -294,8 +294,8 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
 | `POST /cancel-queue/hold` | 취소표 좌석 선점. `allocation.seat_id`가 있으면 해당 좌석만 허용하고, `NULL`이면 요청 좌석이 같은 공연·회차의 `AVAILABLE`인지 확인한 뒤 `cancel_allocations.seat_id`에 원자적으로 기록하고 홀드한다. `verify-link`로 발급된 취소표 전용 세션은 allocation 범위를 검증한 뒤 일반 Admission Token 없이 처리 |
-| `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/expire`로 포워드 |
-| `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/verify-link/complete`로 포워드 |
+| `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/expire`로 포워드 |
+| `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/complete`로 포워드 |
 | `POST /verify-link` | 이메일 Secret Link 랜딩 — A파트가 발급한 Local SMTP JWT를 먼저 검증하고, 유효하지 않은 경우 `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임한 뒤 할당 정보 + 선택 가능 좌석 목록 반환 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
@@ -492,8 +492,8 @@ B파트의 Step Functions + Lambda 재판매 파이프라인에 좌석 반환 �
 
 - `isConfigured()`: `B_CALLBACK_BASE_URL` 설정 여부 반환
 - `callbackVerifyLink(token)`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link`에 `POST` — 브라우저에서 전달된 Secret Link 토큰을 B파트에서 검증
-- `callbackComplete({ userId, eventId, seatId, allocationId })`: B파트 `/verify-link/complete`에 POST — 사용자가 좌석 선택을 완료했음을 B파트 Step Functions에 알림
-- `callbackExpire({ userId, eventId, seatId, allocationId })`: B파트 `/verify-link/expire`에 POST — Secret Link 만료를 B파트에 알려 다음 대기자 배정을 트리거
+- `callbackComplete({ userId, eventId, seatId, allocationId })`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link/complete`에 POST — 사용자가 좌석 선택을 완료했음을 B파트 Step Functions에 알림
+- `callbackExpire({ userId, eventId, seatId, allocationId })`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link/expire`에 POST — Secret Link 만료를 B파트에 알려 다음 대기자 배정을 트리거
 
 complete/expire 콜백은 B파트가 `200` JSON 또는 `204 No Content`로 응답해도 성공으로 처리한다. A파트의 `/cancel-queue/respond`, `/cancel-queue/expire`는 먼저 A DB의 `cancel_allocations` 상태를 확인하여 terminal 상태의 중복 요청을 B파트로 재전송하지 않는다. 최초 콜백 성공 뒤에는 A DB도 `allocation_id` 기준으로 상태를 동기화한다. expire 콜백 성공 후에는 A Redis의 해당 사용자의 held 좌석도 해제한다. 취소표 사용자의 `POST /seats/confirm`도 활성 할당이 있으면 동일한 complete 콜백을 자동 호출하고, 실패 시 `callback_outbox`에 저장한 뒤 A DB 할당은 응답 완료로 마감한다.
 
@@ -788,7 +788,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | 대상 | 용도 | 주소 |
 |---|---|---|
 | C팀 WebSocket 서버 | 좌석 실시간 현황 | `ws://192.168.0.220` |
-| B팀 Step Functions + Lambda | SQS 취소 이벤트 기반 순차 재판매·Secret Link 발급. 검증: `/b-callback/verify-link`, 상태 콜백: `/verify-link/complete`, `/verify-link/expire` | `queuing-cancellation-events` SQS + `B_CALLBACK_BASE_URL` |
+| B팀 Step Functions + Lambda | SQS 취소 이벤트 기반 순차 재판매·Secret Link 발급. 검증: `/b-callback/verify-link`, 상태 콜백: `/b-callback/verify-link/complete`, `/b-callback/verify-link/expire` | `queuing-cancellation-events` SQS + `B_CALLBACK_BASE_URL` |
 | LocalStack | AWS SES/SNS 로컬 에뮬레이션 | `http://192.168.0.191:4566` |
 
 ---
@@ -823,7 +823,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `RECAPTCHA_ALLOWED_HOSTNAMES` | *(없음)* | 검증 응답 hostname 허용 목록. 개발 환경은 `localhost` 권장 |
 | `CANCELLATION_EVENTS_QUEUE_URL` | *(없음; AWS 운영 필수)* | B파트 재판매 파이프라인 `queuing-cancellation-events` SQS 큐 URL. 미설정 시 outbox에 저장 |
 | `SQS_CANCELLATION_EVENTS_QUEUE_URL` | *(없음)* | 위 변수의 호환용 별칭 |
-| `B_CALLBACK_BASE_URL` | *(없음)* | B파트 검증/콜백 API의 base URL. 설정 시 `/verify-link`는 `${B_CALLBACK_BASE_URL}/b-callback/verify-link`, `/respond`는 `${B_CALLBACK_BASE_URL}/verify-link/complete`, `/expire`는 `${B_CALLBACK_BASE_URL}/verify-link/expire`로 서버 간 포워드 |
+| `B_CALLBACK_BASE_URL` | *(없음)* | B파트 검증/콜백 API의 base URL. 설정 시 `/verify-link`는 `${B_CALLBACK_BASE_URL}/b-callback/verify-link`, `/respond`는 `${B_CALLBACK_BASE_URL}/b-callback/verify-link/complete`, `/expire`는 `${B_CALLBACK_BASE_URL}/b-callback/verify-link/expire`로 서버 간 포워드 |
 | `B_CALLBACK_SECRET` | *(없음)* | A↔B 서버 간 공유 시크릿. `X-Callback-Secret` 헤더로 전송하며 Kubernetes Secret 사용 권장 |
 
 ---

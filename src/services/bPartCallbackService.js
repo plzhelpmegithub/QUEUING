@@ -51,7 +51,10 @@ async function callbackVerifyLink(token) {
 }
 
 async function callbackComplete({ userId, eventId, seatId, allocationId }) {
-  const res = await fetch(`${B_CALLBACK_BASE_URL}/verify-link/complete`, {
+  // ALB listener rules expose all B Lambda callbacks below /b-callback.
+  // Keep this prefix aligned with callbackVerifyLink so completion requests
+  // do not fall through to the frontend/API default target group.
+  const res = await fetch(`${B_CALLBACK_BASE_URL}/b-callback/verify-link/complete`, {
     method: 'POST',
     headers: buildHeaders(),
     body: JSON.stringify({
@@ -63,13 +66,13 @@ async function callbackComplete({ userId, eventId, seatId, allocationId }) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`B callback /complete ${res.status}: ${body}`);
+    throw new Error(`B callback /b-callback/verify-link/complete ${res.status}: ${body}`);
   }
   return readJsonBody(res);
 }
 
 async function callbackExpire({ userId, eventId, seatId, allocationId }) {
-  const res = await fetch(`${B_CALLBACK_BASE_URL}/verify-link/expire`, {
+  const res = await fetch(`${B_CALLBACK_BASE_URL}/b-callback/verify-link/expire`, {
     method: 'POST',
     headers: buildHeaders(),
     body: JSON.stringify({
@@ -81,7 +84,7 @@ async function callbackExpire({ userId, eventId, seatId, allocationId }) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`B callback /expire ${res.status}: ${body}`);
+    throw new Error(`B callback /b-callback/verify-link/expire ${res.status}: ${body}`);
   }
   return readJsonBody(res);
 }
