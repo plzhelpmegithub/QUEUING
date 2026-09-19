@@ -7,7 +7,7 @@ DynamoDB PutItem -> MySQL INSERT로 바뀌었다.
 - cancellation_link: token을 PK로 신규 행 INSERT (status='unused').
   seat_id는 아직 모르므로 NULL로 둔다.
 - cancel_allocations: {event_id, user_id, status='LINK_SENT', hold_duration, expires_at}
-  INSERT. Step Functions가 이 Task를 재시행할 경우 같은 (event_id, user_id)로
+  INSERT. Step Functions가 이 Task를 재시도할 경우 같은 (event_id, user_id)로
   다시 들어올 수 있어서, schema_fixes.sql에서 추가한 uk_event_user 유니크 인덱스
   덕분에 INSERT ... ON DUPLICATE KEY UPDATE로 멱등하게 처리한다.
 
@@ -16,6 +16,14 @@ task_token을 찾을 수 있어야 한다. cancel_allocations를 upsert한 직�
 확정된 allocation_id를 다시 SELECT로 가져와서 cancellation_link.allocation_id에
 같이 저장해둔다. (INSERT ... ON DUPLICATE KEY UPDATE는 cursor.lastrowid가
 항상 신뢰할 수 있는 값을 주지 않으므로, 별도 SELECT로 확정한다.)
+
+[2026-09-19 patch] ASL의 GenerateSignedLink ResultSelector가 $.Payload.session_date/
+$.Payload.session_time을 꺼내는데, 이 Lambda가 session_date/session_time을 받지도
+저장하지도 리턴하지도 않아서 Step Functions가 States.Runtime으로 멈추는 문제가
+있었다. 세 곳을 고쳤다: (1) 입력에서 session_date/session_time을 받고,
+(2) cancel_allocations INSERT에 두 컬럼을 채우고, (3) 리턴값에 포함시켰다.
+verify-link가 sessionDate/sessionTime을 응답으로 돌려줘야 프론트가 회차를 알 수
+있으므로, 여기서 비워두면 그쪽도 빈 값이 된다.
 
 타임존 버그 재발 방지: 반드시 datetime.now(timezone.utc)를 쓴다.
 (datetime.utcnow()는 naive datetime이라 .timestamp()를 호출하면 로컬 타임존
@@ -59,6 +67,8 @@ def handler(event, context=None):
     event_id = event["event_id"]
     user_id = event["user_id"]
     queue_index = event["queue_index"]
+    session_date = event.get("session_date")
+    session_time = event.get("session_time")
 
     hold_duration_seconds = int(os.environ.get("HOLD_DURATION_SECONDS", 600))
     issued_at = _now()
@@ -90,14 +100,18 @@ def handler(event, context=None):
         cur.execute(
             """
             INSERT INTO cancel_allocations
-                (event_id, user_id, seat_id, status, hold_duration, created_at, expires_at)
-            VALUES (%s, %s, NULL, 'LINK_SENT', %s, %s, %s)
+                (event_id, user_id, seat_id, status, hold_duration,
+                 created_at, expires_at, session_date, session_time)
+            VALUES (%s, %s, NULL, 'LINK_SENT', %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 status = VALUES(status),
                 hold_duration = VALUES(hold_duration),
-                expires_at = VALUES(expires_at)
+                expires_at = VALUES(expires_at),
+                session_date = VALUES(session_date),
+                session_time = VALUES(session_time)
             """,
-            (event_id, user_id, hold_duration_seconds, issued_at, expires_at),
+            (event_id, user_id, hold_duration_seconds, issued_at, expires_at,
+             session_date, session_time),
         )
 
         # [2026-09-16 추가] 방금 upsert된 allocation_id를 확정 조회해서
@@ -134,6 +148,8 @@ def handler(event, context=None):
         "event_id": event_id,
         "user_id": user_id,
         "queue_index": queue_index,
+        "session_date": session_date,
+        "session_time": session_time,
         "token": token,
         "expires_at": expires_at.isoformat(),
         "hold_duration_seconds": hold_duration_seconds,
@@ -142,10 +158,12 @@ def handler(event, context=None):
 
 
 if __name__ == "__main__":
-    # 로컬 테스트: python generate_signed_link.py evt-9 chlwldp0224@gmail.com 1
+    # 로컬 테스트: python generate_signed_link.py evt-9 chlwldp0224@gmail.com 1 2026-11-14 18:00
     result = handler({
         "event_id": sys.argv[1],
         "user_id": sys.argv[2],
         "queue_index": int(sys.argv[3]),
+        "session_date": sys.argv[4] if len(sys.argv) > 4 else None,
+        "session_time": sys.argv[5] if len(sys.argv) > 5 else None,
     })
     print(json.dumps(result, indent=2, ensure_ascii=False))
