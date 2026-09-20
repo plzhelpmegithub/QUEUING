@@ -52,11 +52,9 @@ async function callbackVerifyLink(token) {
 
 async function resolveReservationId({ reservationId, userId, eventId, seatId }) {
   if (reservationId !== undefined && reservationId !== null && reservationId !== '') {
-    return reservationId;
+    return typeof reservationId === 'bigint' ? Number(reservationId) : reservationId;
   }
 
-  // 이전 버전이 reservationId 없이 저장한 outbox도 재시도 시 복구한다.
-  // 완료 콜백은 실제 확정 예약이 있는 경우에만 B파트로 전달해야 한다.
   const rows = await pool.query(
     `SELECT reservation_id
      FROM reservations
@@ -69,7 +67,8 @@ async function resolveReservationId({ reservationId, userId, eventId, seatId }) 
      LIMIT 1`,
     [userId, eventId, seatId],
   );
-  return rows[0]?.reservation_id || null;
+  const rid = rows[0]?.reservation_id;
+  return rid == null ? null : (typeof rid === 'bigint' ? Number(rid) : rid);
 }
 
 async function callbackComplete(payload = {}) {

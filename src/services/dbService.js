@@ -267,7 +267,8 @@ async function saveReservation(data) {
     [data.seatId, data.userId, data.eventId || '', data.sessionDate || '', data.sessionTime || '', 'CONFIRMED', reservedAt],
   );
   console.log(`[MariaDB] 예약 저장: ${data.seatId} → ${data.userId}`);
-  return { reservationId: insertResult.insertId || null, seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', sessionDate: data.sessionDate || '', sessionTime: data.sessionTime || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
+  const reservationId = typeof insertResult.insertId === 'bigint' ? Number(insertResult.insertId) : (insertResult.insertId || null);
+  return { reservationId, seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', sessionDate: data.sessionDate || '', sessionTime: data.sessionTime || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
 }
 
 async function getReservationsBySeat(seatId) {

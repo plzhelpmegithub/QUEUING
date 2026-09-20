@@ -1,3 +1,15 @@
+## [2026-09-20 16:45] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: `saveReservation()` 함수에서 `insertResult.insertId`가 BigInt 타입일 경우 `Number()`로 변환하여 반환
+- **[src/services/seatService.js]**: `confirmSeat()` 멱등성 처리에서 DB 조회 결과의 `reservation_id`도 BigInt → Number 변환 추가
+- **[src/services/bPartCallbackService.js]**: `resolveReservationId()` 함수에서 반환되는 `reservation_id`를 BigInt → Number 변환. 직접 전달받은 `reservationId`도 동일하게 변환
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `/seats/confirm` 호출 시 500 에러 — `TypeError: Do not know how to serialize a BigInt`. B 콜백도 실패하고 outbox 저장도 실패
+- **원인(Cause):** MariaDB 드라이버(`mariadb` npm)가 INSERT 결과의 `insertId`를 `BigInt` 타입으로 반환. `saveReservation()`의 `reservationId`가 BigInt인 채로 `confirmSeat()` 결과 객체에 포함 → Fastify의 `JSON.stringify()` 직렬화에서 `BigInt` 타입을 처리할 수 없어 500 발생. 같은 BigInt가 B 콜백 payload에도 포함되어 `callbackComplete`와 `saveCallbackToOutbox` 모두 실패
+- **해결(Solution):** `insertId`를 사용하는 모든 지점에서 `typeof val === 'bigint' ? Number(val) : val` 변환 적용. `reservation_id`는 INT(11) 범위이므로 Number 변환 시 정밀도 손실 없음
+
 ## [2026-09-20 16:21] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

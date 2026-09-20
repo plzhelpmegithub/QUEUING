@@ -354,11 +354,12 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
         [userId, seatId],
       );
       if (existing.length > 0) {
+        const rid = existing[0].reservation_id;
         return {
           success: true,
           idempotent: true,
           seatId,
-          reservationId: existing[0].reservation_id,
+          reservationId: typeof rid === 'bigint' ? Number(rid) : rid,
           status: STATUS.SOLD,
           message: '이미 결제가 완료된 좌석입니다.',
         };
