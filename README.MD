@@ -196,7 +196,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 ### src/routes/lastSimulationRoutes.js — 취소표 시뮬레이션 Final 공용 풀
 
 - B파트 SQS·Lambda·Step Functions를 호출하지 않고 A파트 Fastify·Redis·MariaDB·Gmail SMTP만으로 취소표 공용 풀을 검증하는 Final 후반부 엔진이다. 관리자 화면에서는 기존 Local의 초기화·매진·조기 마감·취소표 생성 단계와 이 라우트의 풀·후보·링크 단계를 하나의 흐름으로 연결한다. `LAST_SIMULATION_ENABLED=true`로 기동한 경우에만 `cancel_last_campaigns`, `cancel_last_pool_seats`, `cancel_last_candidates`, `cancel_last_history` 전용 테이블을 준비하므로 `db_git`의 B파트 스키마를 변경하지 않는다.
-- `LAST_SIMULATION_ENABLED=true`일 때만 앱에 등록하고 전용 테이블 초기화와 만료 스위퍼를 시작한다. 로컬은 미설정 시 활성화해 기존 검증 흐름을 보존하고, `NODE_ENV=production` 또는 Helm 운영값에서는 기본 비활성화한다. 비활성화하면 Last 관리자·사용자 라우트와 전용 테이블 생성이 모두 실행되지 않는다. 이미 존재하는 `cancel_last_*` 테이블과 데이터는 이 설정으로 삭제하지 않는다.
+- `LAST_SIMULATION_ENABLED=true`일 때만 앱에 등록하고 전용 테이블 초기화와 만료 스위퍼를 시작한다. 미설정 시 기본값은 `false`이므로 모든 환경에서 명시적으로 `true`를 설정해야 활성화된다. 비활성화하면 Last 관리자·사용자 라우트와 전용 테이블 생성이 모두 실행되지 않는다. 이미 존재하는 `cancel_last_*` 테이블과 데이터는 이 설정으로 삭제하지 않는다. 서버 시작 시 `[Config] LAST_SIMULATION_ENABLED=... → resolved=... → active=...` 로그로 실제 적용 값을 확인할 수 있다.
 - `GET /admin/last-simulation/events`는 Last 전용 테이블 초기화와 분리된 `eventCatalogService`를 통해 Redis `events:list`와 MariaDB `events`를 `eventId` 기준으로 병합한다. Redis에 아직 카드가 없거나 복구 전인 공연도 DB에서 표시하며, 카드에 회차가 없으면 `seats.session_date/session_time`에서 회차를 보완한다. Last 테이블 초기화 오류가 공연 선택 목록까지 차단하지 않도록 했다.
 - `POST /admin/last-simulation/init`은 Final의 Local 단계에서 풀린 선택 공연·회차의 `AVAILABLE` 좌석을 최대 1,000석까지 전용 풀로 저장한다. Local 초기화 시각을 후보 조회 기준으로 사용해, Local 단계 후 본 대기열에 실제로 들어온 멤버십 사용자가 누락되지 않도록 한다. `close`는 본 티켓팅에 참여한 활성 멤버십 standby만 `membership_at_join=1`·본 대기열 참여 이력과 함께 검증해 본 대기열 `queue_index` 순서로 후보를 스냅샷한다.
 - `close`의 `openDelaySeconds`로 취소표 공개 시각을 정하며 Final 관리자 화면은 `0`을 전달해 즉시 공개한다. 시각은 UTC 기준으로 저장·비교한다. `open-pool` 이후 `issue-links`는 후보별로 `seat_id=NULL`인 A파트 `cancel_allocations`와 5분 Secret Link를 생성해 Gmail SMTP로 발송한다. 링크는 모든 후보에게 발급되지만 좌석 선점·결제는 현재 순번 한 명만 통과하며, 완료·만료 후 다음 순번이 진행한다.
@@ -291,7 +291,7 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 |---|---|
 | `POST /cancel-queue/join` | 로그인한 본인이 동일 공연·회차의 본 티켓팅 standby 대기열에 등록하거나 기존 순번을 복원한다. 멤버십 여부와 무관하게 본 티켓팅 순번을 기록하며, Secret Link 후보 선정은 별도 멤버십 조건으로 제한한다. |
 | `GET /cancel-queue/status/:eventId/:userId` | 동일 공연·회차의 본 티켓팅 참여 이력이 있는 사용자의 대기 종합 상태 조회. 전체 본 대기열 순번과 앞 순번 1명당 5분의 `estimatedWaitMinutes`, 멤버십 여부, Secret Link 상태를 함께 반환 |
-| `GET /cancel-queue/mine` | MariaDB `waiting_queue` 중 `queue_type = 'standby'`인 현재 로그인 사용자의 행과 동일 공연·회차의 본 티켓팅 참여 이력을 함께 확인해 대기 공연 목록을 조회한다. 멤버십 여부와 무관하게 본 티켓팅 대기자는 목록과 전체 Redis standby 순번을 확인할 수 있다. 멤버십 회원에게만 `membershipEligible: true`와 Secret Link 발급 대상 안내가 표시된다. 활성 AWS·Final 시뮬레이션 회차는 `simulationQueue: true`를 함께 반환한다. 각 행은 `estimatedWaitMinutes = (myNumber - 1) × 5`도 반환한다. |
+| `GET /cancel-queue/mine` | MariaDB `waiting_queue` 중 `queue_type = 'standby'`이면서 `status NOT IN ('COMPLETED', 'LEFT')`인 현재 로그인 사용자의 행과 동일 공연·회차의 본 티켓팅 참여 이력을 함께 확인해 대기 공연 목록을 조회한다. 결제 완료(`COMPLETED`)되거나 이탈(`LEFT`)한 항목은 제외된다. 멤버십 여부와 무관하게 본 티켓팅 대기자는 목록과 전체 Redis standby 순번을 확인할 수 있다. 멤버십 회원에게만 `membershipEligible: true`와 Secret Link 발급 대상 안내가 표시된다. 활성 AWS·Final 시뮬레이션 회차는 `simulationQueue: true`를 함께 반환한다. 각 행은 `estimatedWaitMinutes = (myNumber - 1) × 5`도 반환한다. |
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
 | `POST /cancel-queue/hold` | 취소표 좌석 선점. `allocation.seat_id`가 있으면 해당 좌석만 허용하고, `NULL`이면 요청 좌석이 같은 공연·회차의 `AVAILABLE`인지 확인한 뒤 `cancel_allocations.seat_id`에 원자적으로 기록하고 홀드한다. `verify-link`로 발급된 취소표 전용 세션은 allocation 범위를 검증한 뒤 일반 Admission Token 없이 처리 |
@@ -463,7 +463,7 @@ Redis Hash 기반 좌석 상태 머신.
 
 **주요 함수:**
 - `holdSeat()`: 일반 흐름은 Admission Token과 admitted 상태를 검증하고, 취소표 Secret Link 흐름은 라우트에서 검증한 allocation 범위 안에서 일반 Admission Token 검사 없이 처리 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작. 일반 흐름에서만 입장 제한시간(admission deadline)을 취소하며, 기존 좌석 예매 흐름의 토큰은 무효화하지 않음
-- `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → admitted에서 제거(`COMPLETED`) → 빈 슬롯 backfill → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분)
+- `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → admitted에서 제거(`COMPLETED`) → 빈 슬롯 backfill → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분). 취소표 allocation이 있으면 RESPONDED로 갱신한 뒤 `waiting_queue`의 해당 standby 항목도 `COMPLETED`로 업데이트하여 `/cancel-queue/mine`에서 제거
 - `cancelSeat()`: Redis 상태와 무관하게 MariaDB 최신 확정 예약을 기준으로 환불 권한을 검증하고, DB 트랜잭션이 완료된 뒤 Redis 좌석·카운터·매진 플래그를 동기화한다. Redis 동기화가 일시 실패해도 MariaDB의 취소 결과를 유지하며, 최초 처리에서만 B파트용 SQS 취소 이벤트를 발행한다.
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
 - `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 + 인덱스 Set 일괄 삭제
@@ -833,7 +833,7 @@ Fastify static 서빙으로 제공되는 단일 HTML SPA. 전체 예매 플로�
 | `SMTP_PORT` | `587` | SMTP 서버 포트 |
 | `FROM_EMAIL` | `SMTP_USER` 또는 `noreply@queuing.com` | 발신자 이메일 주소 |
 | `LOCAL_FRONTEND_BASE_URL` | `http://localhost:5173` | Local SMTP 시뮬레이션 이메일에 포함할 프론트엔드 기본 주소 |
-| `LAST_SIMULATION_ENABLED` | 개발: `true`, production: `false` | Final 공용 좌석 풀·Gmail 링크 시뮬레이션 라우트 등록 여부. AWS 운영에서는 `false` 권장 |
+| `LAST_SIMULATION_ENABLED` | `false` | Final 공용 좌석 풀·Gmail 링크 시뮬레이션 라우트 등록 여부. 명시적으로 `true`/`1`/`yes`/`on` 설정 시에만 활성화 |
 | `RECAPTCHA_SECRET_KEY` | *(없음)* | Google reCAPTCHA v3 서버 비밀 키. 설정하면 검증 활성화 |
 | `RECAPTCHA_REQUIRED` | *(설정값에 따름)* | `false`로 설정하면 비상 시 reCAPTCHA 검증을 일시 비활성화 |
 | `RECAPTCHA_SCORE_THRESHOLD` | `0.5` | reCAPTCHA v3 최소 허용 점수 |

@@ -429,6 +429,17 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
       if (!result.affected && !result.idempotent) {
         console.error('[CancelAlloc] 예매 확정 상태 반영 실패:', result.reason || 'unknown');
       }
+
+      try {
+        await pool.query(
+          `UPDATE waiting_queue SET status = 'COMPLETED', updated_at = NOW()
+           WHERE user_id = ? AND event_id = ? AND session_date = ? AND session_time = ?
+             AND queue_type = 'standby' AND status IN ('WAITING', 'STANDBY')`,
+          [userId, eventId, sessionContext.sessionDate || '', sessionContext.sessionTime || ''],
+        );
+      } catch (wqErr) {
+        console.error('[CancelAlloc] waiting_queue COMPLETED 반영 실패:', wqErr.message);
+      }
     }
   } catch (err) {
     console.error('[CancelAlloc] 예매 확정 상태 반영 실패:', err.message);

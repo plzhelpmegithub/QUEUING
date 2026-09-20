@@ -172,6 +172,7 @@ async function cancelQueueRoutes(fastify) {
          FROM waiting_queue
          WHERE user_id IN (${userPlaceholders})
            AND queue_type = 'standby'
+           AND status NOT IN ('COMPLETED', 'LEFT')
            AND EXISTS (
              SELECT 1
              FROM waiting_queue main_queue

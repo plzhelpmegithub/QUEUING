@@ -1,3 +1,40 @@
+## [2026-09-20 14:02] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: `confirmSeat()` 함수에서 취소표 allocation을 RESPONDED로 갱신한 뒤, `waiting_queue` 테이블의 해당 standby 항목 상태를 `COMPLETED`로 업데이트하는 로직 추가
+- **[src/routes/cancelQueueRoutes.js]**: `GET /cancel-queue/mine` 쿼리에 `AND status NOT IN ('COMPLETED', 'LEFT')` 필터 추가. 결제 완료된 취소표 대기열 항목이 마이페이지 대기 목록에서 제거됨
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 결제 완료 후에도 마이페이지 취소표 대기열에 해당 항목이 "대기 중"으로 계속 표시됨. 또한 결제 성공 시 본 티켓팅 좌석 페이지(`zones/`)로 이동하며, 시크릿 링크가 만료되지 않음
+- **원인(Cause):** (1) `confirmSeat()`이 allocation만 RESPONDED로 갱신하고 `waiting_queue` 상태는 변경하지 않았음 (2) `/cancel-queue/mine` SQL이 standby 항목의 status를 필터하지 않아 COMPLETED 항목도 반환됨 (3) 프론트엔드 `payment.js`의 에러 fallback이 `zones/` 경로로 하드코딩되어 취소표 결제에서도 본 티켓팅 좌석 페이지로 이동 (4) 결제 성공 시 `expireCancelAllocation` 호출이 없어 시크릿 링크가 만료되지 않음
+- **해결(Solution):** (1) `confirmSeat()`에 `waiting_queue` COMPLETED 업데이트 추가 (2) `/cancel-queue/mine` 쿼리에 status 필터 추가 (3) 프론트엔드 payment.js 수정은 nginx 측 CHANGELOG 참고
+
+---
+
+## [2026-09-20 13:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: `getPosition` 함수에 `statusKey` 'closed' 상태 확인 추가. 대기열이 마감된 상태에서 eligible(본 대기열) 사용자에게 `status: 'closed'` 응답 반환
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 통합 시뮬레이션에서 "티켓팅 마감" 버튼을 누른 후 대기열 페이지에 "예매가 마감되었습니다" 알럿이 표시되지 않음
+- **원인(Cause):** `getPosition` 함수가 Redis `statusKey`의 'closed' 상태를 확인하지 않아, 대기 중인 사용자가 계속 `status: 'waiting'` 응답만 수신. 프론트엔드 `pollPosition`에도 `pos.status === 'closed'` 분기가 없어 마감 UI가 트리거되지 않음
+- **해결(Solution):** 백엔드 `getPosition`에 `statusKey` 확인 로직 추가 (eligible 사용자에게 `status: 'closed'` 반환), 프론트엔드 `pollPosition`에 `pos.status === 'closed'` → `showClosedUI()` 분기 추가
+
+---
+
+## [2026-09-20 13:05] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/app.js]**: `LAST_SIMULATION_ENABLED` 환경 변수 기본값을 환경별 분기(`NODE_ENV === 'production' ? 'false' : 'true'`)에서 항상 `'false'`로 변경. 시작 시 환경 변수 원본값·변환값·활성화 여부를 콘솔에 출력하는 디버깅 로그 추가
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** AWS에서 `LAST_SIMULATION_ENABLED=false`로 설정했음에도 `cancel_last_*` DB 테이블이 계속 생성됨
+- **원인(Cause):** `app.js`의 기본값 로직이 `NODE_ENV !== 'production'`일 때 `'true'`로 fallback되어, 환경 변수가 컨테이너에 전달되지 않거나 `NODE_ENV`가 정확히 `'production'`이 아닌 경우 Last 시뮬레이션이 활성화됨
+- **해결(Solution):** 기본값을 `'false'`로 고정하여 명시적으로 `LAST_SIMULATION_ENABLED=true` 설정 시에만 활성화되도록 변경. 추가로 시작 시 디버깅 로그 출력
+
+---
+
 ## [2026-09-20 12:38] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
