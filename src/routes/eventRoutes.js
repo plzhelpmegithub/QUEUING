@@ -100,22 +100,25 @@ function assignZoneGeometry(sections) {
 // 배치 삭제에서도 이 함수를 순차 호출해 Redis·DB에 순간 부하가 몰리지 않게 한다.
 async function deleteEventData(eventId) {
   const removed = await redis.hdel(EVENT_LIST_KEY, eventId);
-  if (removed === 0) {
-    return { success: false, eventId, statusCode: 404, message: '해당 이벤트가 없습니다.' };
-  }
 
   const deletedSeats = await seatService.cleanupEventSeats(eventId);
   await queueService.clearQueuesForEvent(eventId);
   let dbSynced = true;
+  let dbDeleted = false;
   try {
     await pool.query(`DELETE FROM wishlists WHERE event_id = ?`, [eventId]);
     await pool.query(`DELETE FROM cancel_allocations WHERE event_id = ?`, [eventId]);
     await pool.query(`DELETE FROM seats WHERE event_id = ?`, [eventId]);
     await pool.query(`DELETE FROM reservations WHERE event_id = ?`, [eventId]);
-    await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
+    const evtResult = await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
+    dbDeleted = (Number(evtResult.affectedRows) || 0) > 0;
   } catch (dbErr) {
     dbSynced = false;
     console.error('[Event] MariaDB 삭제 동기화 실패:', dbErr.message);
+  }
+
+  if (removed === 0 && !dbDeleted) {
+    return { success: false, eventId, statusCode: 404, message: '해당 이벤트가 없습니다.' };
   }
 
   return {

@@ -151,7 +151,7 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `GET /events/:eventId/sessions` | 특정 공연의 회차 목록 조회. Redis 이벤트 카드의 `sessions`를 우선 사용하고, 없으면 MariaDB `seats.session_date/session_time`에서 복원. 응답: `{ eventId, eventName, eventDate, sessions: [{ date, time, ... }], count, source }` |
 | `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정/해제. Redis 이벤트 카드(`events:list`)와 MariaDB `events.ticket_open_at`에 함께 저장. 전역 `event:ticketing-status`나 스케줄 타이머를 변경하지 않음 — 대기열 진입 시 `enter()` 함수가 해당 이벤트 카드의 `ticketOpenAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
 | `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제. 이벤트 카드(`events:list`)에만 저장하며 전역 `event:ticketing-status`를 변경하지 않음 — `enter()` 함수가 해당 이벤트 카드의 `ticketCloseAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
-| `DELETE /events/:eventId` | 이벤트 삭제 |
+| `DELETE /events/:eventId` | 이벤트 삭제. Redis 카드가 이미 없어도 DB 정리를 항상 진행하며, Redis·DB 양쪽 모두에 없을 때만 404 반환 |
 | `POST /events/batch-delete` | 최대 5개 이벤트를 순차 삭제하며 Redis 좌석과 MariaDB 관련 데이터를 함께 정리 |
 | `POST /events/seed` | 데모용 더미 이벤트 5개 생성 |
 | `POST /admin/redis/reset` | Redis 이벤트 상태 초기화. `hard`/`resync`는 MariaDB 기준으로 이벤트 목록을 재구성하며 DB에 저장된 오픈 예정 시간도 복원 |
@@ -439,6 +439,7 @@ MariaDB를 원본 데이터로 보고 Redis의 필수 상태를 자동으로 맞
 - 여러 API 인스턴스가 동시에 복구하지 않도록 `lock:redis-recovery` 분산 락 사용
 - Redis `FLUSHALL`처럼 키가 모두 사라진 경우 다음 점검 주기에 전체 이벤트·좌석·대기열을 복구
 - 복구된 미래 오픈 시간은 Node.js 타이머에 다시 등록하고, API가 재시작되어도 DB의 오픈 시간을 기준으로 타이머 재생성
+- **양방향 동기화**: DB에 없는 `events:list` Redis 항목을 `hkeys` 비교 후 `hdel`로 자동 제거. 삭제와 복구가 겹쳐도 다음 주기에서 유령 카드가 정리됨
 
 자동 복구 관련 환경변수:
 

@@ -272,11 +272,19 @@ async function recoverAll({ eventId = null, reason = 'manual', force = false } =
         return { recovered: false, skipped: true, reason: 'Redis state is complete', checkedEvents: rows.length };
       }
 
+      const dbEventIds = new Set(rows.map((row) => row.event_id));
+      const allRedisFields = await redis.hkeys(EVENT_LIST_KEY);
+      const staleFields = allRedisFields.filter((field) => !dbEventIds.has(field));
+
       const pipeline = redis.pipeline();
       rows.forEach((row) => {
         const card = eventCardFromRow(row);
         pipeline.hset(EVENT_LIST_KEY, card.eventId, JSON.stringify(card));
       });
+      if (staleFields.length > 0) {
+        staleFields.forEach((field) => pipeline.hdel(EVENT_LIST_KEY, field));
+        console.log(`[Redis Auto Recovery] DB에 없는 events:list 항목 ${staleFields.length}건 제거: ${staleFields.join(', ')}`);
+      }
       await pipeline.exec();
       await restoreEventSequence(rows);
 

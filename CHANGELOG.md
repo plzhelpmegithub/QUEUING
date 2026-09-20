@@ -1,3 +1,14 @@
+## [2026-09-20 21:05] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/redisRecoveryService.js]**: `recoverAll()` 함수에서 DB에 없는 `events:list` Redis 항목을 자동 제거하는 양방향 동기화 로직 추가. `hkeys`로 Redis 전체 필드를 조회한 뒤 DB `event_id` Set과 비교하여 stale 항목을 pipeline `hdel`로 일괄 제거
+- **[src/routes/eventRoutes.js]**: `deleteEventData()` 함수에서 Redis 카드가 없어도(hdel 결과 0) DB 정리를 항상 진행하도록 수정. Redis와 DB 양쪽 모두에 없을 때만 404 반환. `events` 테이블 DELETE 결과의 `affectedRows`를 확인하여 DB 삭제 여부 판단
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 화면에서 공연을 삭제해도 목록에 다시 나타남. 로그에 `events:list 40/39` 경고가 60초마다 반복
+- **원인(Cause):** (1) 60초 주기 Redis 자동 복구(`recoverAll`)가 DB를 읽어 `events:list`에 `hset`하지만, DB에 없는 Redis 항목은 제거하지 않아 한 번 되살아난 유령 카드가 영구화됨. (2) 복구의 DB 읽기와 삭제가 겹치면 읽어둔 옛 목록이 Redis에 다시 써지며, 방금 지운 공연이 부활. (3) `deleteEventData`는 Redis 카드가 없으면 404로 끝나 DB 행을 삭제하지 않아 역방향 유령(DB에만 남는 공연)도 발생
+- **해결(Solution):** (1) 복구 시 `hkeys`로 Redis 전체 필드를 조회 → DB `event_id` Set과 비교 → stale 필드를 같은 pipeline에서 `hdel`하여 양방향 동기화. (2) 삭제 함수에서 Redis hdel 결과와 무관하게 항상 DB 정리 진행. Redis·DB 양쪽 모두 없을 때만 404 반환
+
 ## [2026-09-20 16:45] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
