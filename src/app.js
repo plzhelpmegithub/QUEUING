@@ -56,9 +56,10 @@ fastify.register(simulationRoutes, { mode: 'integrated' });
 // 흐름을 보존하기 위해 기본 활성화하고, production에서는 명시적으로 켜지 않는
 // 한 라우트·만료 스위퍼·전용 테이블 초기화를 등록하지 않는다.
 const lastSimulationEnabledValue = String(
-  process.env.LAST_SIMULATION_ENABLED ?? (process.env.NODE_ENV === 'production' ? 'false' : 'true'),
+  process.env.LAST_SIMULATION_ENABLED ?? 'false',
 ).trim().toLowerCase();
 const lastSimulationEnabled = ['true', '1', 'yes', 'on'].includes(lastSimulationEnabledValue);
+console.log(`[Config] LAST_SIMULATION_ENABLED=${process.env.LAST_SIMULATION_ENABLED} → resolved=${lastSimulationEnabledValue} → active=${lastSimulationEnabled}`);
 
 if (lastSimulationEnabled) {
   // B파트 연동/기존 Local 시뮬레이션과 분리된 100석 공용 풀 로컬 검증 흐름.
