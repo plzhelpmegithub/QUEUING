@@ -1,5 +1,5 @@
 const pool = require('../config/mariadb');
-const { sendEmail } = require('./notificationService');
+const { sendEmail, wrapEmailHtml } = require('./notificationService');
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -38,28 +38,40 @@ async function sendMembershipEmail({ userId, type, plan, expiresAt }) {
       ? '[QUEUING] 멤버십 가입 완료 안내'
       : '[QUEUING] 멤버십 해지 완료 안내';
     const body = type === 'subscribed'
-      ? `
-        <h2>멤버십 가입이 완료되었습니다</h2>
-        <p>안녕하세요, ${displayName}님.</p>
-        <p>QUEUING ${planLabel} 가입이 정상적으로 완료되었습니다.</p>
-        <hr>
-        <p><strong>가입 유형:</strong> ${planLabel}</p>
-        <p><strong>이용 만료일:</strong> ${escapeHtml(formatKoreanDate(expiresAt))}</p>
-        <p>멤버십 전용 취소표 대기열 및 관련 혜택을 이용하실 수 있습니다.</p>
-        <hr>
-        <p>— QUEUING 팀</p>
-      `
-      : `
-        <h2>멤버십 해지가 완료되었습니다</h2>
-        <p>안녕하세요, ${displayName}님.</p>
-        <p>QUEUING 멤버십 해지가 정상적으로 처리되었습니다.</p>
-        <hr>
-        <p><strong>해지 처리일:</strong> ${escapeHtml(formatKoreanDate(new Date()))}</p>
-        <p>해지 후에는 멤버십 전용 취소표 대기열 및 관련 혜택을 이용하실 수 없습니다.</p>
-        <p>필요한 경우 멤버십 페이지에서 다시 가입하실 수 있습니다.</p>
-        <hr>
-        <p>— QUEUING 팀</p>
-      `;
+      ? wrapEmailHtml({
+          title: '멤버십 가입 완료',
+          contentHtml: `
+            <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+              안녕하세요, <strong>${displayName}</strong>님.<br>
+              QUEUING ${planLabel} 가입이 정상적으로 완료되었습니다.
+            </p>
+            <div style="background-color:#f9fafb; border-radius:8px; padding:16px; margin:20px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; font-size:14px; color:#374151;">
+                <tr><td style="padding:4px 0;"><strong>가입 유형</strong></td><td style="padding:4px 0;">${planLabel}</td></tr>
+                <tr><td style="padding:4px 0;"><strong>이용 만료일</strong></td><td style="padding:4px 0;">${escapeHtml(formatKoreanDate(expiresAt))}</td></tr>
+              </table>
+            </div>
+            <p style="margin:0; font-size:14px; color:#18181b; line-height:1.6;">
+              멤버십 전용 취소표 대기열 및 관련 혜택을 이용하실 수 있습니다.
+            </p>`,
+        })
+      : wrapEmailHtml({
+          title: '멤버십 해지 완료',
+          contentHtml: `
+            <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+              안녕하세요, <strong>${displayName}</strong>님.<br>
+              QUEUING 멤버십 해지가 정상적으로 처리되었습니다.
+            </p>
+            <div style="background-color:#f9fafb; border-radius:8px; padding:16px; margin:20px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; font-size:14px; color:#374151;">
+                <tr><td style="padding:4px 0;"><strong>해지 처리일</strong></td><td style="padding:4px 0;">${escapeHtml(formatKoreanDate(new Date()))}</td></tr>
+              </table>
+            </div>
+            <p style="margin:0; font-size:14px; color:#18181b; line-height:1.6;">
+              해지 후에는 멤버십 전용 취소표 대기열 및 관련 혜택을 이용하실 수 없습니다.<br>
+              필요한 경우 멤버십 페이지에서 다시 가입하실 수 있습니다.
+            </p>`,
+        });
 
     const result = await sendEmail(user.email, subject, body);
     if (!result?.success) {

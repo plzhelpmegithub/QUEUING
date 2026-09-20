@@ -360,7 +360,13 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
     : normalizeSessionContext({ eventId: inferredContext.eventId, ...requestedContext });
   const eventId = sessionContext.eventId;
   await ensureEventInMariaDB(eventId);
-  await saveReservation({ seatId, userId, eventId, sessionDate: sessionContext.sessionDate, sessionTime: sessionContext.sessionTime });
+  const reservation = await saveReservation({
+    seatId,
+    userId,
+    eventId,
+    sessionDate: sessionContext.sessionDate,
+    sessionTime: sessionContext.sessionTime,
+  });
 
   await syncToMariaDB(
     `UPDATE seats SET status = 'SOLD' WHERE seat_id = ?`,
@@ -403,7 +409,13 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
     const cancelAllocationService = require('./cancelAllocationService');
     const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
     if (allocation) {
-      const payload = { userId, eventId, seatId, allocationId: allocation.id };
+      const payload = {
+        userId,
+        eventId,
+        seatId,
+        allocationId: allocation.id,
+        reservationId: reservation.reservationId,
+      };
       if (!options.skipBCallback && bCallback.isConfigured()) {
         try {
           await bCallback.callbackComplete(payload);
@@ -440,6 +452,7 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
   return {
     success: true,
     seatId,
+    reservationId: reservation.reservationId,
     status: STATUS.SOLD,
     message: '결제가 완료되었습니다. (DB 저장 완료)',
   };

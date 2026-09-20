@@ -10,7 +10,7 @@ const cancelAllocationService = require('../services/cancelAllocationService');
 const { issueCancelLinkToken, verifyCancelLinkToken } = require('../services/cancelLinkTokenService');
 const { issueScopedCancelToken } = require('../services/authTokenService');
 const { listEventCards } = require('../services/eventCatalogService');
-const { sendEmail, isSmtpConfigured } = require('../services/notificationService');
+const { sendEmail, wrapEmailHtml, isSmtpConfigured } = require('../services/notificationService');
 const { authenticate, requireRole, allowUserOrCancelLink, requireSelfOrLink } = require('../middleware/auth');
 
 const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
@@ -109,20 +109,26 @@ async function sendLastBookingEmail({ userId, eventId, sessionDate, sessionTime,
     if (!recipient) return { success: false, reason: 'recipient_missing' };
     const event = await getEventCard(eventId);
     const methodLabel = String(paymentMethod).toLowerCase() === 'easy' ? '간편결제' : '카드 결제';
-    return sendEmail(recipient, `[QUEUING] 취소표 예매 완료 안내 — ${event.eventName || eventId}`, `
-      <h2>취소표 예매가 완료되었습니다</h2>
-      <p>안녕하세요, ${escapeHtml(user?.name || userId)}님.</p>
-      <p>취소표 전용 결제 화면에서 선택한 좌석의 예매가 정상적으로 완료되었습니다.</p>
-      <hr>
-      <p><strong>공연명:</strong> ${escapeHtml(event.eventName || eventId)}</p>
-      <p><strong>일시:</strong> ${escapeHtml(sessionDate)} ${escapeHtml(sessionTime)}</p>
-      <p><strong>장소:</strong> ${escapeHtml(event.venue || '미정')}</p>
-      <p><strong>좌석:</strong> ${escapeHtml(displaySeatLabel(seatId))}</p>
-      <p><strong>결제수단:</strong> ${methodLabel}</p>
-      <hr>
-      <p>마이페이지의 예매내역에서 티켓과 환불 정보를 확인할 수 있습니다.</p>
-      <p>— QUEUING 팀</p>
-    `);
+    return sendEmail(recipient, `[QUEUING] 취소표 예매 완료 안내 — ${event.eventName || eventId}`, wrapEmailHtml({
+      title: '취소표 예매 완료',
+      contentHtml: `
+        <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+          안녕하세요, <strong>${escapeHtml(user?.name || userId)}</strong>님.<br>
+          취소표 전용 결제 화면에서 선택한 좌석의 예매가 정상적으로 완료되었습니다.
+        </p>
+        <div style="background-color:#f9fafb; border-radius:8px; padding:16px; margin:20px 0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; font-size:14px; color:#374151;">
+            <tr><td style="padding:4px 0;"><strong>공연명</strong></td><td style="padding:4px 0;">${escapeHtml(event.eventName || eventId)}</td></tr>
+            <tr><td style="padding:4px 0;"><strong>일시</strong></td><td style="padding:4px 0;">${escapeHtml(sessionDate)} ${escapeHtml(sessionTime)}</td></tr>
+            <tr><td style="padding:4px 0;"><strong>장소</strong></td><td style="padding:4px 0;">${escapeHtml(event.venue || '미정')}</td></tr>
+            <tr><td style="padding:4px 0;"><strong>좌석</strong></td><td style="padding:4px 0;">${escapeHtml(displaySeatLabel(seatId))}</td></tr>
+            <tr><td style="padding:4px 0;"><strong>결제수단</strong></td><td style="padding:4px 0;">${methodLabel}</td></tr>
+          </table>
+        </div>
+        <p style="margin:0; font-size:13px; color:#71717a; line-height:1.6;">
+          마이페이지의 예매내역에서 티켓과 환불 정보를 확인할 수 있습니다.
+        </p>`,
+    }));
   } catch (err) {
     console.error('[LastSimulation] 취소표 예매 완료 메일 준비 실패:', err.message);
     return { success: false, error: err.message };
@@ -166,6 +172,7 @@ async function activeCandidates(campaign) {
        AND w.status IN ('WAITING', 'STANDBY')
        AND w.membership_at_join = 1
        AND w.user_id NOT LIKE 'sim-user-%'
+       AND w.user_id NOT LIKE 'sim-member-%'
        AND m.is_membership = TRUE
        AND m.expires_at > UTC_TIMESTAMP()
        AND w.created_at >= ?
@@ -344,16 +351,40 @@ async function issueNextCandidateLink(campaign, { allowInitialIssue = false } = 
     const [recipientUser] = await pool.query('SELECT email FROM users WHERE user_id = ? LIMIT 1', [next.user_id]);
     const recipient = recipientUser?.email || next.user_id;
     const link = `${frontendBaseUrl()}/#/last-cancel-ticketing?token=${encodeURIComponent(token)}`;
-    const mail = await sendEmail(recipient, `[QUEUING] 취소표 예매 링크 안내 — ${eventName}`, `
-      <h2>취소표 예매 순서가 되었습니다</h2>
-      <p>회원님의 본 티켓팅 대기열 참여 이력이 확인되어 취소표 예매 링크를 발급했습니다.</p>
-      <p><strong>공연명:</strong> ${escapeHtml(eventName)}</p>
-      <p><strong>회차:</strong> ${campaign.session_date} ${campaign.session_time}</p>
-      <p><strong>취소표 풀:</strong> ${campaign.pool_size}석 중 선택</p>
-      <p><strong>유효 시간:</strong> 링크를 받은 시점부터 5분</p>
-      <p><a href="${link}">취소표 예매 페이지 열기</a></p>
-      <p>현재 순번 사용자만 좌석을 선택할 수 있습니다.</p>
-    `);
+    const mail = await sendEmail(recipient, `[QUEUING] 취소표 예매 링크 안내 — ${eventName}`, wrapEmailHtml({
+      title: '취소표 예매 안내',
+      subtitle: '취소표 예매 순서가 되었습니다',
+      contentHtml: `
+        <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+          회원님의 본 티켓팅 대기열 참여 이력이 확인되어<br>
+          <strong>취소표 예매 링크</strong>를 발급했습니다.
+        </p>
+        <div style="background-color:#f9fafb; border-radius:8px; padding:16px; margin:20px 0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; font-size:14px; color:#374151;">
+            <tr><td style="padding:4px 0;"><strong>공연명</strong></td><td style="padding:4px 0;">${escapeHtml(eventName)}</td></tr>
+            <tr><td style="padding:4px 0;"><strong>회차</strong></td><td style="padding:4px 0;">${campaign.session_date} ${campaign.session_time}</td></tr>
+            <tr><td style="padding:4px 0;"><strong>취소표 풀</strong></td><td style="padding:4px 0;">${campaign.pool_size}석 중 선택</td></tr>
+          </table>
+        </div>
+        <div style="background-color:#FEF2F2; border:1px solid #FCA5A5; border-radius:8px; padding:14px 16px; margin:20px 0;">
+          <span style="color:#B91C1C; font-size:14px; font-weight:600;">⏱ 링크를 받은 시점부터 5분간만 유효합니다</span>
+          <div style="color:#7F1D1D; font-size:13px; margin-top:4px;">시간 내 선택하지 않으시면 다음 대기자에게 기회가 넘어갑니다.</div>
+        </div>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+          <tr>
+            <td style="border-radius:8px; background-color:#E11D2E;">
+              <a href="${link}"
+                 style="display:inline-block; padding:14px 32px; color:#ffffff; font-size:16px;
+                        font-weight:700; text-decoration:none; border-radius:8px;">
+                취소표 예매 페이지 열기
+              </a>
+            </td>
+          </tr>
+        </table>
+        <p style="margin:0; font-size:12px; color:#a1a1aa; word-break:break-all;">
+          버튼이 눌리지 않는다면 아래 링크를 복사해 브라우저에 붙여넣어주세요.<br>${link}
+        </p>`,
+    }));
     if (!mail.success) throw new Error(mail.error || 'email_failed');
 
     await pool.query(

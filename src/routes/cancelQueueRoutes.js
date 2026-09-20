@@ -17,6 +17,7 @@ const {
 
 const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
 const userAuth = { preHandler: [allowUserOrCancelLink, requireSelfOrLink] };
+const ESTIMATED_WAIT_MINUTES_PER_PERSON = 5;
 
 function getQueueContext(request, eventId = '') {
   const body = request.body || {};
@@ -69,6 +70,8 @@ async function cancelQueueRoutes(fastify) {
       return reply.status(400).send({ error: 'userId는 필수입니다.' });
     }
     const context = getQueueContext(request);
+    // 취소표 대기열은 활성 멤버십 사용자의 본 티켓팅 참여 이력을 기준으로
+    // 별도로 등록한다. 일반 본 티켓팅 대기열과 섞이지 않도록 유지한다.
     const result = await queueService.enterStandby(userId, context);
     return reply.status(result.status === 'closed' ? 409 : 200).send(result);
   });
@@ -97,7 +100,7 @@ async function cancelQueueRoutes(fastify) {
       return reply.status(403).send({
         success: false,
         code: 'main_queue_required',
-        message: '본 티켓팅 대기열에 참여한 멤버십 회원만 취소표 상태를 조회할 수 있습니다.',
+        message: '본 티켓팅 대기열에 참여한 활성 멤버십 회원만 취소표 상태를 조회할 수 있습니다.',
       });
     }
 
@@ -105,6 +108,10 @@ async function cancelQueueRoutes(fastify) {
       eventId,
       userId,
       queue: position,
+      estimatedWaitMinutes: position?.standbyPosition
+        ? Math.max(0, Number(position.standbyPosition) - 1) * ESTIMATED_WAIT_MINUTES_PER_PERSON
+        : null,
+      waitMinutesPerPerson: ESTIMATED_WAIT_MINUTES_PER_PERSON,
       membership: {
         isMembership: membership.isMembership,
         plan: membership.plan || null,
@@ -132,13 +139,11 @@ async function cancelQueueRoutes(fastify) {
 
     try {
       const membership = await membershipService.getMembership(userId);
+
+      // 마이페이지의 취소표 대기열은 멤버십 전용 서비스다. 비회원에게
+      // 대기열 행이나 순번을 노출하지 않고 빈 목록을 반환한다.
       if (!membership.isMembership) {
-        return reply.send({
-          userId,
-          membershipRequired: true,
-          queues: [],
-          count: 0,
-        });
+        return reply.send({ userId, queues: [], count: 0 });
       }
 
       // 시뮬레이션 입력값 또는 구버전 데이터가 이메일을 user_id로 저장한 경우에도
@@ -200,6 +205,7 @@ async function cancelQueueRoutes(fastify) {
       }
 
       const allocationByKey = new Map();
+      const legacyAllocationsByEvent = new Map();
       if (userIds.length) {
         stage = 'cancel_allocations';
         try {
@@ -216,6 +222,16 @@ async function cancelQueueRoutes(fastify) {
             const key = cancelQueueKey(allocation.event_id, allocation.session_date, allocation.session_time);
             const userKey = `${String(allocation.user_id)}::${key}`;
             if (!allocationByKey.has(userKey)) allocationByKey.set(userKey, allocation);
+
+            // 초기 AWS B파트 발급본 중에는 회차 컬럼이 비어 있는 행이 있다.
+            // 회차가 하나뿐인 대기열에서는 해당 활성 링크를 계속 보여 주되,
+            // 여러 회차가 있으면 어느 회차 링크인지 추측하지 않는다.
+            if (!String(allocation.session_date || '').trim() && !String(allocation.session_time || '').trim()) {
+              const eventKey = String(allocation.event_id || '');
+              const entries = legacyAllocationsByEvent.get(eventKey) || [];
+              entries.push(allocation);
+              legacyAllocationsByEvent.set(eventKey, entries);
+            }
           });
         } catch (err) {
           // B파트 링크 발급 전에는 할당 행이 없어도 정상이다. 이 조회 실패가
@@ -224,11 +240,29 @@ async function cancelQueueRoutes(fastify) {
         }
       }
 
-      const rows = candidateRows.filter((row) => {
+      const candidateSessionKeysByEvent = new Map();
+      candidateRows.forEach((row) => {
+        const eventKey = String(row.event_id || '');
+        const sessionKeys = candidateSessionKeysByEvent.get(eventKey) || new Set();
+        sessionKeys.add(cancelQueueKey(row.event_id, row.session_date, row.session_time));
+        candidateSessionKeysByEvent.set(eventKey, sessionKeys);
+      });
+
+      const findAllocationForRow = (row) => {
         const key = cancelQueueKey(row.event_id, row.session_date, row.session_time);
-        const allocation = userIds
+        const matched = userIds
           .map((candidateId) => allocationByKey.get(`${candidateId}::${key}`))
           .find(Boolean);
+        if (matched) return matched;
+
+        const eventKey = String(row.event_id || '');
+        const legacy = legacyAllocationsByEvent.get(eventKey) || [];
+        const sessionCount = candidateSessionKeysByEvent.get(eventKey)?.size || 0;
+        return legacy.length === 1 && sessionCount === 1 ? legacy[0] : null;
+      };
+
+      const rows = candidateRows.filter((row) => {
+        const allocation = findAllocationForRow(row);
         return String(row.status || '').toUpperCase() === 'WAITING' || Boolean(allocation);
       });
 
@@ -240,10 +274,7 @@ async function cancelQueueRoutes(fastify) {
         };
         let position = Number(row.queue_index || 0);
         let total = 0;
-        const key = cancelQueueKey(row.event_id, row.session_date, row.session_time);
-        const allocation = userIds
-          .map((candidateId) => allocationByKey.get(`${candidateId}::${key}`))
-          .find(Boolean);
+        const allocation = findAllocationForRow(row);
         const event = eventById.get(String(row.event_id)) || {};
 
         let memberStats = null;
@@ -276,11 +307,19 @@ async function cancelQueueRoutes(fastify) {
           queueStatus: row.status || 'WAITING',
           myNumber: position > 0 ? position : null,
           total,
+          simulationQueue: Boolean(memberStats?.simulationQueue),
+          membershipEligible: Boolean(membership.isMembership),
+          estimatedWaitMinutes: position > 0
+            ? Math.max(0, position - 1) * ESTIMATED_WAIT_MINUTES_PER_PERSON
+            : null,
+          waitMinutesPerPerson: ESTIMATED_WAIT_MINUTES_PER_PERSON,
           joinedAt: toIso(row.created_at),
           allocation: allocation ? {
             active: true,
             allocationId: allocation.allocation_id,
             seatId: allocation.seat_id || null,
+            sessionDate: allocation.session_date || row.session_date || '',
+            sessionTime: allocation.session_time || row.session_time || '',
             expiresAt: toIso(allocation.expires_at),
           } : null,
           status: allocation ? 'allocated' : row.status || 'WAITING',
@@ -605,6 +644,7 @@ async function cancelQueueRoutes(fastify) {
     // 로컬 SMTP 시뮬레이션에서 A가 발급한 토큰은 B파트로 보내지 않는다.
     // B 연동이 설정되어 있어도 먼저 A 토큰을 검증하고, 유효하지 않은 경우에만
     // B파트 토큰 검증으로 넘겨 온프레미스와 운영 흐름을 함께 지원한다.
+    let verificationSource = 'local';
     let result = verifyCancelLinkToken(token);
     if (!result.valid && bCallback.isConfigured()) {
       try {
@@ -626,6 +666,7 @@ async function cancelQueueRoutes(fastify) {
           seatId: pick('seatId', 'seat_id') || '',
           expiresAt: pick('expiresAt', 'expires_at') || '',
         };
+        verificationSource = 'b';
       } catch (err) {
         console.error('[CancelQueue] B callback /b-callback/verify-link 실패:', err.message);
         const upstreamStatus = Number(err.status);
@@ -706,6 +747,9 @@ async function cancelQueueRoutes(fastify) {
       expiresAt: new Date(effectiveExpiresAtMs).toISOString(),
       remainingSeconds,
       accessToken: scopedToken,
+      // 화면만 검증 주체에 맞게 나눈다. local SMTP 링크는 기존 화면을,
+      // B 링크는 Last 스타일 통합 화면을 사용하며 API 책임은 그대로 유지한다.
+      source: verificationSource,
     });
   });
 }

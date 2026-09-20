@@ -5,7 +5,7 @@ const seatService = require('../services/seatService');
 const membershipService = require('../services/membershipService');
 const cancelAllocationService = require('../services/cancelAllocationService');
 const { issueCancelLinkToken } = require('../services/cancelLinkTokenService');
-const { sendEmail, isSmtpConfigured } = require('../services/notificationService');
+const { sendEmail, wrapEmailHtml, isSmtpConfigured } = require('../services/notificationService');
 const {
   isConfigured: isCancellationEventsConfigured,
   publishCancellationEvent,
@@ -17,9 +17,31 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const EVENT_LIST_KEY = 'events:list';
 const SEAT_PREFIX = 'seat:';
 const SIM_USER_PREFIX = 'sim-user-';
+const SIM_INTEGRATED_USER_PREFIX = 'sim-integrated-user-';
+const SIM_MEMBER_PREFIX = 'sim-member-';
+const WAIT_MINUTES_PER_PERSON = 5;
 
-function simUserId(index) {
-  return `${SIM_USER_PREFIX}${String(index).padStart(6, '0')}@test.com`;
+function simUserPrefix(mode = 'b') {
+  return mode === 'integrated' ? SIM_INTEGRATED_USER_PREFIX : SIM_USER_PREFIX;
+}
+
+function simUserId(index, mode = 'b') {
+  return `${simUserPrefix(mode)}${String(index).padStart(6, '0')}@test.com`;
+}
+
+function simMemberPrefix(mode) {
+  return `${SIM_MEMBER_PREFIX}${mode}-`;
+}
+
+function simMemberUserId(index, mode) {
+  return `${simMemberPrefix(mode)}${String(index).padStart(6, '0')}@test.com`;
+}
+
+function isSimulationDummyUserId(userId) {
+  const value = String(userId || '').trim();
+  return value.startsWith(SIM_USER_PREFIX) ||
+    value.startsWith(SIM_INTEGRATED_USER_PREFIX) ||
+    value.startsWith(SIM_MEMBER_PREFIX);
 }
 
 function getContext(body) {
@@ -31,7 +53,9 @@ function getContext(body) {
 }
 
 function simulationStateKey(eventId, mode = 'b') {
-  return mode === 'local' ? `simulation:local:${eventId}` : `simulation:${eventId}`;
+  if (mode === 'local') return `simulation:local:${eventId}`;
+  if (mode === 'integrated') return `simulation:integrated:${eventId}`;
+  return `simulation:${eventId}`;
 }
 
 function simulationStandbyUsersKey(eventId, mode = 'b') {
@@ -42,7 +66,7 @@ function isActualSimulationMember(row) {
   const userId = String(row?.user_id || '').trim();
   return Boolean(
     userId &&
-    !userId.startsWith(SIM_USER_PREFIX) &&
+    !isSimulationDummyUserId(userId) &&
     Number(row?.membership_at_join) === 1,
   );
 }
@@ -64,8 +88,10 @@ async function getCurrentSimulationMemberStandby(context, mode = 'b') {
 const adminAuth = { preHandler: [authenticate, requireRole('admin')] };
 
 async function simulationRoutes(fastify, options = {}) {
-  const mode = options.mode === 'local' ? 'local' : 'b';
-  const routeRoot = mode === 'local' ? '/admin/local-simulation' : '/admin/simulation';
+  const mode = ['local', 'integrated'].includes(options.mode) ? options.mode : 'b';
+  const routeRoot = mode === 'local'
+    ? '/admin/local-simulation'
+    : (mode === 'integrated' ? '/admin/integrated-simulation' : '/admin/simulation');
   const stateKey = (eventId) => simulationStateKey(eventId, mode);
   const trackedUsersKey = (eventId) => simulationStandbyUsersKey(eventId, mode);
   const route = (suffix) => `${routeRoot}${suffix}`;
@@ -76,6 +102,133 @@ async function simulationRoutes(fastify, options = {}) {
       process.env.FRONTEND_BASE_URL ||
       'http://localhost:5173',
     ).replace(/\/+$/, '');
+  }
+
+  async function createDummyMembershipAccounts(count) {
+    const total = Math.max(0, Number(count) || 0);
+    if (total === 0) return { requested: 0, created: 0 };
+
+    const prefix = simMemberPrefix(mode);
+    const existingRows = await pool.query(
+      `SELECT user_id
+       FROM memberships
+       WHERE user_id LIKE ?
+         AND is_membership = TRUE
+         AND expires_at > UTC_TIMESTAMP()`,
+      [`${prefix}%`],
+    );
+    const existingMemberships = new Set(existingRows.map((row) => String(row.user_id)));
+    const batchSize = 1000;
+    let created = 0;
+
+    for (let offset = 0; offset < total; offset += batchSize) {
+      const end = Math.min(offset + batchSize, total);
+      const users = [];
+      const userParams = [];
+      const memberships = [];
+      const membershipParams = [];
+
+      for (let index = offset + 1; index <= end; index += 1) {
+        const userId = simMemberUserId(index, mode);
+        users.push('(?, ?, ?, ?, ?)');
+        userParams.push(userId, '', 'user', userId, `더미 멤버십 ${index}`);
+        if (!existingMemberships.has(userId)) {
+          memberships.push('(?, TRUE, \'monthly\', \'SIMULATION\', DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY), 1)');
+          membershipParams.push(userId);
+        }
+      }
+
+      if (users.length) {
+        await pool.query(
+          `INSERT IGNORE INTO users (user_id, password, role, email, name) VALUES ${users.join(',')}`,
+          userParams,
+        );
+      }
+      if (memberships.length) {
+        const result = await pool.query(
+          `INSERT INTO memberships (user_id, is_membership, plan, tier_name, expires_at, priority_level) VALUES ${memberships.join(',')}`,
+          membershipParams,
+        );
+        created += Number(result.affectedRows) || 0;
+      }
+    }
+
+    return { requested: total, created };
+  }
+
+  async function removeDummyMembershipQueue({
+    eventId,
+    context,
+    deleteAccounts = false,
+    limit = 0,
+  }) {
+    const keys = queueService.queueKeys(context);
+    const prefix = simMemberPrefix(mode);
+    const standbyUsers = await redis.zrange(keys.standbyKey, 0, -1);
+    const allDummyUserIds = standbyUsers.filter((userId) => String(userId).startsWith(prefix));
+    const dummyUserIds = limit > 0 ? allDummyUserIds.slice(0, limit) : allDummyUserIds;
+
+    if (dummyUserIds.length) {
+      const pipeline = redis.pipeline();
+      dummyUserIds.forEach((userId) => pipeline.zrem(keys.standbyKey, userId));
+      await pipeline.exec();
+    }
+
+    let removedFromDatabase = 0;
+    if (dummyUserIds.length) {
+      const placeholders = dummyUserIds.map(() => '?').join(',');
+      const queueResult = await pool.query(
+        `DELETE FROM waiting_queue
+         WHERE event_id = ?
+           AND session_date = ?
+           AND session_time = ?
+           AND user_id IN (${placeholders})`,
+        [eventId, context.sessionDate, context.sessionTime, ...dummyUserIds],
+      );
+      removedFromDatabase = Number(queueResult.affectedRows) || 0;
+    }
+
+    if (deleteAccounts && dummyUserIds.length) {
+      const placeholders = dummyUserIds.map(() => '?').join(',');
+      await pool.query(`DELETE FROM memberships WHERE user_id IN (${placeholders})`, dummyUserIds);
+      await pool.query(`DELETE FROM users WHERE user_id IN (${placeholders})`, dummyUserIds);
+    }
+
+    return {
+      removedFromRedis: dummyUserIds.length,
+      removedFromDatabase,
+      remaining: Math.max(0, allDummyUserIds.length - dummyUserIds.length),
+    };
+  }
+
+  async function removeStandardDummyQueue({ eventId, context }) {
+    const keys = queueService.queueKeys(context);
+    const standbyUsers = await redis.zrange(keys.standbyKey, 0, -1);
+    const allDummyUserIds = standbyUsers.filter((userId) => String(userId).startsWith(simUserPrefix(mode)));
+    const dummyUserIds = allDummyUserIds;
+    if (dummyUserIds.length) {
+      const pipeline = redis.pipeline();
+      dummyUserIds.forEach((userId) => pipeline.zrem(keys.standbyKey, userId));
+      await pipeline.exec();
+    }
+    let removedFromDatabase = 0;
+    if (dummyUserIds.length) {
+      const placeholders = dummyUserIds.map(() => '?').join(',');
+      const queueResult = await pool.query(
+        `DELETE FROM waiting_queue
+         WHERE event_id = ?
+           AND session_date = ?
+           AND session_time = ?
+           AND user_id IN (${placeholders})`,
+        [eventId, context.sessionDate, context.sessionTime, ...dummyUserIds],
+      );
+      removedFromDatabase = Number(queueResult.affectedRows) || 0;
+    }
+    return {
+      removedFromRedis: dummyUserIds.length,
+      removedFromDatabase,
+      remaining: Math.max(0, allDummyUserIds.length - dummyUserIds.length),
+    };
   }
 
   async function issueLocalSmtpLink({ eventId, context, simData }) {
@@ -252,17 +405,41 @@ async function simulationRoutes(fastify, options = {}) {
         const emailResult = await sendEmail(
           targetUserEmail,
           `[QUEUING][Local] ${eventName} 취소표 Secret Link 발급`,
-          `<h2>취소표 Secret Link가 발급되었습니다.</h2>
-           <p>안녕하세요, ${targetUserName}님.</p>
-           <p>온프레미스 로컬 SMTP 시뮬레이션으로 취소표 예매 링크를 발급했습니다.</p>
-           <hr>
-           <p><strong>공연명:</strong> ${eventName}</p>
-           <p><strong>공연장:</strong> ${venue || '미정'}</p>
-           <p><strong>공연 일시:</strong> ${context.sessionDate || '미정'} ${context.sessionTime || ''}</p>
-           <p><strong>배정 좌석:</strong> ${String(cancelledSeat.seat_id).split(':').pop()}</p>
-           <p>아래 링크는 발급 시점부터 <strong>5분</strong> 동안 사용할 수 있습니다.</p>
-           <p><a href="${link}">취소표 예매 입장하기</a></p>
-           <p>— QUEUING Local Simulation</p>`,
+          wrapEmailHtml({
+            title: '취소표 Secret Link 발급',
+            subtitle: '취소표 예매 순서가 되었습니다',
+            contentHtml: `
+              <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+                안녕하세요, <strong>${targetUserName}</strong>님.<br>
+                취소표 예매 링크가 발급되었습니다.
+              </p>
+              <div style="background-color:#f9fafb; border-radius:8px; padding:16px; margin:20px 0;">
+                <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; font-size:14px; color:#374151;">
+                  <tr><td style="padding:4px 0;"><strong>공연명</strong></td><td style="padding:4px 0;">${eventName}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>공연장</strong></td><td style="padding:4px 0;">${venue || '미정'}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>공연 일시</strong></td><td style="padding:4px 0;">${context.sessionDate || '미정'} ${context.sessionTime || ''}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>배정 좌석</strong></td><td style="padding:4px 0;">${String(cancelledSeat.seat_id).split(':').pop()}</td></tr>
+                </table>
+              </div>
+              <div style="background-color:#FEF2F2; border:1px solid #FCA5A5; border-radius:8px; padding:14px 16px; margin:20px 0;">
+                <span style="color:#B91C1C; font-size:14px; font-weight:600;">⏱ 이 링크는 5분간만 유효합니다</span>
+                <div style="color:#7F1D1D; font-size:13px; margin-top:4px;">시간 내 선택하지 않으시면 다음 대기자에게 기회가 넘어갑니다.</div>
+              </div>
+              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+                <tr>
+                  <td style="border-radius:8px; background-color:#E11D2E;">
+                    <a href="${link}"
+                       style="display:inline-block; padding:14px 32px; color:#ffffff; font-size:16px;
+                              font-weight:700; text-decoration:none; border-radius:8px;">
+                      취소표 예매 입장하기
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:0; font-size:12px; color:#a1a1aa; word-break:break-all;">
+                버튼이 눌리지 않는다면 아래 링크를 복사해 브라우저에 붙여넣어주세요.<br>${link}
+              </p>`,
+          }),
         );
 
         if (!emailResult.success) {
@@ -347,10 +524,17 @@ async function simulationRoutes(fastify, options = {}) {
   });
 
   fastify.post(route('/init'), adminAuth, async (request, reply) => {
-    const { eventId, sessionDate, sessionTime, dummyCount = 10000 } = request.body || {};
+    const {
+      eventId,
+      sessionDate,
+      sessionTime,
+      dummyCount = 10000,
+      memberDummyCount = 0,
+    } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 
     const total = Math.min(parseInt(dummyCount, 10) || 10000, 50000);
+    const memberTotal = Math.min(Math.max(parseInt(memberDummyCount, 10) || 0, 0), 50000);
     const context = getContext(request.body);
 
     const cardStr = await redis.hget(EVENT_LIST_KEY, eventId);
@@ -365,7 +549,7 @@ async function simulationRoutes(fastify, options = {}) {
       const batchEnd = Math.min(i + BATCH, total);
       for (let j = i; j < batchEnd; j++) {
         values.push('(?, ?, ?, ?, ?)');
-        params.push(simUserId(j + 1), '', 'user', `${simUserId(j + 1)}`, `더미${j + 1}`);
+        params.push(simUserId(j + 1, mode), '', 'user', `${simUserId(j + 1, mode)}`, `더미${j + 1}`);
       }
       try {
         await pool.query(
@@ -375,6 +559,16 @@ async function simulationRoutes(fastify, options = {}) {
       } catch (e) {
         console.error('[Simulation] 더미 유저 생성 오류:', e.message);
       }
+    }
+
+    let memberAccounts;
+    try {
+      memberAccounts = await createDummyMembershipAccounts(memberTotal);
+    } catch (e) {
+      console.error('[Simulation] 더미 멤버십 유저 생성 오류:', e.message);
+      return reply.status(500).send({
+        error: '더미 멤버십 유저를 준비하지 못했습니다.',
+      });
     }
 
     const simulationKey = stateKey(eventId);
@@ -398,21 +592,260 @@ async function simulationRoutes(fastify, options = {}) {
       sessionDate: context.sessionDate,
       sessionTime: context.sessionTime,
       dummyCount: total.toString(),
+      standardDummiesRemaining: total.toString(),
+      memberDummyCount: memberTotal.toString(),
+      dummyMembersRemaining: memberTotal.toString(),
+      waitMinutesPerPerson: WAIT_MINUTES_PER_PERSON.toString(),
       totalSeats: totalSeats.toString(),
       stage: 'initialized',
       createdAt: new Date().toISOString(),
     });
 
-    console.log(`[Simulation] 초기화 완료: ${eventId}, 더미 ${total}명`);
+    console.log(`[Simulation] 초기화 완료: ${eventId}, 좌석 더미 ${total}명, 멤버십 대기 더미 ${memberTotal}명`);
     return reply.send({
       success: true,
       eventId,
       eventName: card.eventName,
       totalSeats,
       dummyCount: total,
-      message: `시뮬레이션 초기화 완료 — 더미 ${total.toLocaleString()}명 생성. 단계1 후 실제 멤버십 계정으로 취소표 대기열에 직접 진입해주세요.`,
+      memberDummyCount: memberTotal,
+      memberDummyAccountsCreated: memberAccounts.created,
+      waitMinutesPerPerson: WAIT_MINUTES_PER_PERSON,
+      message: mode === 'integrated'
+        ? `통합 시뮬레이션 초기화 완료: 일반 더미 ${total.toLocaleString()}명과 멤버십 더미 ${memberTotal.toLocaleString()}명을 준비했습니다. 다음 단계에서 본 티켓팅 대기열을 구성해주세요.`
+        : `시뮬레이션 초기화 완료 — 좌석 더미 ${total.toLocaleString()}명, 멤버십 대기 더미 ${memberTotal.toLocaleString()}명 준비. 단계1 후 실제 멤버십 계정으로 취소표 대기열에 직접 진입해주세요.`,
     });
   });
+
+  if (mode === 'integrated') {
+    fastify.post(route('/main-queue'), adminAuth, async (request, reply) => {
+      const { eventId, sessionDate, sessionTime } = request.body || {};
+      if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
+
+      const simData = await redis.hgetall(stateKey(eventId));
+      if (!simData?.stage) {
+        return reply.status(400).send({ error: '먼저 통합 시뮬레이션을 초기화해주세요.' });
+      }
+      if (simData.stage !== 'initialized') {
+        return reply.status(409).send({
+          success: false,
+          code: 'simulation_stage_order',
+          message: '초기화 직후에만 본 티켓팅 대기열을 구성할 수 있습니다.',
+        });
+      }
+
+      const context = getContext({
+        eventId,
+        sessionDate: sessionDate || simData.sessionDate,
+        sessionTime: sessionTime || simData.sessionTime,
+      });
+      const keys = queueService.queueKeys(context);
+      const standardCount = parseInt(simData.dummyCount, 10) || 0;
+      const memberCount = parseInt(simData.memberDummyCount, 10) || 0;
+      const totalQueueCount = standardCount + memberCount;
+      const standardPrefix = simUserPrefix(mode);
+      const memberPrefix = simMemberPrefix(mode);
+
+      await pool.query(
+        `DELETE FROM waiting_queue
+         WHERE event_id = ?
+           AND session_date = ?
+           AND session_time = ?
+           AND (user_id LIKE ? OR user_id LIKE ?)`,
+        [eventId, context.sessionDate, context.sessionTime, `${standardPrefix}%`, `${memberPrefix}%`],
+      );
+
+      const BATCH = 1000;
+      for (let offset = 0; offset < totalQueueCount; offset += BATCH) {
+        const end = Math.min(offset + BATCH, totalQueueCount);
+        const pipeline = redis.pipeline();
+        const values = [];
+        const params = [];
+
+        for (let queueIndex = offset + 1; queueIndex <= end; queueIndex += 1) {
+          const isMember = queueIndex > standardCount;
+          const memberIndex = queueIndex - standardCount;
+          const userId = isMember
+            ? simMemberUserId(memberIndex, mode)
+            : simUserId(queueIndex, mode);
+          pipeline.zrem(keys.standbyKey, userId);
+          pipeline.srem(keys.admittedKey, userId);
+          pipeline.zadd(keys.waitingKey, queueIndex, userId);
+          pipeline.sadd(keys.mainParticipantKey, userId);
+          values.push("(?, ?, ?, ?, 'eligible', ?, 'WAITING', ?)");
+          params.push(
+            userId,
+            eventId,
+            context.sessionDate,
+            context.sessionTime,
+            queueIndex,
+            isMember ? 1 : 0,
+          );
+        }
+
+        await pipeline.exec();
+        if (values.length) {
+          await pool.query(
+            `INSERT INTO waiting_queue
+               (user_id, event_id, session_date, session_time, queue_type, queue_index, status, membership_at_join)
+             VALUES ${values.join(',')}`,
+            params,
+          );
+        }
+      }
+
+      await redis.set(keys.counterKey, totalQueueCount);
+      await redis.set(keys.totalSeatsKey, parseInt(simData.totalSeats, 10) || 0);
+      await redis.set(keys.statusKey, 'open');
+      await redis.del(getScopedKey('event:sold-out', context));
+      await redis.hset(stateKey(eventId), {
+        stage: 'main_queue_open',
+        mainQueueCount: totalQueueCount.toString(),
+        mainQueueStandardCount: standardCount.toString(),
+        mainQueueMemberCount: memberCount.toString(),
+        mainQueueOpenedAt: new Date().toISOString(),
+      });
+
+      return reply.send({
+        success: true,
+        totalQueueCount,
+        standardCount,
+        memberCount,
+        message: `본 티켓팅 대기열에 일반 더미 ${standardCount.toLocaleString()}명과 멤버십 더미 ${memberCount.toLocaleString()}명을 등록했습니다.`,
+      });
+    });
+  }
+
+  if (mode === 'integrated') {
+    fastify.post(route('/drain-queue'), adminAuth, async (request, reply) => {
+      const { eventId, sessionDate, sessionTime, batchSize = 1000, releaseSeatCount = 0 } = request.body || {};
+      if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
+
+      const simData = await redis.hgetall(stateKey(eventId));
+      if (!simData?.stage) {
+        return reply.status(400).send({ error: '먼저 통합 시뮬레이션을 초기화해주세요.' });
+      }
+      if (simData.stage !== 'main_queue_open' && simData.stage !== 'queue_drained') {
+        return reply.status(409).send({
+          success: false,
+          code: 'simulation_stage_order',
+          message: '본 티켓팅 대기열을 구성한 뒤 대기열 드레인을 실행해주세요.',
+        });
+      }
+
+      const context = getContext({
+        eventId,
+        sessionDate: sessionDate || simData.sessionDate,
+        sessionTime: sessionTime || simData.sessionTime,
+      });
+      const keys = queueService.queueKeys(context);
+      const standardPrefix = simUserPrefix(mode);
+      const memberPrefix = simMemberPrefix(mode);
+
+      const allWaiting = await redis.zrange(keys.waitingKey, 0, -1);
+      const dummyWaiting = allWaiting.filter(
+        (userId) => String(userId).startsWith(standardPrefix) || String(userId).startsWith(memberPrefix),
+      );
+
+      const drainCount = Math.min(parseInt(batchSize, 10) || 1000, dummyWaiting.length);
+      const toDrain = dummyWaiting.slice(0, drainCount);
+
+      if (toDrain.length > 0) {
+        const PIPE_BATCH = 1000;
+        for (let offset = 0; offset < toDrain.length; offset += PIPE_BATCH) {
+          const batch = toDrain.slice(offset, offset + PIPE_BATCH);
+          const pipeline = redis.pipeline();
+          batch.forEach((userId) => {
+            pipeline.zrem(keys.waitingKey, userId);
+            pipeline.srem(keys.admittedKey, userId);
+          });
+          await pipeline.exec();
+        }
+      }
+
+      const admittedMembers = await redis.smembers(keys.admittedKey);
+      const admittedDummies = admittedMembers.filter(
+        (userId) => String(userId).startsWith(standardPrefix) || String(userId).startsWith(memberPrefix),
+      );
+      if (admittedDummies.length > 0) {
+        const pipeline = redis.pipeline();
+        admittedDummies.forEach((userId) => pipeline.srem(keys.admittedKey, userId));
+        await pipeline.exec();
+      }
+
+      const releaseCount = parseInt(releaseSeatCount, 10) || 0;
+      let seatsReleased = 0;
+      if (releaseCount > 0) {
+        const allSeats = await seatService.getAllSeats(eventId, context);
+        const soldDummySeats = allSeats.filter(
+          (s) => s.status === 'SOLD' && s.heldBy && String(s.heldBy).startsWith(standardPrefix),
+        );
+        const toRelease = Math.min(releaseCount, soldDummySeats.length);
+        for (let i = soldDummySeats.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [soldDummySeats[i], soldDummySeats[j]] = [soldDummySeats[j], soldDummySeats[i]];
+        }
+        const releaseTargets = soldDummySeats.slice(0, toRelease);
+        if (releaseTargets.length > 0) {
+          const pipeline = redis.pipeline();
+          for (const seat of releaseTargets) {
+            pipeline.hset(`${SEAT_PREFIX}${seat.seatId}`, { status: 'AVAILABLE', heldBy: '', heldAt: '' });
+          }
+          await pipeline.exec();
+          const seatIds = releaseTargets.map((s) => s.seatId);
+          await pool.query(
+            `UPDATE seats SET status = 'AVAILABLE', held_by = '', held_at = NULL WHERE seat_id IN (${seatIds.map(() => '?').join(',')})`,
+            seatIds,
+          );
+          await pool.query(
+            `UPDATE reservations SET status = 'CANCELLED', cancelled_at = NOW()
+             WHERE event_id = ? AND status = 'CONFIRMED'
+               AND seat_id IN (${seatIds.map(() => '?').join(',')})`,
+            [eventId, ...seatIds],
+          );
+          seatsReleased = releaseTargets.length;
+          await redis.del(getScopedKey('event:sold-out', context));
+        }
+      }
+
+      const remainingDummies = dummyWaiting.length - drainCount;
+      const remainingWaiting = await redis.zcard(keys.waitingKey);
+
+      let admitResult = null;
+      if (remainingDummies === 0 && remainingWaiting > 0) {
+        admitResult = await queueService.admitBatch(context);
+      }
+
+      const totalDrained = parseInt(simData.totalDrained || '0', 10) + drainCount;
+      const totalSeatsReleased = parseInt(simData.totalSeatsReleased || '0', 10) + seatsReleased;
+      await redis.hset(stateKey(eventId), {
+        stage: 'queue_drained',
+        totalDrained: totalDrained.toString(),
+        totalSeatsReleased: totalSeatsReleased.toString(),
+        dummiesRemainingInQueue: remainingDummies.toString(),
+        realUsersInQueue: (remainingWaiting - remainingDummies).toString(),
+        admittedCount: admitResult ? admitResult.count.toString() : (simData.admittedCount || '0'),
+        queueDrainedAt: new Date().toISOString(),
+      });
+
+      const admittedCount = admitResult?.count || 0;
+      const parts = [`더미 ${drainCount.toLocaleString()}명 처리 (대기열 잔여 더미: ${remainingDummies.toLocaleString()}명)`];
+      if (seatsReleased > 0) parts.push(`좌석 ${seatsReleased}석 해제`);
+      if (admittedCount > 0) parts.push(`실제 사용자 ${admittedCount}명 입장 승인`);
+
+      console.log(`[Simulation] 대기열 드레인: ${parts.join(', ')}`);
+      return reply.send({
+        success: true,
+        dummiesDrained: drainCount,
+        dummiesRemainingInQueue: remainingDummies,
+        seatsReleased,
+        totalSeatsReleased,
+        admitted: admittedCount,
+        realUsersInQueue: remainingWaiting - remainingDummies,
+        message: parts.join(' · '),
+      });
+    });
+  }
 
   fastify.post(route('/sellout'), adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.body || {};
@@ -421,6 +854,13 @@ async function simulationRoutes(fastify, options = {}) {
     const simData = await redis.hgetall(stateKey(eventId));
     if (!simData || !simData.stage) {
       return reply.status(400).send({ error: '먼저 시뮬레이션을 초기화해주세요.' });
+    }
+    if (mode === 'integrated' && simData.stage !== 'main_queue_open' && simData.stage !== 'queue_drained') {
+      return reply.status(409).send({
+        success: false,
+        code: 'simulation_stage_order',
+        message: '본 티켓팅 대기열을 구성한 뒤 매진과 취소표 전환을 실행해주세요.',
+      });
     }
 
     const context = getContext({
@@ -456,7 +896,7 @@ async function simulationRoutes(fastify, options = {}) {
 
       for (let j = i; j < batchEnd; j++) {
         const seat = availableSeats[j];
-        const userId = simUserId(j + 1);
+        const userId = simUserId(j + 1, mode);
         const seatKey = `${SEAT_PREFIX}${seat.seatId}`;
 
         pipeline.hset(seatKey, {
@@ -503,42 +943,239 @@ async function simulationRoutes(fastify, options = {}) {
       }
     }
 
-    const standbyStart = seatsToSell + 1;
-    const standbyEnd = dummyCount;
-    const standbyDummyCount = Math.max(0, standbyEnd - standbyStart + 1);
+    const memberDummyCount = parseInt(simData.memberDummyCount, 10) || 0;
+
+    const memberQueueBatchSize = 1000;
+    let actualMembersTransitioned = 0;
+    if (mode === 'integrated') {
+      // 통합 모드에서는 본 티켓팅 원장의 멤버십 참여자만 취소표 standby로
+      // 전환한다. 일반 사용자의 eligible 행은 본 티켓팅 이력으로 유지한다.
+      await pool.query(
+        `DELETE FROM waiting_queue
+         WHERE event_id = ?
+           AND session_date = ?
+           AND session_time = ?
+           AND queue_type = 'standby'
+           AND user_id LIKE ?`,
+        [eventId, context.sessionDate, context.sessionTime, `${simMemberPrefix(mode)}%`],
+      );
+
+      for (let offset = 0; offset < memberDummyCount; offset += memberQueueBatchSize) {
+        const end = Math.min(offset + memberQueueBatchSize, memberDummyCount);
+        const pipeline = redis.pipeline();
+        const standbyValues = [];
+        const standbyParams = [];
+        const memberIds = [];
+
+        for (let index = offset + 1; index <= end; index += 1) {
+          const userId = simMemberUserId(index, mode);
+          const mainQueueIndex = dummyCount + index;
+          memberIds.push(userId);
+          pipeline.zrem(keys.waitingKey, userId);
+          pipeline.zadd(keys.standbyKey, mainQueueIndex, userId);
+          standbyValues.push("(?, ?, ?, ?, 'standby', ?, 'WAITING', 1)");
+          standbyParams.push(userId, eventId, context.sessionDate, context.sessionTime, mainQueueIndex);
+        }
+
+        await pipeline.exec();
+        if (memberIds.length) {
+          const placeholders = memberIds.map(() => '?').join(',');
+          await pool.query(
+            `UPDATE waiting_queue
+             SET status = 'STANDBY', updated_at = NOW()
+             WHERE event_id = ?
+               AND session_date = ?
+               AND session_time = ?
+               AND queue_type = 'eligible'
+               AND user_id IN (${placeholders})`,
+            [eventId, context.sessionDate, context.sessionTime, ...memberIds],
+          );
+          await pool.query(
+            `INSERT INTO waiting_queue
+               (user_id, event_id, session_date, session_time, queue_type, queue_index, status, membership_at_join)
+             VALUES ${standbyValues.join(',')}`,
+            standbyParams,
+          );
+        }
+      }
+
+      // 단계2에서 실제 서비스 경로로 본 티켓팅 waiting에 들어온 사용자 중
+      // 가입 당시와 현재 모두 멤버십이 유효한 사용자도 같은 점수 순서로
+      // 취소표 standby로 전환한다. 일반 실제 사용자는 본 대기열 이력만 유지한다.
+      const trackedActualUserIds = await redis.smembers(trackedUsersKey(eventId));
+      if (trackedActualUserIds.length > 0) {
+        const placeholders = trackedActualUserIds.map(() => '?').join(',');
+        const actualMemberRows = await pool.query(
+          `SELECT w.user_id, MAX(w.queue_index) AS queue_index
+           FROM waiting_queue w
+           INNER JOIN memberships m ON m.user_id = w.user_id
+           WHERE w.event_id = ?
+             AND w.session_date = ?
+             AND w.session_time = ?
+             AND w.queue_type = 'eligible'
+             AND w.status = 'WAITING'
+             AND w.membership_at_join = 1
+             AND m.is_membership = TRUE
+             AND m.expires_at > UTC_TIMESTAMP()
+             AND w.user_id IN (${placeholders})
+           GROUP BY w.user_id`,
+          [eventId, context.sessionDate, context.sessionTime, ...trackedActualUserIds],
+        );
+
+        const transitions = [];
+        for (const row of actualMemberRows) {
+          const score = await redis.zscore(keys.waitingKey, row.user_id);
+          if (score !== null) transitions.push({ userId: String(row.user_id), score: Number(score) });
+        }
+
+        if (transitions.length > 0) {
+          const pipeline = redis.pipeline();
+          const standbyValues = [];
+          const standbyParams = [];
+          for (const transition of transitions) {
+            pipeline.zrem(keys.waitingKey, transition.userId);
+            pipeline.zadd(keys.standbyKey, transition.score, transition.userId);
+            standbyValues.push("(?, ?, ?, ?, 'standby', ?, 'WAITING', 1)");
+            standbyParams.push(
+              transition.userId,
+              eventId,
+              context.sessionDate,
+              context.sessionTime,
+              transition.score,
+            );
+          }
+          await pipeline.exec();
+
+          const transitionIds = transitions.map((item) => item.userId);
+          const transitionPlaceholders = transitionIds.map(() => '?').join(',');
+          await pool.query(
+            `UPDATE waiting_queue
+             SET status = 'STANDBY', updated_at = NOW()
+             WHERE event_id = ?
+               AND session_date = ?
+               AND session_time = ?
+               AND queue_type = 'eligible'
+               AND status = 'WAITING'
+               AND user_id IN (${transitionPlaceholders})`,
+            [eventId, context.sessionDate, context.sessionTime, ...transitionIds],
+          );
+          await pool.query(
+            `INSERT INTO waiting_queue
+               (user_id, event_id, session_date, session_time, queue_type, queue_index, status, membership_at_join)
+             VALUES ${standbyValues.join(',')}`,
+            standbyParams,
+          );
+          actualMembersTransitioned = transitions.length;
+        }
+      }
+    } else {
+      // 기존 AWS·Final 모드는 매진 단계에서 일반·멤버십 더미 standby를
+      // 직접 구성한다. 통합 모드의 본 티켓팅 전이와는 상태를 공유하지 않는다.
+      await removeStandardDummyQueue({ eventId, context });
+      await removeDummyMembershipQueue({ eventId, context, deleteAccounts: false });
+
+      for (let offset = 0; offset < dummyCount; offset += memberQueueBatchSize) {
+        const end = Math.min(offset + memberQueueBatchSize, dummyCount);
+        const pipeline = redis.pipeline();
+        const eligibleValues = [];
+        const eligibleParams = [];
+        const standbyValues = [];
+        const standbyParams = [];
+
+        for (let index = offset + 1; index <= end; index += 1) {
+          const userId = simUserId(index, mode);
+          const queueIndex = memberDummyCount + index;
+          pipeline.zadd(keys.standbyKey, queueIndex, userId);
+          eligibleValues.push("(?, ?, ?, ?, 'eligible', ?, 'STANDBY', 0)");
+          eligibleParams.push(userId, eventId, context.sessionDate, context.sessionTime, queueIndex);
+          standbyValues.push("(?, ?, ?, ?, 'standby', ?, 'WAITING', 0)");
+          standbyParams.push(userId, eventId, context.sessionDate, context.sessionTime, queueIndex);
+        }
+
+        await pipeline.exec();
+        if (eligibleValues.length) {
+          await pool.query(
+            `INSERT INTO waiting_queue
+               (user_id, event_id, session_date, session_time, queue_type, queue_index, status, membership_at_join)
+             VALUES ${eligibleValues.join(',')}`,
+            eligibleParams,
+          );
+          await pool.query(
+            `INSERT INTO waiting_queue
+               (user_id, event_id, session_date, session_time, queue_type, queue_index, status, membership_at_join)
+             VALUES ${standbyValues.join(',')}`,
+            standbyParams,
+          );
+        }
+      }
+
+      for (let offset = 0; offset < memberDummyCount; offset += memberQueueBatchSize) {
+        const end = Math.min(offset + memberQueueBatchSize, memberDummyCount);
+        const pipeline = redis.pipeline();
+        const eligibleValues = [];
+        const eligibleParams = [];
+        const standbyValues = [];
+        const standbyParams = [];
+
+        for (let index = offset + 1; index <= end; index += 1) {
+          const userId = simMemberUserId(index, mode);
+          pipeline.zadd(keys.standbyKey, index, userId);
+          eligibleValues.push("(?, ?, ?, ?, 'eligible', ?, 'STANDBY', 1)");
+          eligibleParams.push(userId, eventId, context.sessionDate, context.sessionTime, index);
+          standbyValues.push("(?, ?, ?, ?, 'standby', ?, 'WAITING', 1)");
+          standbyParams.push(userId, eventId, context.sessionDate, context.sessionTime, index);
+        }
+
+        await pipeline.exec();
+        if (eligibleValues.length) {
+          await pool.query(
+            `INSERT INTO waiting_queue
+               (user_id, event_id, session_date, session_time, queue_type, queue_index, status, membership_at_join)
+             VALUES ${eligibleValues.join(',')}`,
+            eligibleParams,
+          );
+          await pool.query(
+            `INSERT INTO waiting_queue
+               (user_id, event_id, session_date, session_time, queue_type, queue_index, status, membership_at_join)
+             VALUES ${standbyValues.join(',')}`,
+            standbyParams,
+          );
+        }
+      }
+    }
 
     await redis.set(keys.totalSeatsKey, seatCount);
 
-    for (let i = standbyStart; i <= standbyEnd; i += PIPELINE_BATCH) {
-      const pipeline = redis.pipeline();
-      const batchEnd = Math.min(i + PIPELINE_BATCH, standbyEnd + 1);
-      for (let j = i; j < batchEnd; j++) {
-        pipeline.zadd(keys.standbyKey, j, simUserId(j));
-      }
-      await pipeline.exec();
-    }
-
     // 실제 사용자는 단계1 이후 일반 frontend의
     // /cancel-queue/join 경로로 직접 standby에 진입한다.
-    await redis.set(keys.counterKey, dummyCount);
+    await redis.set(keys.counterKey, dummyCount + memberDummyCount);
     await redis.set(keys.statusKey, 'sold_out');
     await redis.set(getScopedKey('event:sold-out', context), '1');
 
     await redis.hset(stateKey(eventId), {
       stage: 'sold_out',
       seatsSold: seatsToSell.toString(),
-      standbyDummies: standbyDummyCount.toString(),
+      standbyDummies: (mode === 'integrated' ? memberDummyCount : dummyCount + memberDummyCount).toString(),
+      standardStandbyDummies: (mode === 'integrated' ? 0 : dummyCount).toString(),
+      standardDummiesRemaining: (mode === 'integrated' ? 0 : dummyCount).toString(),
+      dummyMembersRemaining: (mode === 'integrated' ? 0 : memberDummyCount).toString(),
+      mainQueueRemaining: (mode === 'integrated' ? dummyCount : 0).toString(),
+      cancellationQueueCount: (memberDummyCount + actualMembersTransitioned).toString(),
       soldOutAt: new Date().toISOString(),
     });
 
-    console.log(`[Simulation] 매진 완료: ${seatsToSell}석 판매, standby 더미 ${standbyDummyCount}명 (실제유저는 /queue/enter 호출 시 등록)`);
+    console.log(`[Simulation] 매진 완료: ${seatsToSell}석 판매, 일반 더미 ${dummyCount}명, 멤버십 standby 더미 ${memberDummyCount}명`);
     return reply.send({
       success: true,
       seatsSold: seatsToSell,
-      standbyDummies: standbyDummyCount,
+      standbyDummies: mode === 'integrated' ? memberDummyCount : dummyCount + memberDummyCount,
+      standardStandbyDummies: mode === 'integrated' ? 0 : dummyCount,
+      memberDummyCount,
       realUserPosition: null,
-      totalStandby: standbyDummyCount,
-      message: `매진 연출 완료 — ${seatsToSell.toLocaleString()}석 판매, 더미 취소표 대기 ${standbyDummyCount.toLocaleString()}명. 실제 유저는 예매 화면에서 직접 대기열에 진입해주세요.`,
+      totalStandby: mode === 'integrated' ? memberDummyCount + actualMembersTransitioned : dummyCount + memberDummyCount,
+      message: mode === 'integrated'
+        ? `매진 처리 후 멤버십 더미 ${memberDummyCount.toLocaleString()}명과 실제 멤버십 사용자 ${actualMembersTransitioned.toLocaleString()}명을 취소표 대기열로 전환했습니다.`
+        : `매진 연출 완료: ${seatsToSell.toLocaleString()}석 판매, 비회원 더미 ${dummyCount.toLocaleString()}명과 멤버십 더미 ${memberDummyCount.toLocaleString()}명이 대기열에 등록되었습니다. 실제 멤버십 사용자의 예상 대기시간은 앞 멤버십 대기자 1명당 5분으로 표시됩니다.`,
     });
   });
 
@@ -549,6 +1186,13 @@ async function simulationRoutes(fastify, options = {}) {
     const simData = await redis.hgetall(stateKey(eventId));
     if (!simData || !simData.stage) {
       return reply.status(400).send({ error: '시뮬레이션 데이터가 없습니다.' });
+    }
+    if (simData.stage !== 'sold_out') {
+      return reply.status(409).send({
+        success: false,
+        code: 'simulation_stage_order',
+        message: '단계1 매진 연출 후에만 조기 마감할 수 있습니다.',
+      });
     }
 
     const context = getContext({
@@ -605,8 +1249,15 @@ async function simulationRoutes(fastify, options = {}) {
       console.error('[Simulation] 멤버십 standby 집계 실패:', err.message);
     }
 
+    const standardDummiesRemaining = parseInt(simData.standardDummiesRemaining, 10) || 0;
+    const dummyMembersRemaining = parseInt(simData.dummyMembersRemaining, 10) || 0;
+    const nextStage = mode === 'integrated'
+      ? 'closed'
+      : (standardDummiesRemaining > 0
+        ? 'closed'
+        : (dummyMembersRemaining > 0 ? 'standard_dummies_removed' : 'dummy_members_removed'));
     await redis.hset(stateKey(eventId), {
-      stage: 'closed',
+      stage: nextStage,
       closedAt: new Date().toISOString(),
       eligibleCount: eligibleUsers.length.toString(),
       memberStandbyCount: memberStandbyRows.length.toString(),
@@ -621,7 +1272,95 @@ async function simulationRoutes(fastify, options = {}) {
       ineligibleCount: ineligibleUsers.length,
       totalStandby: memberStandbyRows.length,
       memberStandbyCount: memberStandbyRows.length,
-      message: `티켓팅 마감 완료 — 멤버십 standby 대기자 ${memberStandbyRows.length}명. 실제 멤버십 사용자는 단계1 후 직접 진입한 상태로 유지됩니다.`,
+      message: mode === 'integrated'
+        ? `통합 티켓팅 마감 완료: 일반 본 티켓팅 대기열과 멤버십 취소표 대기열을 분리한 상태로 확정했습니다.`
+        : standardDummiesRemaining > 0
+        ? `티켓팅 마감 완료 — 실제 멤버십 standby 대기자 ${memberStandbyRows.length}명. 다음 단계에서 일반 더미 대기열을 비운 뒤 멤버십 더미를 10명씩 삭제할 수 있습니다.`
+        : (dummyMembersRemaining > 0
+          ? `티켓팅 마감 완료 — 실제 멤버십 standby 대기자 ${memberStandbyRows.length}명. 일반 더미가 없어 멤버십 더미를 10명씩 삭제할 수 있습니다.`
+          : `티켓팅 마감 완료 — 실제 멤버십 standby 대기자 ${memberStandbyRows.length}명. 더미 대기자가 없어 단계3 취소표 생성을 진행할 수 있습니다.`),
+    });
+  });
+
+  fastify.post(route('/remove-standard-dummies'), adminAuth, async (request, reply) => {
+    const { eventId, sessionDate, sessionTime } = request.body || {};
+    if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
+
+    const simData = await redis.hgetall(stateKey(eventId));
+    if (!simData?.stage) {
+      return reply.status(400).send({ error: '먼저 시뮬레이션을 초기화해주세요.' });
+    }
+    if (!['closed', 'standard_dummies_removed', 'dummy_members_removed', 'seats_cancelled', 'link_requested'].includes(simData.stage)) {
+      return reply.status(409).send({
+        success: false,
+        code: 'simulation_stage_order',
+        message: '단계2 조기 마감 후에만 일반 더미 대기열을 삭제할 수 있습니다.',
+      });
+    }
+
+    const context = getContext({
+      eventId,
+      sessionDate: sessionDate || simData.sessionDate,
+      sessionTime: sessionTime || simData.sessionTime,
+    });
+    const removed = await removeStandardDummyQueue({ eventId, context });
+    const hasMemberDummies = (parseInt(simData.dummyMembersRemaining, 10) || 0) > 0;
+    await redis.hset(stateKey(eventId), {
+      stage: simData.stage === 'closed'
+        ? (hasMemberDummies ? 'standard_dummies_removed' : 'dummy_members_removed')
+        : simData.stage,
+      standardDummiesRemaining: String(removed.remaining),
+      standardDummiesRemovedAt: new Date().toISOString(),
+    });
+
+    return reply.send({
+      success: true,
+      ...removed,
+      message: `일반 더미 대기자 ${removed.removedFromRedis.toLocaleString()}명을 대기열에서 삭제했습니다.`,
+    });
+  });
+
+  fastify.post(route('/remove-dummy-members'), adminAuth, async (request, reply) => {
+    const { eventId, sessionDate, sessionTime } = request.body || {};
+    if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
+
+    const simData = await redis.hgetall(stateKey(eventId));
+    if (!simData?.stage) {
+      return reply.status(400).send({ error: '먼저 시뮬레이션을 초기화해주세요.' });
+    }
+    if (!['standard_dummies_removed', 'dummy_members_removed', 'seats_cancelled', 'link_requested'].includes(simData.stage)) {
+      return reply.status(409).send({
+        success: false,
+        code: 'simulation_stage_order',
+        message: '일반 더미 대기열을 삭제한 뒤에만 더미 멤버십 사용자를 삭제할 수 있습니다.',
+      });
+    }
+
+    const context = getContext({
+      eventId,
+      sessionDate: sessionDate || simData.sessionDate,
+      sessionTime: sessionTime || simData.sessionTime,
+    });
+    const removed = await removeDummyMembershipQueue({
+      eventId,
+      context,
+      deleteAccounts: true,
+      limit: 10,
+    });
+    const isComplete = removed.remaining === 0;
+    await redis.hset(stateKey(eventId), {
+      stage: isComplete ? 'dummy_members_removed' : simData.stage,
+      dummyMembersRemaining: String(removed.remaining),
+      dummyMembersRemovedAt: new Date().toISOString(),
+    });
+
+    return reply.send({
+      success: true,
+      ...removed,
+      complete: isComplete,
+      message: isComplete
+        ? `마지막 더미 멤버십 대기자 ${removed.removedFromRedis.toLocaleString()}명을 삭제했습니다. 실제 사용자의 취소표 순번은 남은 실제 대기자 기준으로 다시 계산됩니다.`
+        : `더미 멤버십 대기자 ${removed.removedFromRedis.toLocaleString()}명을 삭제했습니다. ${removed.remaining.toLocaleString()}명이 남아 있으며, 실제 사용자의 예상 대기시간이 즉시 다시 계산됩니다.`,
     });
   });
 
@@ -637,11 +1376,16 @@ async function simulationRoutes(fastify, options = {}) {
     // 단계3은 티켓팅을 닫은 뒤에만 실행한다. 단계2 이전에 취소 좌석을
     // 만들면 아직 열린 본 대기열과 취소표 대기열의 상태가 서로 어긋나고,
     // 실제 사용자가 좌석 선택 페이지로 이동할 수 없는 상태가 된다.
-    if (simData.stage !== 'closed' && simData.stage !== 'seats_cancelled') {
+    const allowedCancelStages = mode === 'integrated'
+      ? ['closed', 'seats_cancelled']
+      : ['dummy_members_removed', 'seats_cancelled'];
+    if (!allowedCancelStages.includes(simData.stage)) {
       return reply.status(409).send({
         success: false,
         code: 'simulation_stage_order',
-        message: '단계2 조기 마감을 먼저 실행한 뒤 단계3 취소표를 생성해주세요.',
+        message: mode === 'integrated'
+          ? '통합 티켓팅을 마감한 뒤 취소표를 생성해주세요.'
+          : '단계2 조기 마감 후 더미 멤버십 대기자를 삭제한 뒤 단계3 취소표를 생성해주세요.',
       });
     }
 
@@ -653,7 +1397,7 @@ async function simulationRoutes(fastify, options = {}) {
 
     const allSeats = await seatService.getAllSeats(eventId, context);
     const soldDummySeats = allSeats.filter(
-      s => s.status === 'SOLD' && s.heldBy && s.heldBy.startsWith(SIM_USER_PREFIX),
+      s => s.status === 'SOLD' && s.heldBy && s.heldBy.startsWith(simUserPrefix(mode)),
     );
 
     if (soldDummySeats.length === 0) {
@@ -798,6 +1542,61 @@ async function simulationRoutes(fastify, options = {}) {
       console.warn('[Simulation] 대상 사용자 이메일 조회 실패:', err.message);
     }
 
+    // B파트 GetNextUser는 waiting_queue의 membership_at_join=1 행을 직접
+    // 조회한다. 통합 시뮬레이션의 더미 멤버십 행을 남긴 채 SQS 이벤트를
+    // 발행하면 test.com 더미가 실제 링크 대상보다 먼저 선택될 수 있다.
+    // 화면에서 순번 변화를 확인하는 동안에는 유지하되, B파트 요청 직전에
+    // 통합 모드 더미만 원자적으로 제거해 실제 회원 후보만 남긴다.
+    let integratedDummyCleanup = null;
+    if (mode === 'integrated') {
+      try {
+        const integratedMemberPrefix = simMemberPrefix(mode);
+        const dbDummyRows = await pool.query(
+          `SELECT DISTINCT user_id
+           FROM waiting_queue
+           WHERE event_id = ?
+             AND session_date = ?
+             AND session_time = ?
+             AND user_id LIKE ?`,
+          [eventId, context.sessionDate, context.sessionTime, `${integratedMemberPrefix}%`],
+        );
+        integratedDummyCleanup = await removeDummyMembershipQueue({
+          eventId,
+          context,
+          deleteAccounts: true,
+        });
+        // Redis 유실이나 이전 실패로 DB에만 남은 더미 행도 B 후보 조회 전에
+        // 접두사 기준으로 한 번 더 정리한다.
+        const staleQueueResult = await pool.query(
+          `DELETE FROM waiting_queue
+           WHERE event_id = ?
+             AND session_date = ?
+             AND session_time = ?
+             AND user_id LIKE ?`,
+          [eventId, context.sessionDate, context.sessionTime, `${integratedMemberPrefix}%`],
+        );
+        await pool.query('DELETE FROM memberships WHERE user_id LIKE ?', [`${integratedMemberPrefix}%`]);
+        await pool.query('DELETE FROM users WHERE user_id LIKE ?', [`${integratedMemberPrefix}%`]);
+        integratedDummyCleanup.removedUsers = Math.max(
+          new Set(dbDummyRows.map((row) => String(row.user_id))).size,
+          integratedDummyCleanup.removedFromRedis,
+        );
+        integratedDummyCleanup.removedFromDatabase += Number(staleQueueResult.affectedRows) || 0;
+        await redis.hset(stateKey(eventId), {
+          dummyMembersRemaining: '0',
+          cancellationQueueCount: '0',
+          dummyMembersAutoRemovedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error('[IntegratedSimulation] B파트 요청 전 더미 멤버십 정리 실패:', err.message);
+        return reply.status(500).send({
+          success: false,
+          code: 'integrated_dummy_cleanup_failed',
+          message: 'B파트 후보 보호를 위한 더미 멤버십 정리에 실패했습니다. 링크 요청을 중단했습니다.',
+        });
+      }
+    }
+
     const existingAllocation = await cancelAllocationService.getActiveAllocation(targetUserId, eventId);
     if (existingAllocation) {
       return reply.send({
@@ -807,6 +1606,7 @@ async function simulationRoutes(fastify, options = {}) {
         targetUserEmail,
         targetUserId,
         allocation: existingAllocation,
+        dummyMembersRemoved: integratedDummyCleanup?.removedUsers || 0,
         message: '이미 활성 취소표 할당이 있습니다. 사용자 페이지에서 링크 상태를 확인해주세요.',
       });
     }
@@ -874,8 +1674,9 @@ async function simulationRoutes(fastify, options = {}) {
       eventsPublished: published,
       eventsOutboxed: outboxed,
       eventsFailed: failed,
+      dummyMembersRemoved: integratedDummyCleanup?.removedUsers || 0,
       message: immediate
-        ? `B파트 SQS로 ${published}건의 취소표 이벤트를 전송했습니다. 대기열 최상위 멤버십 사용자(${targetUserEmail})부터 Secret Link가 발급됩니다.`
+        ? `B파트 SQS로 ${published}건의 취소표 이벤트를 전송했습니다.${mode === 'integrated' ? ` 더미 멤버십 ${integratedDummyCleanup?.removedUsers || 0}명을 후보 원장에서 제외했습니다.` : ''} 대기열 최상위 멤버십 사용자(${targetUserEmail})부터 Secret Link가 발급됩니다.`
         : outboxed > 0
           ? `B파트 전송에 실패한 ${outboxed}건을 재시도 큐에 저장했습니다.`
           : 'B파트로 취소표 이벤트를 전송하지 못했습니다.',
@@ -901,7 +1702,7 @@ async function simulationRoutes(fastify, options = {}) {
     }
 
     const allSeats = await seatService.getAllSeats(eventId, context);
-    const simSeats = allSeats.filter(s => s.heldBy && s.heldBy.startsWith(SIM_USER_PREFIX));
+    const simSeats = allSeats.filter(s => s.heldBy && s.heldBy.startsWith(simUserPrefix(mode)));
     if (simSeats.length > 0) {
       const pipeline = redis.pipeline();
       for (const seat of simSeats) {
@@ -935,8 +1736,16 @@ async function simulationRoutes(fastify, options = {}) {
     await pipeline2.exec();
 
     try {
-      await pool.query(`DELETE FROM reservations WHERE user_id LIKE '${SIM_USER_PREFIX}%' AND event_id = ?`, [eventId]);
-      await pool.query(`DELETE FROM waiting_queue WHERE user_id LIKE '${SIM_USER_PREFIX}%' AND event_id = ?`, [eventId]);
+      await pool.query('DELETE FROM reservations WHERE user_id LIKE ? AND event_id = ?', [`${simUserPrefix(mode)}%`, eventId]);
+      await pool.query('DELETE FROM waiting_queue WHERE user_id LIKE ? AND event_id = ?', [`${simUserPrefix(mode)}%`, eventId]);
+      await pool.query(
+        `DELETE FROM waiting_queue
+         WHERE user_id LIKE ?
+           AND event_id = ?
+           AND session_date = ?
+           AND session_time = ?`,
+        [`${simMemberPrefix(mode)}%`, eventId, context.sessionDate, context.sessionTime],
+      );
       if (trackedUsers.length > 0) {
         const placeholders = trackedUsers.map(() => '?').join(',');
         await pool.query(
@@ -961,9 +1770,11 @@ async function simulationRoutes(fastify, options = {}) {
           [simData.targetUserId, context.eventId, context.sessionDate, context.sessionTime],
         );
       }
-      await pool.query(`DELETE FROM cancel_allocations WHERE user_id LIKE '${SIM_USER_PREFIX}%' AND event_id = ?`, [eventId]);
-      await pool.query(`DELETE FROM memberships WHERE user_id LIKE '${SIM_USER_PREFIX}%'`);
-      await pool.query(`DELETE FROM users WHERE user_id LIKE '${SIM_USER_PREFIX}%'`);
+      await pool.query('DELETE FROM cancel_allocations WHERE user_id LIKE ? AND event_id = ?', [`${simUserPrefix(mode)}%`, eventId]);
+      await pool.query('DELETE FROM memberships WHERE user_id LIKE ?', [`${simUserPrefix(mode)}%`]);
+      await pool.query('DELETE FROM users WHERE user_id LIKE ?', [`${simUserPrefix(mode)}%`]);
+      await pool.query('DELETE FROM memberships WHERE user_id LIKE ?', [`${simMemberPrefix(mode)}%`]);
+      await pool.query('DELETE FROM users WHERE user_id LIKE ?', [`${simMemberPrefix(mode)}%`]);
     } catch (e) {
       console.error('[Simulation] DB 정리 실패:', e.message);
     }
@@ -1164,9 +1975,13 @@ async function simulationRoutes(fastify, options = {}) {
       sold: allSeats.filter(s => s.status === 'SOLD').length,
     };
 
+    let allMemberStandbyRows = [];
     let memberStandbyRows = [];
     try {
-      memberStandbyRows = await getCurrentSimulationMemberStandby(context, mode);
+      [allMemberStandbyRows, memberStandbyRows] = await Promise.all([
+        queueService.getActiveStandbyMembers(context),
+        getCurrentSimulationMemberStandby(context, mode),
+      ]);
     } catch (err) {
       console.warn('[Simulation] 상태 조회 중 멤버십 standby 집계 실패:', err.message);
     }
@@ -1188,7 +2003,7 @@ async function simulationRoutes(fastify, options = {}) {
         userId: trackedUserId,
         email: trackedUserEmail,
         standbyPosition: rank !== null ? rank + 1 : null,
-        memberStandbyPosition: memberStandbyRows.findIndex((row) => String(row.user_id) === String(trackedUserId)) + 1 || null,
+        memberStandbyPosition: allMemberStandbyRows.findIndex((row) => String(row.user_id) === String(trackedUserId)) + 1 || null,
         isAdmitted,
         hasAllocation: !!allocation,
         allocation: allocation || null,
@@ -1204,6 +2019,15 @@ async function simulationRoutes(fastify, options = {}) {
       stage: simData.stage,
       eventId,
       dummyCount: parseInt(simData.dummyCount, 10) || 0,
+      standardDummiesRemaining: parseInt(simData.standardDummiesRemaining, 10) || 0,
+      memberDummyCount: parseInt(simData.memberDummyCount, 10) || 0,
+      dummyMembersRemaining: parseInt(simData.dummyMembersRemaining, 10) || 0,
+      mainQueueCount: parseInt(simData.mainQueueCount, 10) || 0,
+      mainQueueStandardCount: parseInt(simData.mainQueueStandardCount, 10) || 0,
+      mainQueueMemberCount: parseInt(simData.mainQueueMemberCount, 10) || 0,
+      mainQueueRemaining: parseInt(simData.mainQueueRemaining, 10) || 0,
+      cancellationQueueCount: parseInt(simData.cancellationQueueCount, 10) || 0,
+      waitMinutesPerPerson: parseInt(simData.waitMinutesPerPerson, 10) || WAIT_MINUTES_PER_PERSON,
       totalSeats: parseInt(simData.totalSeats, 10) || 0,
       queue: { standby: standbyCount, admitted: admittedCount, waiting: waitingCount },
       seats: seatStats,

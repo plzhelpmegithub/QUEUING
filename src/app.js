@@ -51,6 +51,7 @@ fastify.register(cancelQueueRoutes);
 const simulationRoutes = require('./routes/simulationRoutes');
 fastify.register(simulationRoutes);
 fastify.register(simulationRoutes, { mode: 'local' });
+fastify.register(simulationRoutes, { mode: 'integrated' });
 // Final 공용 풀 시뮬레이션은 로컬 검증용이다. 개발 환경에서는 기존 테스트
 // 흐름을 보존하기 위해 기본 활성화하고, production에서는 명시적으로 켜지 않는
 // 한 라우트·만료 스위퍼·전용 테이블 초기화를 등록하지 않는다.

@@ -50,7 +50,47 @@ async function callbackVerifyLink(token) {
   return body;
 }
 
-async function callbackComplete({ userId, eventId, seatId, allocationId }) {
+async function resolveReservationId({ reservationId, userId, eventId, seatId }) {
+  if (reservationId !== undefined && reservationId !== null && reservationId !== '') {
+    return reservationId;
+  }
+
+  // 이전 버전이 reservationId 없이 저장한 outbox도 재시도 시 복구한다.
+  // 완료 콜백은 실제 확정 예약이 있는 경우에만 B파트로 전달해야 한다.
+  const rows = await pool.query(
+    `SELECT reservation_id
+     FROM reservations
+     WHERE reservation_id IS NOT NULL
+       AND user_id = ?
+       AND event_id = ?
+       AND seat_id = ?
+       AND status = 'CONFIRMED'
+     ORDER BY reserved_at DESC, reservation_id DESC
+     LIMIT 1`,
+    [userId, eventId, seatId],
+  );
+  return rows[0]?.reservation_id || null;
+}
+
+async function callbackComplete(payload = {}) {
+  const {
+    userId,
+    eventId,
+    seatId,
+    allocationId,
+  } = payload;
+  const reservationId = await resolveReservationId({
+    reservationId: payload.reservationId ?? payload.reservation_id,
+    userId,
+    eventId,
+    seatId,
+  });
+  if (!reservationId) {
+    const error = new Error('B complete callback requires a confirmed reservation_id');
+    error.code = 'reservation_id_missing';
+    throw error;
+  }
+
   // ALB listener rules expose all B Lambda callbacks below /b-callback.
   // Keep this prefix aligned with callbackVerifyLink so completion requests
   // do not fall through to the frontend/API default target group.
@@ -62,6 +102,7 @@ async function callbackComplete({ userId, eventId, seatId, allocationId }) {
       event_id: eventId,
       seat_id: seatId,
       allocation_id: allocationId,
+      reservation_id: reservationId,
     }),
   });
   if (!res.ok) {

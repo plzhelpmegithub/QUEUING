@@ -23,7 +23,7 @@ replicaCount: 2
 image:
   repository: "mover14/redis-api-backend"
   pullPolicy: IfNotPresent
-  tag: "2.2.3"
+  tag: "2.2.4"
 
 # -----------------------------------------------------------------------------
 # [이미지 풀 시크릿] 프라이빗 레지스트리 인증이 필요할 때 사용.
@@ -279,7 +279,7 @@ livenessProbe:
     port: http
   initialDelaySeconds: 30
   periodSeconds: 15
-  timeoutSeconds: 5
+  timeoutSeconds: 8
   failureThreshold: 3
 
 # -----------------------------------------------------------------------------
@@ -316,7 +316,7 @@ readinessProbe:
 # -----------------------------------------------------------------------------
 autoscaling:
   enabled: true
-  minReplicas: 2
+  minReplicas: 4
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
 

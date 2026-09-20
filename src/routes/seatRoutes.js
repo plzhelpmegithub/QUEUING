@@ -1,6 +1,6 @@
 const seatService = require('../services/seatService');
 const { getReservationsBySeat, getAllReservations, getReservationsByUser } = require('../services/dbService');
-const { sendEmail } = require('../services/notificationService');
+const { sendEmail, wrapEmailHtml } = require('../services/notificationService');
 const redis = require('../config/redis');
 const pool = require('../config/mariadb');
 const { guardRecaptcha } = require('../services/recaptchaService');
@@ -124,39 +124,48 @@ async function seatRoutes(fastify) {
           const subject = isBankTransfer
             ? `[QUEUING] 무통장 입금 예매 접수 안내 — ${ctx.eventName || ctx.resolvedEventId}`
             : `[QUEUING] 예매 완료 안내 — ${ctx.eventName || ctx.resolvedEventId}`;
+          const infoBlock = `
+              <div style="background-color:#f9fafb; border-radius:8px; padding:16px; margin:20px 0;">
+                <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; font-size:14px; color:#374151;">
+                  <tr><td style="padding:4px 0;"><strong>공연명</strong></td><td style="padding:4px 0;">${ctx.eventName || ctx.resolvedEventId}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>일시</strong></td><td style="padding:4px 0;">${ctx.displayDate}${timeStr}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>장소</strong></td><td style="padding:4px 0;">${ctx.venue || '미정'}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>좌석</strong></td><td style="padding:4px 0;">${ctx.seatLabel}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>예매자</strong></td><td style="padding:4px 0;">${ctx.user.name || userId}</td></tr>
+                </table>
+              </div>`;
           const body = isBankTransfer
-            ? `
-            <h2>무통장 입금 예매가 접수되었습니다</h2>
-            <p>안녕하세요, ${ctx.user.name || userId}님.</p>
-            <p>아래 공연의 무통장 입금 예매가 접수되었습니다.</p>
-            <p><strong>24시간 이내에 입금이 확인되어야 좌석이 최종 확정됩니다.</strong></p>
-            <p>입금 기한 내 입금이 확인되지 않으면 예매가 자동 취소되고 좌석이 다시 예매 가능한 상태로 변경될 수 있습니다.</p>
-            <hr>
-            <p><strong>공연명:</strong> ${ctx.eventName || ctx.resolvedEventId}</p>
-            <p><strong>일시:</strong> ${ctx.displayDate}${timeStr}</p>
-            <p><strong>장소:</strong> ${ctx.venue || '미정'}</p>
-            <p><strong>좌석:</strong> ${ctx.seatLabel}</p>
-            <p><strong>예매자:</strong> ${ctx.user.name || userId}</p>
-            <p><strong>입금 기한:</strong> 예매 접수 시각부터 24시간 이내</p>
-            <hr>
-            <p>가상계좌와 입금 금액은 QUEUING 마이페이지의 예매내역에서 확인해주세요.</p>
-            <p>— QUEUING 팀</p>
-          `
-            : `
-            <h2>예매가 완료되었습니다!</h2>
-            <p>안녕하세요, ${ctx.user.name || userId}님.</p>
-            <p>아래 공연의 예매가 성공적으로 확정되었습니다.</p>
-            <hr>
-            <p><strong>공연명:</strong> ${ctx.eventName || ctx.resolvedEventId}</p>
-            <p><strong>일시:</strong> ${ctx.displayDate}${timeStr}</p>
-            <p><strong>장소:</strong> ${ctx.venue || '미정'}</p>
-            <p><strong>좌석:</strong> ${ctx.seatLabel}</p>
-            <p><strong>예매자:</strong> ${ctx.user.name || userId}</p>
-            <p><strong>확정 시각:</strong> ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</p>
-            <hr>
-            <p>공연 당일 즐거운 시간 보내세요!</p>
-            <p>— QUEUING 팀</p>
-          `;
+            ? wrapEmailHtml({
+                title: '무통장 입금 예매 접수',
+                contentHtml: `
+              <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+                안녕하세요, <strong>${ctx.user.name || userId}</strong>님.<br>
+                아래 공연의 무통장 입금 예매가 접수되었습니다.
+              </p>
+              <div style="background-color:#FEF2F2; border:1px solid #FCA5A5; border-radius:8px; padding:14px 16px; margin:20px 0;">
+                <span style="color:#B91C1C; font-size:14px; font-weight:600;">⏱ 24시간 이내에 입금이 확인되어야 좌석이 최종 확정됩니다</span>
+                <div style="color:#7F1D1D; font-size:13px; margin-top:4px;">입금 기한 내 미입금 시 예매가 자동 취소됩니다.</div>
+              </div>
+              ${infoBlock}
+              <p style="margin:0; font-size:13px; color:#71717a; line-height:1.6;">
+                가상계좌와 입금 금액은 QUEUING 마이페이지의 예매내역에서 확인해주세요.
+              </p>`,
+              })
+            : wrapEmailHtml({
+                title: '예매 완료',
+                contentHtml: `
+              <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+                안녕하세요, <strong>${ctx.user.name || userId}</strong>님.<br>
+                아래 공연의 예매가 성공적으로 확정되었습니다.
+              </p>
+              ${infoBlock}
+              <p style="margin:16px 0 0; font-size:14px; color:#18181b;">
+                확정 시각: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
+              </p>
+              <p style="margin:16px 0 0; font-size:15px; color:#18181b; font-weight:600;">
+                공연 당일 즐거운 시간 보내세요! 🎶
+              </p>`,
+              });
           sendEmail(ctx.user.email, subject, body);
         }
       } catch (emailErr) {
@@ -184,21 +193,29 @@ async function seatRoutes(fastify) {
         const ctx = await getEmailContext(seatId, userId);
         if (ctx) {
           const timeStr = ctx.displayTime ? ` ${ctx.displayTime}` : '';
-          sendEmail(ctx.user.email, `[QUEUING] 예매 취소 및 환불 안내 — ${ctx.eventName || ctx.resolvedEventId}`, `
-            <h2>예매가 취소되었습니다</h2>
-            <p>안녕하세요, ${ctx.user.name || userId}님.</p>
-            <p>아래 공연의 예매가 취소 처리되었습니다.</p>
-            <hr>
-            <p><strong>공연명:</strong> ${ctx.eventName || ctx.resolvedEventId}</p>
-            <p><strong>일시:</strong> ${ctx.displayDate}${timeStr}</p>
-            <p><strong>장소:</strong> ${ctx.venue || '미정'}</p>
-            <p><strong>좌석:</strong> ${ctx.seatLabel}</p>
-            <p><strong>취소 시각:</strong> ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</p>
-            <hr>
-            <p>결제하신 금액은 영업일 기준 3~5일 내 환불 처리됩니다.</p>
-            <p>문의 사항이 있으시면 고객센터로 연락해 주세요.</p>
-            <p>— QUEUING 팀</p>
-          `);
+          sendEmail(ctx.user.email, `[QUEUING] 예매 취소 및 환불 안내 — ${ctx.eventName || ctx.resolvedEventId}`, wrapEmailHtml({
+            title: '예매 취소 및 환불 안내',
+            contentHtml: `
+              <p style="margin:0 0 16px; font-size:16px; color:#18181b; line-height:1.6;">
+                안녕하세요, <strong>${ctx.user.name || userId}</strong>님.<br>
+                아래 공연의 예매가 취소 처리되었습니다.
+              </p>
+              <div style="background-color:#f9fafb; border-radius:8px; padding:16px; margin:20px 0;">
+                <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; font-size:14px; color:#374151;">
+                  <tr><td style="padding:4px 0;"><strong>공연명</strong></td><td style="padding:4px 0;">${ctx.eventName || ctx.resolvedEventId}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>일시</strong></td><td style="padding:4px 0;">${ctx.displayDate}${timeStr}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>장소</strong></td><td style="padding:4px 0;">${ctx.venue || '미정'}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>좌석</strong></td><td style="padding:4px 0;">${ctx.seatLabel}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>취소 시각</strong></td><td style="padding:4px 0;">${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</td></tr>
+                </table>
+              </div>
+              <div style="background-color:#FEF2F2; border:1px solid #FCA5A5; border-radius:8px; padding:14px 16px; margin:20px 0;">
+                <span style="color:#B91C1C; font-size:14px; font-weight:600;">결제하신 금액은 영업일 기준 3~5일 내 환불 처리됩니다.</span>
+              </div>
+              <p style="margin:0; font-size:13px; color:#71717a; line-height:1.6;">
+                문의 사항이 있으시면 고객센터로 연락해 주세요.
+              </p>`,
+          }));
         }
       } catch (emailErr) {
         console.error('[Email] 예매 취소 메일 발송 실패:', emailErr.message);

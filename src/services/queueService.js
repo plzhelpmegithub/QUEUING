@@ -256,9 +256,8 @@ function queueKeys(context = {}) {
   };
 }
 
-// 취소표 대기열은 본 티켓팅 대기열에 참여한 멤버십 회원만 대상이다. Redis
-// standby에는 과거 테스트에서 들어간 비회원·더미 ID가 남아 있을 수 있으므로,
-// 표시용 순번·전체 인원과 시뮬레이션 후보는 MariaDB를 기준으로 계산한다.
+// B파트 Secret Link 후보와 취소표 대기 순번은 본 티켓팅에 참여한
+// 활성 멤버십 회원만 대상으로 한다.
 async function getActiveStandbyMembers(context = {}) {
   const keys = queueKeys(context);
   if (!keys.eventId) return [];
@@ -321,12 +320,42 @@ async function getActiveStandbyMembers(context = {}) {
   }
 }
 
+async function isActiveSimulationContext(context = {}) {
+  const keys = queueKeys(context);
+  if (!keys.eventId) return false;
+
+  // MariaDB의 TIME/VARCHAR 값은 환경에 따라 `18:00` 또는 `18:00:00`으로
+  // 돌아올 수 있다. 표시용 시뮬레이션 판정에서는 초 단위를 무시해야
+  // 같은 회차가 일반 대기열 집계로 잘못 떨어지지 않는다.
+  const comparableDate = (value) => String(value || '').slice(0, 10);
+  const comparableTime = (value) => String(value || '').slice(0, 5);
+
+  try {
+    const states = await Promise.all([
+      redis.hgetall(`simulation:${keys.eventId}`),
+      redis.hgetall(`simulation:local:${keys.eventId}`),
+    ]);
+    return states.some((state) => (
+      state?.stage &&
+      comparableDate(state.sessionDate) === comparableDate(keys.sessionDate) &&
+      comparableTime(state.sessionTime) === comparableTime(keys.sessionTime)
+    ));
+  } catch (err) {
+    console.warn('[Queue] 시뮬레이션 상태 확인 실패:', err.message);
+    return false;
+  }
+}
+
 async function getStandbyMemberStats(userId, context = {}) {
+  const keys = queueKeys(context);
+  // 취소표 대기열은 일반 standby의 Redis rank를 그대로 사용하지 않는다.
+  // 활성 멤버십·본 티켓팅 참여 이력이 모두 확인된 사용자만 다시 집계한다.
   const rows = await getActiveStandbyMembers(context);
   const index = rows.findIndex((row) => String(row.user_id) === String(userId));
   return {
     position: index >= 0 ? index + 1 : null,
     total: rows.length,
+    simulationQueue: await isActiveSimulationContext(keys),
   };
 }
 
@@ -334,20 +363,40 @@ async function getStandbyMemberCount(context = {}) {
   return (await getActiveStandbyMembers(context)).length;
 }
 
-async function recordSimulationStandbyUser(userId, context = {}) {
+async function isIntegratedMainQueueOpen(context = {}) {
+  const keys = queueKeys(context);
+  if (!keys.eventId) return false;
+  const comparableDate = (value) => String(value || '').slice(0, 10);
+  const comparableTime = (value) => String(value || '').slice(0, 5);
+
+  try {
+    const state = await redis.hgetall(`simulation:integrated:${keys.eventId}`);
+    return Boolean(
+      state?.stage === 'main_queue_open'
+      && comparableDate(state.sessionDate) === comparableDate(keys.sessionDate)
+      && comparableTime(state.sessionTime) === comparableTime(keys.sessionTime),
+    );
+  } catch (err) {
+    console.warn('[Queue] 통합 본 대기열 상태 확인 실패:', err.message);
+    return false;
+  }
+}
+
+async function recordSimulationParticipant(userId, context = {}) {
   const keys = queueKeys(context);
   if (!keys.eventId || !userId) return;
 
-  // 관리자 시뮬레이션이 활성화된 동안 일반 사용자가 실제
-  // /cancel-queue/join 경로로 들어왔다는 사실만 별도로 추적한다.
-  // 이 목록은 단계4 대상자 선정과 시뮬레이션 정리에만 사용한다.
+  // 관리자 시뮬레이션이 활성화된 동안 일반 사용자가 실제 서비스의
+  // /queue/enter 또는 /cancel-queue/join 경로로 들어온 사실을 추적한다.
+  // 통합 모드는 매진 시 멤버십 참여자를 standby로 전환할 때도 사용한다.
   try {
     // B파트 연동 시뮬레이션과 온프레미스 SMTP 시뮬레이션은 상태 해시를
     // 별도로 사용한다. 어느 모드가 활성화되어 있든 실제 사용자가
-    // /cancel-queue/join으로 들어오면 해당 모드의 대상 목록에 기록한다.
+    // 정상 사용자 경로로 들어오면 해당 모드의 대상 목록에 기록한다.
     const simulationKeys = [
       `simulation:${keys.eventId}`,
       `simulation:local:${keys.eventId}`,
+      `simulation:integrated:${keys.eventId}`,
     ];
     for (const simulationKey of simulationKeys) {
       if (await redis.exists(simulationKey)) {
@@ -356,7 +405,7 @@ async function recordSimulationStandbyUser(userId, context = {}) {
     }
   } catch (err) {
     // 시뮬레이션 추적 실패가 정상 취소표 대기열 진입을 막아서는 안 된다.
-    console.warn('[Queue] 시뮬레이션 standby 사용자 추적 실패:', err.message);
+    console.warn('[Queue] 시뮬레이션 참여 사용자 추적 실패:', err.message);
   }
 }
 
@@ -391,10 +440,36 @@ async function enter(userId, context = {}) {
   // 조기 마감 이후에도 이미 standby에 등록된 사용자의 Redis/MariaDB
   // 대기열 기록은 유지해야 한다. 다만 프론트에는 마감 상태를 알려
   // 멤버십 안내 알럿을 표시할 수 있도록 별도의 closed 응답을 반환한다.
-  const existingStandbyScore = await redis.zscore(
+  let existingStandbyScore = await redis.zscore(
     keys.standbyKey,
     userId
   );
+  const integratedMainQueueOpen = await isIntegratedMainQueueOpen(keys);
+
+  // 이전 코드에서 통합 단계2의 실제 사용자가 좌석 수 초과 규칙 때문에
+  // standby로 들어간 경우에도 새 초기화 없이 본 티켓팅 waiting으로 복구한다.
+  // 통합 단계3 전에는 실제·더미 사용자가 같은 본 대기열에 있어야 한다.
+  if (integratedMainQueueOpen && existingStandbyScore !== null) {
+    await redis.pipeline()
+      .zrem(keys.standbyKey, userId)
+      .zadd(keys.waitingKey, existingStandbyScore, userId)
+      .sadd(keys.mainParticipantKey, userId)
+      .exec();
+    await syncToMariaDB(
+      `UPDATE waiting_queue
+       SET status = CASE WHEN queue_type = 'eligible' THEN 'WAITING' ELSE 'LEFT' END,
+           updated_at = NOW()
+       WHERE user_id = ?
+         AND event_id = ?
+         AND session_date = ?
+         AND session_time = ?
+         AND queue_type IN ('eligible', 'standby')
+         AND status IN ('WAITING', 'STANDBY')`,
+      [userId, keys.eventId, keys.sessionDate, keys.sessionTime],
+      `queue:integrated-restore ${userId}`,
+    );
+    existingStandbyScore = null;
+  }
 
   if (requestedContext && currentEventId) {
     const eventCard = await redis.hget(
@@ -557,7 +632,7 @@ async function enter(userId, context = {}) {
       ) || 0;
 
     const type =
-      position + 1 <= totalSeats
+      integratedMainQueueOpen || position + 1 <= totalSeats
         ? 'eligible'
         : 'standby';
 
@@ -623,7 +698,7 @@ async function enter(userId, context = {}) {
 
   if (
     currentStatus === 'sold_out' ||
-    ticket > totalSeats
+    (!integratedMainQueueOpen && ticket > totalSeats)
   ) {
     await redis.zadd(
       keys.standbyKey,
@@ -687,7 +762,7 @@ async function enter(userId, context = {}) {
       `queue:enter:main-participant ${userId}`,
     );
 
-    await recordSimulationStandbyUser(userId, keys);
+    await recordSimulationParticipant(userId, keys);
 
     return {
       status: 'waiting',
@@ -737,6 +812,10 @@ async function enter(userId, context = {}) {
     ],
     `queue:enter:eligible ${userId}`,
   );
+
+  // 통합 시뮬레이션은 단계3에서 실제 멤버십 참여자를 취소표 standby로
+  // 전환해야 하므로 본 티켓팅 waiting 진입 시점부터 실제 사용자를 추적한다.
+  await recordSimulationParticipant(userId, keys);
 
   return {
     status: 'waiting',
@@ -793,7 +872,7 @@ async function enterStandby(
     );
 
   if (existingStandby !== null) {
-    await recordSimulationStandbyUser(userId, keys);
+    await recordSimulationParticipant(userId, keys);
     const rank =
       await redis.zrank(
         keys.standbyKey,
@@ -948,7 +1027,7 @@ async function enterStandby(
     `queue:enter:standby ${userId}`,
   );
 
-  await recordSimulationStandbyUser(userId, keys);
+  await recordSimulationParticipant(userId, keys);
 
   return {
     status: 'waiting',
@@ -2171,7 +2250,7 @@ module.exports = {
   getStats,
   getStandbyMemberStats,
   getStandbyMemberCount,
-  recordSimulationStandbyUser,
+  recordSimulationParticipant,
   isUserAdmitted,
   clearQueuesForEvent,
   queueKeys,

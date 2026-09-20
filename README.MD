@@ -31,7 +31,7 @@ api/
     │   ├── wishlistRoutes.js           # 위시리스트
     │   ├── backupRoutes.js             # 백업/복구
     │   ├── cancelQueueRoutes.js        # 취소표 대기열
-    │   ├── simulationRoutes.js        # 취소표 시뮬레이션 (어드민·Final Local 단계)
+    │   ├── simulationRoutes.js        # AWS·Final Local·통합 티켓팅 시뮬레이션
     │   └── lastSimulationRoutes.js    # Final 공용 취소표 풀·Gmail 링크 검증
     └── services/
         ├── eventCatalogService.js      # Redis·MariaDB 통합 공연 목록 조회
@@ -185,12 +185,13 @@ mariadb 라이브러리 기반 커넥션 풀.
 
 ### src/routes/simulationRoutes.js — 취소표 시뮬레이션
 
-- `POST /admin/simulation/init`은 공연·회차와 더미 유저 수만 받아 시뮬레이션 메타데이터와 더미 사용자를 준비한다. 실제 사용자 이메일이나 멤버십을 관리자 입력으로 받지 않는다.
-- `POST /admin/simulation/sellout`은 더미 좌석을 매진 처리하고 더미 standby 대기자 및 `sold_out` 상태를 만든다.
-- 실제 멤버십 사용자는 단계1 이후 일반 서비스와 동일하게 프론트엔드에서 `POST /cancel-queue/join`을 호출한다. API가 활성 멤버십, 대기열 진입 당시 `membership_at_join=1`, 동일 공연·회차의 본 티켓팅 참여 이력을 함께 검증하고 Redis standby와 MariaDB `waiting_queue`를 함께 기록한다.
-- `POST /admin/simulation/close`는 ticketing 상태만 `closed`로 변경하고, 이미 직접 진입한 현재 시뮬레이션의 멤버십 standby 대기자를 집계한다. 특정 이메일을 자동 등록하거나 순번을 변경하지 않는다.
+- `POST /admin/simulation/init`은 공연·회차, 좌석 점유용 더미 유저 수와 멤버십 standby용 더미 인원수를 받아 시뮬레이션 메타데이터·테스트 계정을 준비한다. 실제 사용자 이메일이나 멤버십을 관리자 입력으로 받지 않는다.
+- `POST /admin/simulation/sellout`은 더미 좌석을 매진 처리하고 일반 `sim-user-*`와 `sim-member-*` 더미를 시뮬레이션 원장에 넣는다. 취소표 화면의 순번은 활성 멤버십 대기자만 집계하므로 일반 더미는 표시 순번과 Secret Link 후보에 포함되지 않는다.
+- 실제 활성 멤버십 사용자만 단계1 이후 프론트엔드의 `POST /cancel-queue/join`으로 취소표 대기열에 등록된다. API는 동일 공연·회차의 본 대기열 참여 이력을 확인해 Redis standby와 MariaDB `waiting_queue`를 함께 기록하며, 비멤버십 사용자는 등록·순번 조회 대상이 아니다.
+- `POST /admin/simulation/close`는 ticketing 상태를 `closed`로 변경한다. 이후 `POST /admin/simulation/remove-standard-dummies`가 일반 `sim-user-*` 더미를 전체 삭제하고, `POST /admin/simulation/remove-dummy-members`가 선두 더미 멤버십 사용자 최대 10명을 standby·본 대기열 이력·테스트 계정에서 제거한다.
 - `POST /admin/simulation/issue-links`는 현재 회차의 `waiting_queue`에서 이 시뮬레이션 동안 실제 서비스 경로로 참여했고, 대기열 진입 당시 멤버십이었던 활성 standby 대기자만 `queue_index` 순으로 후보 확인한다. 더미 ID·진입 당시 비회원·본 대기열 참여 이력이 없는 standby 행은 제외하며, 준비된 취소 이벤트를 SQS로 전달한다. A가 임의 사용자를 standby 최우선으로 올리지 않으며 B파트가 후보 정책에 따라 Secret Link 대상을 처리한다.
-- 동일한 흐름을 온프레미스에서 검증할 수 있도록 `/admin/local-simulation/*`를 별도 제공한다. 초기화·매진·마감·취소표 생성은 기존 시뮬레이션과 같은 Redis/MariaDB 흐름을 사용하고, 단계3은 단계2 조기 마감 이후에만 허용한다. 단계4만 B파트 SQS 대신 A 서버의 Gmail SMTP로 시뮬레이션 중 실제로 참여한 멤버십 대기자만 `queue_index` 순서로 1:1 매칭해 각각 5분 제한 A파트 Secret Link를 발송한다. 이미 유효한 할당은 재발송하지 않고, 만료된 할당은 다음 발급에서 재사용한다.
+- 동일한 흐름을 온프레미스에서 검증할 수 있도록 `/admin/local-simulation/*`를 별도 제공한다. 초기화·매진·마감·일반 더미 전체 삭제·멤버십 더미 10명 삭제·취소표 생성은 AWS 시뮬레이션과 같은 Redis/MariaDB 흐름을 사용한다. 단계4만 B파트 SQS 대신 A 서버의 Gmail SMTP로 시뮬레이션 중 실제로 참여한 멤버십 대기자만 `queue_index` 순서로 1:1 매칭해 각각 5분 제한 A파트 Secret Link를 발송한다. 이미 유효한 할당은 재발송하지 않고, 만료된 할당은 다음 발급에서 재사용한다.
+- 기존 AWS·Final 흐름을 변경하지 않고 `/admin/integrated-simulation/*`를 추가 제공한다. `main-queue`가 일반·멤버십 더미를 본 티켓팅 waiting에 함께 등록하고, `sellout`이 멤버십 더미만 취소표 standby로 전환한다. 실제 멤버십 사용자는 매진 화면의 기존 `/cancel-queue/join` 경로로 진입해야 B파트 후보로 추적된다.
 
 ### src/routes/lastSimulationRoutes.js — 취소표 시뮬레이션 Final 공용 풀
 
@@ -288,55 +289,71 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `POST /cancel-queue/join` | 동일 공연·회차의 본 티켓팅 대기열 참여 이력이 있는 활성 멤버십 회원만 Bearer JWT로 standby 취소표 대기열에 등록. 멤버십만 있고 본 대기열에 참여하지 않은 사용자는 `main_queue_required`, 비멤버십 사용자는 `membership_required`로 거부 |
-| `GET /cancel-queue/status/:eventId/:userId` | 동일 공연·회차의 본 티켓팅 참여 이력이 있는 활성 멤버십 회원의 취소표 대기 종합 상태 조회. 대기 순번·전체 인원은 활성 멤버십 대기자만 집계하며 Secret Link 상태를 함께 반환 |
-| `GET /cancel-queue/mine` | 활성 멤버십 회원의 MariaDB `waiting_queue` 중 `queue_type = 'standby'`인 행과 동일 공연·회차의 본 티켓팅 참여 이력을 함께 확인해 취소표 대기 공연 목록 조회. `waiting_queue` 핵심 조회와 `events`, `cancel_allocations` 부가 조회를 분리해 부가 테이블의 스키마 차이가 목록 전체를 500으로 만들지 않도록 하며, `status = 'WAITING'` 또는 활성 할당이 있는 행을 반환한다. 비멤버십 사용자와 본 대기열 미참여 사용자는 빈 목록을 반환한다. 전체 대기자·순번은 MariaDB에서 현재 활성 멤버십인 standby 대기자만 집계하며 Redis 전체 standby 수를 대신 사용하지 않는다. |
+| `POST /cancel-queue/join` | 로그인한 본인이 동일 공연·회차의 본 티켓팅 standby 대기열에 등록하거나 기존 순번을 복원한다. 멤버십 여부와 무관하게 본 티켓팅 순번을 기록하며, Secret Link 후보 선정은 별도 멤버십 조건으로 제한한다. |
+| `GET /cancel-queue/status/:eventId/:userId` | 동일 공연·회차의 본 티켓팅 참여 이력이 있는 사용자의 대기 종합 상태 조회. 전체 본 대기열 순번과 앞 순번 1명당 5분의 `estimatedWaitMinutes`, 멤버십 여부, Secret Link 상태를 함께 반환 |
+| `GET /cancel-queue/mine` | MariaDB `waiting_queue` 중 `queue_type = 'standby'`인 현재 로그인 사용자의 행과 동일 공연·회차의 본 티켓팅 참여 이력을 함께 확인해 대기 공연 목록을 조회한다. 멤버십 여부와 무관하게 본 티켓팅 대기자는 목록과 전체 Redis standby 순번을 확인할 수 있다. 멤버십 회원에게만 `membershipEligible: true`와 Secret Link 발급 대상 안내가 표시된다. 활성 AWS·Final 시뮬레이션 회차는 `simulationQueue: true`를 함께 반환한다. 각 행은 `estimatedWaitMinutes = (myNumber - 1) × 5`도 반환한다. |
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
 | `POST /cancel-queue/hold` | 취소표 좌석 선점. `allocation.seat_id`가 있으면 해당 좌석만 허용하고, `NULL`이면 요청 좌석이 같은 공연·회차의 `AVAILABLE`인지 확인한 뒤 `cancel_allocations.seat_id`에 원자적으로 기록하고 홀드한다. `verify-link`로 발급된 취소표 전용 세션은 allocation 범위를 검증한 뒤 일반 Admission Token 없이 처리 |
 | `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/expire`로 포워드 |
 | `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/complete`로 포워드 |
-| `POST /verify-link` | 이메일 Secret Link 랜딩 — A파트가 발급한 Local SMTP JWT를 먼저 검증하고, 유효하지 않은 경우 `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임한 뒤 할당 정보 + 선택 가능 좌석 목록 반환 |
+| `POST /verify-link` | 이메일 Secret Link 랜딩 — A파트가 발급한 Local SMTP JWT를 먼저 검증하고, 유효하지 않은 경우 `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임한 뒤 할당 정보 + 선택 가능 좌석 목록 + 검증 주체 `source`(`local`/`b`) 반환 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
 | `POST /cancel-queue/expire-overdue` | 만료된 할당 일괄 처리 |
 | `GET /cancel-queue/history/:eventId` | 이벤트별 할당 내역 조회 |
 
 `/cancel-queue/respond`와 `/cancel-queue/expire`는 `allocationId` 또는 `allocation_id`를 선택적으로 받을 수 있다. 지정하지 않으면 사용자·공연 기준의 현재 처리 대상 할당을 찾는다. 같은 `allocation_id`에 대해 같은 요청을 반복하면 이미 `RESPONDED`/`COMPLETED`인 complete는 `200`과 `idempotent: true`, 이미 `EXPIRED`인 expire는 `200`과 `idempotent: true`로 반환한다. 반대 상태로의 충돌 요청(완료 후 expire, 만료 후 complete)은 `409`로 거부한다.
 
+`POST /verify-link`의 `source`는 프론트 화면 선택 전용이다. `local`은 기존 `private-link` 화면으로, `b`는 Last 스타일의 B 전용 좌석 화면으로 이동한다. B 화면의 수동 양도와 5분 만료는 모두 `POST /cancel-queue/expire`를 호출하므로 `B_CALLBACK_BASE_URL`이 설정된 운영 환경에서는 B파트 만료 콜백과 다음 후보 워크플로우가 그대로 실행된다.
+
+`GET /cancel-queue/mine`은 공연·회차가 모두 저장된 allocation을 우선 정확히 매칭한다. 과거 AWS B Lambda가 회차를 비워 저장한 활성 allocation은 현재 사용자가 해당 공연에서 하나의 standby 회차만 갖는 경우에만 호환용으로 연결하며, 여러 회차라면 잘못된 Secret Link 표시를 방지하기 위해 연결하지 않는다.
+
 ---
 
 ### src/routes/simulationRoutes.js — 취소표 시뮬레이션 라우트
 
-멤버십 회원 전용 취소표 티켓팅의 전체 흐름을 어드민에서 단계별로 재현할 수 있는 시뮬레이션 API.
+멤버십 전용 취소표 대기열과 Secret Link 정책을 어드민에서 단계별로 재현할 수 있는 시뮬레이션 API.
 
 | 엔드포인트 | 설명 |
 |---|---|
 | `GET /admin/simulation/events` | DB 등록 공연 목록 조회 (드롭다운용) |
-| `POST /admin/simulation/init` | 시뮬레이션 초기화 — 더미 유저 생성. 실제 사용자 입력·계정·멤버십 자동 등록 없음 |
-| `POST /admin/simulation/sellout` | [단계1] 매진 연출 — 전체 좌석 더미 점유(SOLD) + 잔여를 standby 큐 등록. 실제 유저는 이후 직접 진입 |
+| `POST /admin/simulation/init` | 시뮬레이션 초기화 — 좌석 더미와 입력한 수만큼의 더미 멤버십 대기자 계정을 준비. 실제 사용자 입력·계정·멤버십 자동 등록 없음 |
+| `POST /admin/simulation/sellout` | [단계1] 매진 연출 — 전체 좌석 더미 점유(SOLD) + 일반·멤버십 더미를 회차별 시뮬레이션 대기열에 등록. 실제 멤버십 유저는 멤버십 더미 뒤 순번으로 직접 진입 |
 | `POST /admin/simulation/close` | [단계2] 조기 마감 — ticketing 상태 closed + 현재 시뮬레이션에서 직접 진입한 활성 멤버십 standby 대기자 집계 |
-| `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 단계2 `closed` 이후에만 더미 좌석 랜덤 취소(AVAILABLE 복원) 및 B파트 전송용 이벤트 준비 |
+| `POST /admin/simulation/remove-standard-dummies` | [단계2-1] 일반 더미 전체 삭제 — 조기 마감 뒤 모든 `sim-user-*`를 대기열에서 제거 |
+| `POST /admin/simulation/remove-dummy-members` | [단계2-2] 멤버십 더미 삭제 — 선두 `sim-member-*`를 최대 10명까지 standby·본 대기열 이력·테스트 계정에서 제거 |
+| `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 조기 마감 뒤 모든 더미 멤버십 대기자가 제거된 경우에만 더미 좌석 랜덤 취소(AVAILABLE 복원) 및 B파트 전송용 이벤트 준비 |
 | `POST /admin/simulation/issue-links` | [단계4] 기존 standby 대기열의 최상위 활성 멤버십 사용자를 확인한 뒤 준비된 취소 이벤트를 B파트 SQS로 전송 |
 | `POST /admin/simulation/cleanup` | 시뮬레이션 데이터 일괄 삭제 (더미 유저·좌석·대기열·예약 및 시뮬레이션 중 직접 진입한 standby 행, 실제 계정 자체는 유지) |
 | `GET /admin/simulation/status` | 현재 시뮬레이션 단계·좌석·대기열·실제유저 상태 조회 |
 
-`/admin/local-simulation/events`, `/init`, `/sellout`, `/close`, `/cancel-seats`, `/issue-links`, `/cleanup`, `/status`도 같은 요청 형식과 관리자 인증을 사용한다. 단계3 `cancel-seats`는 `closed` 또는 이미 `seats_cancelled`인 경우에만 허용되며, 단계2 이전 요청은 `409 simulation_stage_order`로 거부한다. 로컬 단계4는 `SMTP_USER`·`SMTP_PASS`와 32자 이상의 `JWT_SECRET`이 필요하며, `LOCAL_FRONTEND_BASE_URL`(미설정 시 `http://localhost:5173`)을 링크의 프론트 주소로 사용한다. 발송 성공 후 allocation은 `LINK_SENT`로 저장되고, 로컬 시뮬레이션 정리 시 아직 사용되지 않은 해당 할당은 `EXPIRED`로 마감한다.
+`/admin/local-simulation/events`, `/init`, `/sellout`, `/close`, `/remove-standard-dummies`, `/remove-dummy-members`, `/cancel-seats`, `/issue-links`, `/cleanup`, `/status`도 같은 요청 형식과 관리자 인증을 사용한다. 매진 단계는 일반·멤버십 더미를 대기열 원장에 등록하되, 취소표 순번·링크 후보에는 활성 멤버십 대기자만 포함한다. 단계2-1은 조기 마감 후 일반 더미 전체를 삭제하고, 단계2-2는 선두 더미 멤버십 사용자를 최대 10명 삭제한다. 모든 멤버십 더미 삭제가 끝난 `dummy_members_removed` 또는 이미 `seats_cancelled`일 때만 단계3 `cancel-seats`가 허용된다. 순서가 맞지 않은 요청은 `409 simulation_stage_order`로 거부한다. 로컬 단계4는 `SMTP_USER`·`SMTP_PASS`와 32자 이상의 `JWT_SECRET`이 필요하며, `LOCAL_FRONTEND_BASE_URL`(미설정 시 `http://localhost:5173`)을 링크의 프론트 주소로 사용한다. 발송 성공 후 allocation은 `LINK_SENT`로 저장되고, 로컬 시뮬레이션 정리 시 아직 사용되지 않은 해당 할당은 `EXPIRED`로 마감한다.
+
+`/admin/integrated-simulation/events`, `/init`, `/main-queue`, `/sellout`, `/close`, `/cancel-seats`, `/issue-links`, `/cleanup`, `/status`는 본 티켓팅과 취소표 전환을 연속 검증하는 별도 관리자 흐름이다. 일반 더미는 본 티켓팅 waiting에만 남고 멤버십 더미만 취소표 standby로 이동한다. 실제 사용자는 기존 서비스 정책대로 활성 멤버십·본 대기열 참여 이력·시뮬레이션 실행 중 직접 진입 조건을 모두 충족해야 링크 후보가 된다. `issue-links`는 B Lambda가 `membership_at_join=1`인 더미까지 후보로 읽는 것을 막기 위해 통합 전용 멤버십 더미를 먼저 제거하며, 정리가 실패하면 SQS 이벤트를 발행하지 않는다. 통합 모드와 기존 모드는 상태 Hash와 더미 계정을 분리하지만 실제 공연 회차의 좌석·대기열 Redis 키는 공유하므로 같은 공연·회차에서 동시에 실행하지 않는다.
 
 **Redis 키:**
 - `simulation:{eventId}` (Hash) — 시뮬레이션 메타데이터 (stage, dummyCount, 대상 사용자 등)
-- `simulation:{eventId}:standby-users` (Set) — 시뮬레이션이 활성화된 뒤 일반 `POST /cancel-queue/join`으로 직접 진입한 사용자 ID 추적
-- `simulation:local:{eventId}` (Hash), `simulation:local:{eventId}:standby-users` (Set) — B파트 SQS와 분리된 온프레미스 SMTP 시뮬레이션 상태와 실제 대기 사용자 추적
+- `simulation:{eventId}:standby-users` (Set) — 시뮬레이션이 활성화된 뒤 `POST /cancel-queue/join`으로 직접 진입한 실제 멤버십 사용자 ID 추적
+- `simulation:local:{eventId}` (Hash), `simulation:local:{eventId}:standby-users` (Set) — B파트 SQS와 분리된 온프레미스 SMTP 시뮬레이션 상태와 실제 멤버십 대기 사용자 추적
+- `simulation:integrated:{eventId}` (Hash), `simulation:integrated:{eventId}:standby-users` (Set) — 본 티켓팅부터 B파트 요청까지 연결한 통합 시뮬레이션 상태와 실제 멤버십 후보 추적
+
+## ⚙️ Core Logic & Code Description — 통합 티켓팅 시뮬레이션
+
+### src/routes/simulationRoutes.js
+- **목적:** 기존 AWS·Final 취소표 시뮬레이션을 보존하면서 본 티켓팅 대기열부터 B파트 Secret Link 요청까지 독립적으로 검증한다.
+- **주요 기능:** 통합 전용 일반 더미 `sim-integrated-user-*`와 멤버십 더미 `sim-member-integrated-*`를 사용한다. 매진 시 일반 사용자는 본 티켓팅 waiting에 남기고 멤버십 사용자만 취소표 standby로 전환한다. 실제 링크 후보는 더미를 제외하고 시뮬레이션 중 서비스 경로로 직접 진입한 활성 멤버십 사용자만 집계한다.
+- **API 명세 / 라우팅 규칙:** `POST /admin/integrated-simulation/init` → `main-queue` → `sellout` → `drain-queue` → `close` → `cancel-seats` → `issue-links` 순서로 실행하며 순서가 어긋나면 `409 simulation_stage_order`를 반환한다. 모든 경로는 관리자 JWT가 필요하고, 링크 요청은 통합 멤버십 더미 자동 정리 후 기존 `CANCELLATION_EVENTS_QUEUE_URL`을 사용한다.
 
 **시뮬레이션 단계 흐름:**
 1. `initialized` → 더미 유저 준비 완료
-2. `sold_out` → 전석 SOLD + standby 대기열 구성
-3. 단계1 이후 본 티켓팅에 참여한 실제 멤버십 계정만 일반 취소표 대기열 진입 가능. 단계2 마감 뒤에도 기존 standby 상태가 유지되어 `/queue/enter` 재호출로 대기 화면이 종료되지 않음
-4. `closed` → 티켓팅 마감 + 직접 진입한 멤버십 standby 대기자 집계
-5. `seats_cancelled` → 단계2 이후 더미 좌석 일부 취소 및 취소 이벤트 준비. 단계2보다 먼저 호출하면 `409`로 거부
-6. 단계4(B 모드) → 기존 standby 최상위 활성 멤버십 사용자를 확인하고 B파트 SQS로 이벤트 전송
-7. 단계4(Local 모드) → 준비된 취소 좌석과 활성 멤버십 대기자를 순서대로 1:1 매칭하고, 좌석별 할당을 A파트 `cancel_allocations`에 기록한 뒤 Gmail SMTP로 사용자별 5분 제한 링크 발송
-8. 단계4(Final 모드) → Local 단계에서 취소한 좌석을 `cancel_last_pool_seats`에 공용 풀로 복사하고, 실제 멤버십 후보를 본 대기열 순서로 확정한 뒤 Gmail 링크를 일괄 발급
-9. Final 링크 화면 → Last 전용 후보가 있으면 현재 순번만 공용 풀 좌석을 선택하고, Local allocation이면 배정 좌석만 선택한다. 두 경우 모두 결제 확정·이탈·만료 후 다음 처리 흐름을 유지
+2. `main_queue_open` → 더미로 본 티켓팅 대기열 구성, 실제 사용자 진입 가능
+3. `sold_out` → 모든 좌석을 더미에게 SOLD 처리 + 멤버십 사용자를 취소표 standby로 전환
+4. `queue_drained` → 대기열에서 더미를 `batchSize`(기본 1000)명씩 점진적으로 제거. `releaseSeatCount` 지정 시 더미 SOLD 좌석을 해당 수만큼 AVAILABLE로 해제. 더미 소진 시 `admitBatch`로 실제 사용자 자동 입장 승인 (반복 호출 가능)
+5. `closed` → 티켓팅 마감 + 직접 진입한 멤버십 standby 대기자 집계
+6. `seats_cancelled` → 더미 좌석 일부 취소 및 취소 이벤트 준비
+7. `link_requested` (B 모드) → 기존 standby 최상위 활성 멤버십 사용자를 확인하고 B파트 SQS로 이벤트 전송
+8. `link_requested` (Local 모드) → 준비된 취소 좌석과 활성 멤버십 대기자를 순서대로 1:1 매칭하고, 좌석별 할당을 A파트 `cancel_allocations`에 기록한 뒤 Gmail SMTP로 사용자별 5분 제한 링크 발송
+9. `link_requested` (Final 모드) → Local 단계에서 취소한 좌석을 `cancel_last_pool_seats`에 공용 풀로 복사하고, 실제 멤버십 후보를 본 대기열 순서로 확정한 뒤 Gmail 링크를 일괄 발급
 10. B 모드는 B파트 Step Functions가 후속 배정하고, Local·Final 모드는 A파트가 Secret Link를 직접 검증
 
 ---
@@ -398,9 +415,9 @@ Redis 기반 대기열 관리의 핵심 로직.
 
 **주요 함수:**
 - `enter()`: 멤버십 여부와 무관하게 Redis `INCR` 값을 그대로 Sorted Set score로 사용해 완전 선착순으로 대기열에 등록한다. 멤버십 score 보정은 하지 않는다. 참여 표식은 Redis `queue:main-participants`와 MariaDB `waiting_queue`에 남겨 취소표 자격 확인에 사용한다. 이미 standby에 등록된 사용자가 조기 마감 뒤 재요청하면 대기열 데이터를 유지하면서 `status: 'closed'`, `type: 'standby'`, `preserveStandby: true`를 반환해 프론트 마감 안내를 표시한다.
-- `enterStandby()`: 활성 멤버십과 동일 공연·회차의 본 대기열 참여 이력을 모두 확인한 뒤에만 standby 취소표 대기열로 이동시키고 MariaDB에 동기화한다. 멤버십만으로 직접 진입할 수 없으며, 본 티켓팅 마감 후에도 참여 이력이 있는 사용자의 등록 요청은 허용한다.
+- `enterStandby()`: 활성 멤버십과 동일 공연·회차의 본 티켓팅 참여 이력이 확인된 사용자를 취소표 standby에 등록한다. `/cancel-queue/join`은 이 함수를 사용하므로 일반 사용자는 취소표 대기열에 포함되지 않는다.
 - `backfillOne()`: 입장 슬롯이 비면 먼저 일반 eligible 대기자를 승격한다. 본 티켓팅이 열려 있고 일반 대기자가 없을 때만 `main-participants` 표식이 있는 standby 사용자를 일반 Admission Token 대상으로 승격하며, 마감 후 standby는 B파트 Secret Link 흐름으로 남긴다.
-- `getStandbyMemberStats()`: MariaDB의 `waiting_queue`와 활성 `memberships`를 조인해 회차별 멤버십 대기자 순번·전체 인원을 계산한다. `membership_at_join=1`, 본 대기열 참여 이력, 더미 ID 제외 조건을 함께 적용해 과거 테스트 데이터가 표시용 수치와 시뮬레이션 후보에 섞이지 않도록 한다.
+- `getStandbyMemberStats()`: 활성 멤버십·본 티켓팅 참여 이력이 확인된 standby 사용자의 회차별 순번·전체 인원을 반환한다. 일반 standby 데이터는 취소표 순번에 포함하지 않는다.
 - `getStandbyMemberCount()`: 관리자 통계의 standby 수치를 활성 멤버십 대기자 기준으로 계산한다.
 - `recordSimulationStandbyUser()`: 시뮬레이션 Hash가 존재하는 동안 일반 대기열·`enterStandby()` 경로로 참여한 사용자만 별도 Redis Set에 기록한다. 단계4는 이 Set과 MariaDB의 `membership_at_join=1`·본 대기열 참여 조건을 교차 검증해 실제 멤버십 후보만 확인한다. 기록 실패가 실제 대기열 진입을 막지는 않는다.
 - `admitBatch()`: admitted 현재 인원을 먼저 확인해 빈 슬롯만큼 eligible 상위 사용자를 선택하고, JWT Admission Token을 먼저 발급·저장한 뒤 admitted로 이동하여 승인 상태가 토큰보다 먼저 노출되는 경쟁 상태를 방지한다. 기본 최대 admitted 수는 `BATCH_SIZE=100`이며 MariaDB의 `status`를 `ADMITTED`로 동기화한다.
@@ -492,10 +509,10 @@ B파트의 Step Functions + Lambda 재판매 파이프라인에 좌석 반환 �
 
 - `isConfigured()`: `B_CALLBACK_BASE_URL` 설정 여부 반환
 - `callbackVerifyLink(token)`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link`에 `POST` — 브라우저에서 전달된 Secret Link 토큰을 B파트에서 검증
-- `callbackComplete({ userId, eventId, seatId, allocationId })`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link/complete`에 POST — 사용자가 좌석 선택을 완료했음을 B파트 Step Functions에 알림
+- `callbackComplete({ userId, eventId, seatId, allocationId, reservationId })`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link/complete`에 POST — 확정 예약의 `reservation_id`까지 함께 보내 사용자가 좌석 선택을 완료했음을 B파트 Step Functions에 알림. 이전 outbox payload에 ID가 없으면 A DB의 해당 확정 예약을 조회해 보완한다.
 - `callbackExpire({ userId, eventId, seatId, allocationId })`: B파트 `${B_CALLBACK_BASE_URL}/b-callback/verify-link/expire`에 POST — Secret Link 만료를 B파트에 알려 다음 대기자 배정을 트리거
 
-complete/expire 콜백은 B파트가 `200` JSON 또는 `204 No Content`로 응답해도 성공으로 처리한다. A파트의 `/cancel-queue/respond`, `/cancel-queue/expire`는 먼저 A DB의 `cancel_allocations` 상태를 확인하여 terminal 상태의 중복 요청을 B파트로 재전송하지 않는다. 최초 콜백 성공 뒤에는 A DB도 `allocation_id` 기준으로 상태를 동기화한다. expire 콜백 성공 후에는 A Redis의 해당 사용자의 held 좌석도 해제한다. 취소표 사용자의 `POST /seats/confirm`도 활성 할당이 있으면 동일한 complete 콜백을 자동 호출하고, 실패 시 `callback_outbox`에 저장한 뒤 A DB 할당은 응답 완료로 마감한다.
+complete/expire 콜백은 B파트가 `200` JSON 또는 `204 No Content`로 응답해도 성공으로 처리한다. complete 본문은 `allocation_id`, `event_id`, `seat_id`, `reservation_id`를 포함한다. A파트의 `/cancel-queue/respond`, `/cancel-queue/expire`는 먼저 A DB의 `cancel_allocations` 상태를 확인하여 terminal 상태의 중복 요청을 B파트로 재전송하지 않는다. 최초 콜백 성공 뒤에는 A DB도 `allocation_id` 기준으로 상태를 동기화한다. expire 콜백 성공 후에는 A Redis의 해당 사용자의 held 좌석도 해제한다. 취소표 사용자의 `POST /seats/confirm`도 활성 할당이 있으면 예약 저장 직후 동일한 complete 콜백을 자동 호출하고, 실패 시 `callback_outbox`에 저장한 뒤 A DB 할당은 응답 완료로 마감한다.
 
 `cancelQueueRoutes.js`의 `/verify-link`, `/respond`, `/expire` 엔드포인트가 이 서비스를 사용한다. B파트 검증 응답의 식별자와 A파트 `cancel_allocations`를 대조하여 다른 할당으로 변조되는 것을 차단한다. B파트 콜백 실패 시 complete/expire 요청은 `callback_outbox`에 저장되어 재시도된다.
 

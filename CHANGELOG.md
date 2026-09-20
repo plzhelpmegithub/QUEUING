@@ -1,3 +1,78 @@
+## [2026-09-20 12:38] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/notificationService.js]**: SES 취소표 메일의 빨간색 브랜드 카드 디자인(`wrapEmailHtml`)을 공통 함수로 추출. 헤더(#E11D2E), 콘텐츠 영역, 회색 푸터 3단 구조
+- **[src/routes/seatRoutes.js]**: 예매 완료(일반/무통장), 예매 취소 및 환불 메일에 카드 디자인 적용. 무통장은 입금 기한 경고 배지 포함
+- **[src/services/membershipService.js]**: 멤버십 가입 완료, 멤버십 해지 완료 메일에 카드 디자인 적용
+- **[src/routes/lastSimulationRoutes.js]**: 취소표 예매 완료, 취소표 예매 링크 안내 메일에 카드 디자인 + CTA 버튼 적용
+- **[src/routes/simulationRoutes.js]**: Local SMTP 취소표 Secret Link 발급 메일에 카드 디자인 + CTA 버튼 적용
+- **[src/services/notificationService.js]**: 공연 취소 안내, 공연 정보 변경 안내 메일에 카드 디자인 적용
+- **[src/routes/simulationRoutes.js]**: drain-queue 엔드포인트가 멤버십 더미도 함께 제거하도록 수정. drain 후 `admittedKey`에 남은 더미를 추가 정리하여 `admitBatch` 슬롯 확보. drain 스테이지를 `main_queue_open` 이후로 복원, sellout은 `queue_drained`도 허용
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 대기열 드레인 후 더미가 전부 제거되었지만 실제 사용자가 입장되지 않음
+- **원인(Cause):** 1) drain 필터가 일반 더미(`sim-integrated-user-*`)만 제거하고 멤버십 더미(`sim-member-integrated-*`)는 남겨둠 2) `admittedKey`에 이미 입장된 더미가 100명(BATCH_SIZE) 가까이 차 있어 `admitBatch`의 `availableSlots`가 0
+- **해결(Solution):** drain 필터에 멤버십 더미 접두사 추가. drain 실행 시 `admittedKey`에 남은 더미를 `smembers` → `srem`으로 추가 정리하여 입장 슬롯 확보
+
+## [2026-09-20 11:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: `POST /simulation/integrated/drain-queue` 엔드포인트를 매진(sold_out) **이후** 동작하도록 전면 재작성. `batchSize`(기본 1000)만큼 더미를 대기열에서 제거하고, `releaseSeatCount`만큼 더미 SOLD 좌석을 AVAILABLE로 해제. 더미 소진 시 `admitBatch`로 실제 사용자 자동 입장 승인. 누적 통계(`totalDrained`, `totalSeatsReleased`) 추적
+- **[src/routes/simulationRoutes.js]**: sellout 단계의 허용 스테이지를 `main_queue_open`만으로 복원 (`queue_drained` 제거). 스테이지 순서: `main_queue_open` → `sold_out` → `queue_drained` → `closed`
+
+## [2026-09-20 10:42] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 통합 시뮬레이션에 `POST /simulation/integrated/drain-queue` 엔드포인트 추가. 본 티켓팅 대기열에서 더미 사용자를 일괄 제거하고 실제 사용자를 `admitBatch`로 입장 승인하여 좌석 선택 → 결제 흐름을 테스트할 수 있게 함. 새 스테이지 `queue_drained` 추가
+- **[src/routes/simulationRoutes.js]**: sellout 단계의 허용 스테이지에 `queue_drained` 추가 — 실제 사용자가 좌석을 선점한 뒤 나머지 좌석을 더미에게 매진 처리 가능
+
+## [2026-09-20 08:40] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `POST /verify-link` 성공 응답에 검증 주체(`local` 또는 `b`)를 추가해 프론트엔드가 Local SMTP 링크와 B파트 링크의 화면을 안전하게 구분하도록 변경했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 통합 티켓팅 시뮬레이션 단계6에서 발급된 B파트 링크가 Last 시뮬레이션용 좌석 화면이 아니라 기존 간단한 개인 링크 화면으로 이동했습니다.
+- **원인(Cause):** A파트 `/verify-link`가 Local JWT와 B 콜백 검증을 하나의 동일 응답으로 정규화해, 프론트엔드가 링크의 검증 주체를 구분할 수 없었습니다.
+- **해결(Solution):** 검증 성공 응답에 `source`를 포함했습니다. 이 값은 화면 라우팅에만 사용하며 완료·만료 상태 전이는 기존 B 콜백 경계를 그대로 유지합니다.
+
+## [2026-09-20 08:18] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/app.js]**: 기존 AWS·Final 시뮬레이션과 분리된 `/admin/integrated-simulation/*` 라우트 모드를 추가 등록했습니다.
+- **[src/routes/simulationRoutes.js]**: 일반·멤버십 더미를 본 티켓팅 대기열에 구성한 뒤 매진 시 멤버십 더미만 취소표 standby로 전환하고, 마감·취소 좌석 생성·B파트 SQS 링크 요청까지 이어지는 통합 시뮬레이션 API를 추가했습니다. 통합 모드는 별도 Redis 상태 키와 더미 사용자 접두사를 사용합니다.
+- **[src/routes/simulationRoutes.js]**: 통합 단계6 직전에 `sim-member-integrated-*` 대기 행과 테스트 계정을 자동 정리해 B Lambda의 `membership_at_join=1` 후보 조회가 더미 메일 주소를 선택하지 않도록 보호했습니다. 정리가 실패하면 SQS 발행을 중단합니다.
+- **[src/services/queueService.js]**: 통합 시뮬레이션 실행 중 실제 서비스 경로로 취소표 대기열에 진입한 멤버십 사용자를 별도 후보 Set에 기록하도록 확장했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** AWS 또는 Final 취소표 시뮬레이션만으로는 일반 본 티켓팅 대기열부터 멤버십 전용 취소표 대기열, B파트 링크 발급까지 한 화면에서 연속 검증할 수 없었습니다.
+- **원인(Cause):** 기존 두 시뮬레이터는 취소표 단계 검증을 목적으로 하며 본 티켓팅 대기열 구성 단계를 별도로 제공하지 않았습니다.
+- **해결(Solution):** 기존 라우트의 정책을 변경하지 않고 통합 전용 모드·상태 키·더미 ID를 추가해 두 대기열의 책임을 분리한 6단계 검증 흐름을 만들었습니다.
+- **추가 검증:** B파트 후보 SQL은 더미 ID를 별도로 제외하지 않으므로, 통합 시뮬레이션은 링크 요청 직전 전용 멤버십 더미를 제거한 뒤 실제 사용자 후보만 남깁니다.
+
+## [2026-09-19 15:41] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: 취소표 대기열 등록·상태 조회·마이페이지 목록을 다시 활성 멤버십 회원 전용으로 제한했습니다. 비멤버십 사용자는 취소표 대기열 행과 순번을 조회할 수 없습니다.
+- **[src/services/queueService.js]**: 취소표 순번·전체 인원 집계를 일반 Redis standby 전체가 아니라 활성 멤버십 대기자 기준으로 복원했습니다.
+- **[src/routes/simulationRoutes.js]**: AWS·Final 공통 시뮬레이션을 `조기 마감 → 일반 더미 전체 삭제 → 멤버십 더미 10명씩 삭제 → 취소표 생성` 흐름으로 복원했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시뮬레이션 편의를 위해 일반 본 티켓팅 대기열 정책을 취소표 대기열과 마이페이지에까지 적용해 기존 멤버십 전용 서비스 경계가 사라졌습니다.
+- **원인(Cause):** `/cancel-queue/join`이 일반 `enter()`를 사용하고, 순번 집계가 전체 Redis standby를 기준으로 변경되어 있었습니다.
+- **해결(Solution):** `/cancel-queue/join`을 `enterStandby()`로 되돌리고, 활성 멤버십 대기자만 조회·표시하도록 복원했습니다. B 완료 콜백의 `reservation_id` 전달 보완은 유지합니다.
+
+## [2026-09-19 15:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: AWS(`/admin/simulation/*`)와 Final이 사용하는 Local(`/admin/local-simulation/*`) 공통 시뮬레이션 흐름에서 일반 더미 전체 삭제 단계를 제거했습니다. 단계1 매진 후 조기 마감 전에 지정한 `sim-user-` 번호만 대기열에서 이탈시키는 `POST /remove-standard-dummy-users`를 추가했습니다.
+- **[src/routes/simulationRoutes.js]**: 조기 마감 뒤 더미 멤버십 사용자를 선두 순서가 아니라 관리자가 입력한 번호로 최대 10명씩 선택 삭제하도록 변경했습니다. 각 삭제 후 Redis 순번과 MariaDB 대기열 행을 함께 갱신하고, 모든 멤버십 더미가 제거되어야 단계3이 활성화됩니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 일반 더미 전체 삭제가 조기 마감 뒤 한 번에 실행되어, 마감 전 실제 대기 순번이 점진적으로 줄어드는 본 티켓팅 흐름을 재현할 수 없었습니다.
+- **원인(Cause):** 일반 더미 제거 API가 전체 `sim-user-*` 행을 일괄 삭제하고, 시뮬레이션 상태를 별도 단계로 강제했기 때문입니다.
+- **해결(Solution):** 지정한 더미 번호만 Redis Sorted Set과 해당 회차의 `waiting_queue`에서 제거하도록 바꾸고, `sold_out → closed → dummy_members_removed` 순서를 단순화했습니다.
+
 ## [2026-09-18 07:40] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -108,6 +183,16 @@
 - **증상(Issue):** 1번과 2번 후보가 모두 5분 Secret Link 이메일을 동시에 받아 순번 제어가 무력화됨
 - **원인(Cause):** 관리자 링크 발급 API가 취소표 풀 수만큼 모든 `WAITING` 후보를 순회하며 allocation 생성과 SMTP 발송을 수행했음
 - **해결(Solution):** 유효 링크가 하나라도 있으면 다음 발급을 중단하고, 앞 순번의 `COMPLETED`·`PASSED`·`EXPIRED` 전환 뒤에만 다음 후보를 원자적으로 발급한다. 후순위에 미리 생성된 allocation도 정리해 새 순번 시점에 새 이메일이 발송되도록 했다.
+
+## [2026-09-19 13:05] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/mine`이 회차 값이 비어 있는 초기 AWS B파트 `LINK_SENT` allocation도, 동일 공연에 참여 중인 회차가 하나일 때만 안전하게 standby 행에 연결하도록 보완했습니다. 응답 allocation에는 화면 표시용 회차 값도 함께 반환합니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** AWS에서 Secret Link가 발급된 `cancel_allocations` 행이 있어도 마이페이지 대기열에서는 링크 미발급으로 표시될 수 있었습니다.
+- **원인(Cause):** 대기열 행은 공연·회차 키로 allocation을 찾지만, 이전 B Lambda가 생성한 allocation은 `session_date`, `session_time`이 빈 값일 수 있어 키가 일치하지 않았습니다.
+- **해결(Solution):** 정확한 회차 키 매칭을 우선 유지하고, 활성 legacy allocation이 하나이며 사용자의 해당 공연 standby 회차도 하나인 경우에만 연결합니다. 여러 회차가 있으면 잘못된 링크 표시를 막기 위해 기존처럼 연결하지 않습니다.
 
 ## [2026-09-18 09:27] 업데이트 로그
 
@@ -1446,3 +1531,72 @@
 - **증상(Issue):** 취소표 결제 완료 또는 링크 만료 시 A API가 B파트 콜백 Lambda에 상태를 전달하지 못할 수 있음.
 - **원인(Cause):** 검증 콜백만 `/b-callback/verify-link`를 사용하고 완료·만료 콜백은 `/verify-link/complete`, `/verify-link/expire`로 호출해 ALB 리스너의 경로 기반 규칙과 불일치.
 - **해결(Solution):** 세 콜백을 모두 `/b-callback/verify-link/*` 네임스페이스로 통일해 ALB가 각각의 Lambda 대상 그룹으로 라우팅하도록 수정.
+## [2026-09-19 13:48] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: AWS(`/admin/simulation`)와 Final Local(`/admin/local-simulation`) 시뮬레이션에 회차별 `sim-member-*` 더미 멤버십 대기자를 추가했습니다. 실제 멤버십 사용자는 이 더미 대기자 뒤 순번으로 등록되며, 단계2 뒤 `POST /remove-dummy-members`로 더미를 제거해야 단계3 취소표 생성이 진행됩니다. 더미 계정은 링크 발급 후보에서 제외하고, 실제 멤버십 사용자만 B파트 또는 SMTP 링크 대상이 되도록 유지했습니다.
+- **[src/routes/cancelQueueRoutes.js]**: 취소표 상태·마이페이지 목록 응답에 앞 순번 전체를 기준으로 한 `estimatedWaitMinutes`와 1인당 5분 기준값을 추가했습니다.
+- **[src/routes/lastSimulationRoutes.js]**: Final Last 후보 스냅샷에서 `sim-member-*` 테스트 계정을 제외해 실제 멤버십 사용자만 Secret Link를 받도록 보완했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 매진 시뮬레이션에서 실제 사용자가 더미 대기자보다 앞선 1번으로 보였고, Final 단계의 후보 선정에 더미 멤버십 계정이 섞일 수 있었습니다.
+- **원인(Cause):** 기존 `sim-user-*`는 멤버십 standby 통계에서 의도적으로 제외되므로 실제 사용자의 멤버십 순번을 밀어 줄 수 없었습니다.
+- **해결(Solution):** 멤버십·본 대기열 이력을 갖는 전용 `sim-member-{mode}-*` 행을 Redis와 MariaDB에 함께 생성하고, 순번 표시는 이를 포함하되 후보 선정 함수에서는 해당 접두사를 제외했습니다. 조기 마감 뒤 전용 삭제 단계로 더미를 제거하면 실제 사용자의 순번과 예상 시간이 즉시 다시 계산됩니다.
+## [2026-09-19 14:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 매진 연출 시 비회원 `sim-user-*` 더미도 회차별 Redis standby와 MariaDB `waiting_queue`의 본 대기열·standby 행에 모두 등록하도록 보완했습니다. 비회원 더미는 `membership_at_join=0`으로 기록되어 B파트 Secret Link 후보에서는 제외됩니다.
+- **[src/routes/simulationRoutes.js]**: 더미 멤버십 삭제 API가 전체 삭제 대신 회차의 선두 대기자 10명씩만 삭제하도록 변경했습니다. 남은 인원이 0일 때만 단계3을 허용하며, 매 요청마다 남은 더미 수를 반환합니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 매진에 사용한 비회원 더미 10,000명은 좌석 점유만 하고 대기열 원장에는 보이지 않았으며, 더미 멤버십 삭제 시 실제 사용자의 예상 대기시간 변화 과정을 확인할 수 없었습니다.
+- **원인(Cause):** 기존 매진 로직은 남은 좌석보다 많은 일부 일반 더미만 Redis에 임시 추가했고 MariaDB `waiting_queue`를 동기화하지 않았으며, 멤버십 더미 삭제가 일괄 처리였습니다.
+- **해결(Solution):** 모든 일반 더미의 `eligible`·`standby` 행을 배치 삽입하고, 멤버십 더미 삭제는 정렬된 선두 10명만 Redis·MariaDB·계정에서 함께 제거하도록 변경했습니다.
+
+## [2026-09-19 14:39] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: 활성화된 AWS·Final 시뮬레이션 회차에서는 멤버십 전용 통계 대신 Redis standby 전체 순번을 반환하도록 보완했습니다. 일반 더미 10,000명과 멤버십 더미 100명이 있으면 실제 사용자가 10,101번으로 표시됩니다.
+- **[src/routes/simulationRoutes.js]**: 조기 마감 뒤 일반 `sim-user-*` 대기열 행을 한 번에 제거하는 `POST /remove-standard-dummies` 단계를 추가했습니다. 계정과 매진 좌석 기록은 유지하므로 이후 단계3 취소표 생성은 그대로 수행됩니다.
+- **[README.md]**: AWS·Final 공통의 전체 순번 표시 및 일반 더미 삭제 후 멤버십 더미를 10명씩 제거하는 단계 순서를 갱신했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 일반 더미 10,000명과 멤버십 더미 100명을 만든 뒤 실제 사용자가 대기열에서 101번으로만 표시되었습니다.
+- **원인(Cause):** 취소표 대기열 통계가 멤버십 standby만 세도록 되어 있어 일반 더미의 순번 부하가 표시에서 제외되었습니다.
+- **해결(Solution):** 시뮬레이션 회차에 한해서 Redis 전체 standby rank를 표시하고, 조기 마감 후 일반 더미의 대기열 행만 별도 삭제하는 단계로 실제 순번 변화와 이후 링크 후보 정책을 분리했습니다.
+
+## [2026-09-19 14:43] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: AWS 취소표 시뮬레이션을 포함한 B파트 연동 결제 확정 시 MariaDB 예약 저장 결과의 `reservationId`를 complete callback payload에 추가했습니다.
+- **[src/services/bPartCallbackService.js]**: complete callback의 잘못된 `reservation_Id` 인자명을 정정하고 B Lambda 필수 본문 필드인 `reservation_id`를 전송하도록 수정했습니다. 이전 `callback_outbox`의 누락 payload는 사용자·공연·좌석 기준의 최신 `CONFIRMED` 예약을 조회해 재시도 시 보완합니다.
+- **[README.md]**: B complete callback의 예약 ID 전달 계약과 활성 시뮬레이션의 전체 순번 표시 규칙을 갱신했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** AWS 시뮬레이션에서 결제를 완료해도 B Lambda `/b-callback/verify-link/complete`가 `400 { "reason": "missing_fields" }`를 반환해 다음 후보가 즉시 전환되지 않았습니다.
+- **원인(Cause):** A파트가 `reservation_id` 없이 완료 콜백을 전송했고, 콜백 서비스의 인자명도 `reservation_Id`로 잘못되어 있었습니다.
+- **해결(Solution):** 예약 확정 뒤 생성된 ID를 `reservationId`로 전달하고, B 요청 JSON에는 `reservation_id`로 직렬화했습니다. 과거 재시도 건도 확정 예약을 조회해 같은 필드를 채웁니다.
+
+## [2026-09-19 14:51] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: AWS·Final 시뮬레이션 회차 판정에서 `HH:mm`과 `HH:mm:ss` 시간 형식을 동일하게 비교하도록 보완했습니다. 활성 시뮬레이션이면 Redis 전체 standby 순번·총원을 반환합니다.
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/mine` 응답에 전체 시뮬레이션 순번인지 구분하는 `simulationQueue` 플래그를 추가했습니다.
+- **[README.md]**: 시뮬레이션 대기열의 전체 순번 조건과 시간 형식 호환 규칙을 갱신했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 일반 더미 10,000명과 멤버십 더미 100명을 생성했지만 실제 사용자의 마이페이지에는 101번만 표시되었습니다.
+- **원인(Cause):** 시뮬레이션 상태와 대기열의 회차 시간이 `HH:mm`과 `HH:mm:ss`로 다르게 저장되면 활성 시뮬레이션 판정이 실패해 멤버십 전용 순번으로 폴백할 수 있었습니다.
+- **해결(Solution):** 초 단위를 제외해 같은 회차를 판정하고, 시뮬레이션 전체 순번임을 응답 플래그로 전달했습니다.
+
+## [2026-09-19 15:00] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `/cancel-queue/join`, 상태 조회, 마이페이지 목록을 본 티켓팅 대기열 기준으로 변경해 멤버십 여부와 무관하게 일반 사용자도 standby 순번을 확인할 수 있도록 수정했습니다.
+- **[src/services/queueService.js]**: standby 표시 순번·전체 인원을 Redis의 전체 본 티켓팅 대기자로 계산하도록 변경했습니다. B파트의 `getActiveStandbyMembers()`는 그대로 활성 멤버십 사용자만 Secret Link 후보로 선택합니다.
+- **[README.md]**: 일반 대기열 참여와 멤버십 Secret Link 후보 정책을 분리해 문서화했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 비멤버십 일반 더미와 사용자가 본 티켓팅 standby에 존재해도 취소표 대기열 화면에는 멤버십 대기자만 표시되었습니다.
+- **원인(Cause):** 표시·목록 API가 멤버십 확인을 선행하고, 순번 집계도 멤버십 후보 SQL만 사용했습니다.
+- **해결(Solution):** 본 티켓팅 standby의 전체 Redis rank를 표시 기준으로 사용하고, 이메일 Secret Link 발급을 담당하는 B파트 후보 SQL에만 멤버십 조건을 유지했습니다.
