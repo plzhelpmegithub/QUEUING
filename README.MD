@@ -561,7 +561,7 @@ complete/expire 콜백은 B파트가 `200` JSON 또는 `204 No Content`로 응�
 
 Redis 키 만료(keyspace notification)를 활용한 결제 시간 제한.
 
-- `startTimer()`: 좌석 선점 시 호출. `timer:seat:{seatId}` 키를 TTL 설정으로 생성
+- `startTimer(seatId, userId, customDuration?)`: 좌석 선점 시 호출. `timer:seat:{seatId}` 키를 TTL 설정으로 생성. `customDuration` 전달 시 글로벌 `HOLD_DURATION` 대신 해당 값(초) 사용 (취소표 hold 시 allocation 잔여 시간 동기화용)
 - `cancelTimer()`: 결제 완료 시 키 삭제
 - `getRemaining()`: 남은 시간(TTL) 조회
 - `initExpiryListener()`: 서버 시작 시 1회 호출. `__keyevent@0__:expired` 채널 구독

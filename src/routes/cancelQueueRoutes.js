@@ -428,6 +428,10 @@ async function cancelQueueRoutes(fastify) {
       claimedByRequest = !assignment.idempotent;
     }
 
+    const holdDuration = allocation.expiresAt
+      ? Math.max(60, Math.floor((new Date(allocation.expiresAt).getTime() - Date.now()) / 1000))
+      : undefined;
+
     let result;
     try {
       result = await seatService.holdSeat(
@@ -435,7 +439,7 @@ async function cancelQueueRoutes(fastify) {
         seatId,
         admissionToken,
         context,
-        { cancelLink: isCancelLinkSession },
+        { cancelLink: isCancelLinkSession, holdDuration },
       );
     } catch (err) {
       if (claimedByRequest) {

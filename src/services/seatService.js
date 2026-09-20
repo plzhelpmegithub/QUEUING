@@ -172,7 +172,7 @@ async function holdSeat(userId, seatId, admissionToken, requestedContext = {}, o
       heldBy: userId,
       heldAt: Date.now().toString(),
     });
-    await startTimer(seatId, userId);
+    await startTimer(seatId, userId, options.holdDuration);
     if (!isCancelLink) {
       await queueService.cancelAdmissionDeadline(userId, sessionContext);
     }

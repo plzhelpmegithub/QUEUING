@@ -1,3 +1,15 @@
+## [2026-09-20 15:01] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/timerService.js]**: `startTimer()` 함수에 `customDuration` 매개변수 추가. 전달 시 글로벌 `HOLD_DURATION` 대신 커스텀 값으로 좌석 hold 타이머 설정
+- **[src/services/seatService.js]**: `holdSeat()` 함수에서 `options.holdDuration`을 `startTimer()`에 전달하도록 수정
+- **[src/routes/cancelQueueRoutes.js]**: `POST /cancel-queue/hold` 엔드포인트에서 취소표 allocation의 `expiresAt`까지 남은 시간을 계산하여 `holdDuration`으로 전달. 취소표 좌석 hold가 allocation 만료시간과 동기화됨
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트 취소표 결제 시 "선점 상태가 아닌 좌석입니다" 오류(HTTP 409)로 결제 실패
+- **원인(Cause):** 좌석 hold 타이머 기본값이 `HOLD_DURATION` 환경변수 미설정 시 60초로 설정됨. 결제 폼 작성 중 hold가 만료되어 좌석이 자동으로 AVAILABLE 상태로 복원됨. 반면 프론트엔드의 Secret Link 타이머는 5분(allocation.expiresAt 기준)이어서 두 타이머 간 불일치 발생
+- **해결(Solution):** 취소표 hold 요청 시 allocation의 `expiresAt` 남은 시간을 계산하여 좌석 hold 타이머에 동기화. `startTimer(seatId, userId, customDuration)` → `holdSeat(options.holdDuration)` → `cancelQueueRoutes`에서 `Math.max(60, remaining)` 전달
+
 ## [2026-09-20 14:02] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

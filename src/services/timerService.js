@@ -16,8 +16,8 @@ async function getCurrentHoldDuration() {
   return stored ? parseInt(stored, 10) : DEFAULT_HOLD_DURATION;
 }
 
-async function startTimer(seatId, userId) {
-  const holdDuration = await getCurrentHoldDuration();
+async function startTimer(seatId, userId, customDuration) {
+  const holdDuration = customDuration || await getCurrentHoldDuration();
   const timerKey = `${TIMER_PREFIX}${seatId}`;
   await redis.set(timerKey, userId, 'EX', holdDuration);
   timerStarts.inc();
