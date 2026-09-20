@@ -1771,6 +1771,10 @@ async function simulationRoutes(fastify, options = {}) {
         );
       }
       await pool.query('DELETE FROM cancel_allocations WHERE user_id LIKE ? AND event_id = ?', [`${simUserPrefix(mode)}%`, eventId]);
+      if (context.sessionDate && context.sessionTime) {
+        const lockKey = `${eventId}|${context.sessionDate}|${context.sessionTime}`;
+        await pool.query('DELETE FROM cancel_active_lock WHERE lock_key = ?', [lockKey]);
+      }
       await pool.query('DELETE FROM memberships WHERE user_id LIKE ?', [`${simUserPrefix(mode)}%`]);
       await pool.query('DELETE FROM users WHERE user_id LIKE ?', [`${simUserPrefix(mode)}%`]);
       await pool.query('DELETE FROM memberships WHERE user_id LIKE ?', [`${simMemberPrefix(mode)}%`]);
