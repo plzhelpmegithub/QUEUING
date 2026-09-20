@@ -346,6 +346,24 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
   const heldBy = seatInfo.heldBy;
 
   if (status !== STATUS.HELD) {
+    if (status === STATUS.SOLD && heldBy === userId) {
+      const existing = await pool.query(
+        `SELECT reservation_id FROM reservations
+         WHERE user_id = ? AND seat_id = ? AND status = 'CONFIRMED'
+         ORDER BY reserved_at DESC LIMIT 1`,
+        [userId, seatId],
+      );
+      if (existing.length > 0) {
+        return {
+          success: true,
+          idempotent: true,
+          seatId,
+          reservationId: existing[0].reservation_id,
+          status: STATUS.SOLD,
+          message: '이미 결제가 완료된 좌석입니다.',
+        };
+      }
+    }
     return { success: false, reason: 'not_held', message: '선점 상태가 아닌 좌석입니다.' };
   }
   if (heldBy !== userId) {
@@ -375,36 +393,52 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
   );
 
   await redis.hset(seatKey, { status: STATUS.SOLD });
-  await adjustSeatCounter(sessionContext.eventId, sessionContext, 'held', 'sold');
+
+  try {
+    await adjustSeatCounter(sessionContext.eventId, sessionContext, 'held', 'sold');
+  } catch (counterErr) {
+    console.error('[Confirm] adjustSeatCounter 실패:', counterErr.message);
+  }
   invalidateSeatsCache(eventId);
-  await cancelTimer(seatId);
-  await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
-
-  const { revokeToken } = require('./tokenService');
-  await revokeToken(userId, sessionContext);
-
-  // 예매를 완료한 사용자는 admission 풀에서 빠져야 다음 대기자가
-  // 빈 슬롯을 이어받을 수 있다. DB 상태는 만료가 아닌 완료로 남긴다.
-  const admissionReleased = await queueService.removeAdmitted(
-    userId,
-    sessionContext,
-    { finalStatus: 'COMPLETED' },
-  );
-  if (admissionReleased) {
-    const resource = `admission:${sessionContext.eventId || 'default'}:${sessionContext.sessionKey}`;
-    const admissionLock = await acquireLock(resource);
-    if (admissionLock.acquired) {
-      try {
-        await queueService.backfillOne(sessionContext);
-      } finally {
-        await releaseLock(resource, admissionLock.token).catch(() => {});
-      }
-    }
+  try {
+    await cancelTimer(seatId);
+  } catch (timerErr) {
+    console.error('[Confirm] cancelTimer 실패:', timerErr.message);
+  }
+  try {
+    await publishSeatEvent(EVENT_TYPE.SOLD, { seatId, userId });
+  } catch (pubErr) {
+    console.error('[Confirm] publishSeatEvent 실패:', pubErr.message);
   }
 
-  // 취소표 좌석도 일반 예매와 동일하게 백엔드에서 확정하고,
-  // 해당 Secret Link 할당을 RESPONDED로 마감한다. B파트 연동 시
-  // 결제 확정 자체가 complete 콜백의 실제 트리거가 된다.
+  try {
+    const { revokeToken } = require('./tokenService');
+    await revokeToken(userId, sessionContext);
+  } catch (revokeErr) {
+    console.error('[Confirm] revokeToken 실패:', revokeErr.message);
+  }
+
+  try {
+    const admissionReleased = await queueService.removeAdmitted(
+      userId,
+      sessionContext,
+      { finalStatus: 'COMPLETED' },
+    );
+    if (admissionReleased) {
+      const resource = `admission:${sessionContext.eventId || 'default'}:${sessionContext.sessionKey}`;
+      const admissionLock = await acquireLock(resource);
+      if (admissionLock.acquired) {
+        try {
+          await queueService.backfillOne(sessionContext);
+        } finally {
+          await releaseLock(resource, admissionLock.token).catch(() => {});
+        }
+      }
+    }
+  } catch (admErr) {
+    console.error('[Confirm] removeAdmitted/backfill 실패:', admErr.message);
+  }
+
   try {
     const cancelAllocationService = require('./cancelAllocationService');
     const allocation = await cancelAllocationService.getActiveAllocation(userId, eventId);
@@ -445,19 +479,21 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
     console.error('[CancelAlloc] 예매 확정 상태 반영 실패:', err.message);
   }
 
-  const allSeats = await getAllSeats(eventId, sessionContext);
-  const remaining = allSeats.filter(s => s.status === STATUS.AVAILABLE || s.status === STATUS.HELD);
-  if (remaining.length === 0) {
-    await redis.set(getScopedKey(SOLD_OUT_KEY, sessionContext), '1');
-
-    await redis.set(getScopedKey('event:ticketing-status', sessionContext), 'sold_out');
-    console.log('[Ticketing] 전석 매진 → sold_out (standby 대기 접수 계속 가능)');
-
-    await publishSeatEvent(EVENT_TYPE.SOLD_OUT, {
-      seatId: 'ALL',
-      message: '전석 매진 — 취소표 대기는 계속 가능합니다.',
-      totalSold: allSeats.filter(s => s.status === STATUS.SOLD).length,
-    });
+  try {
+    const allSeats = await getAllSeats(eventId, sessionContext);
+    const remaining = allSeats.filter(s => s.status === STATUS.AVAILABLE || s.status === STATUS.HELD);
+    if (remaining.length === 0) {
+      await redis.set(getScopedKey(SOLD_OUT_KEY, sessionContext), '1');
+      await redis.set(getScopedKey('event:ticketing-status', sessionContext), 'sold_out');
+      console.log('[Ticketing] 전석 매진 → sold_out (standby 대기 접수 계속 가능)');
+      await publishSeatEvent(EVENT_TYPE.SOLD_OUT, {
+        seatId: 'ALL',
+        message: '전석 매진 — 취소표 대기는 계속 가능합니다.',
+        totalSold: allSeats.filter(s => s.status === STATUS.SOLD).length,
+      });
+    }
+  } catch (soldOutErr) {
+    console.error('[Confirm] 매진 체크 실패:', soldOutErr.message);
   }
 
   return {

@@ -1,3 +1,14 @@
+## [2026-09-20 16:21] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/seatService.js]**: `confirmSeat()` 함수에 멱등성(idempotency) 처리 추가 — 좌석이 이미 SOLD이고 동일 사용자가 재시도하면 reservations 테이블에서 기존 예약을 조회하여 `{success: true, idempotent: true}` 반환
+- **[src/services/seatService.js]**: `confirmSeat()` 함수의 post-SOLD 비핵심 작업들을 개별 try-catch로 보호 — `adjustSeatCounter`, `cancelTimer`, `publishSeatEvent`, `revokeToken`, `removeAdmitted`/`backfillOne`, 매진 체크가 실패해도 결제 확정 성공 응답 반환
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** `/seats/confirm` 호출 시 500 Internal Server Error 발생, 재시도 시 409 (좌석이 이미 SOLD 상태)
+- **원인(Cause):** `confirmSeat()` 함수에서 예약 저장 및 좌석 SOLD 처리 이후의 비핵심 작업(카운터 조정, 타이머 취소, 이벤트 발행, 토큰 폐기, admission 제거, 매진 체크)이 try-catch 없이 실행되어 이 중 하나가 throw하면 전체 핸들러가 500을 반환. 좌석은 이미 SOLD로 변경되었으므로 재시도 시 409 발생
+- **해결(Solution):** (1) 멱등성 처리 — 좌석이 SOLD이고 같은 사용자가 confirm하면 기존 예약을 조회하여 성공 반환 (2) post-SOLD 작업을 개별 try-catch로 감싸 비핵심 작업 실패가 결제 확정 응답에 영향을 주지 않도록 방어적 처리
+
 ## [2026-09-20 15:01] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

@@ -463,7 +463,7 @@ Redis Hash 기반 좌석 상태 머신.
 
 **주요 함수:**
 - `holdSeat()`: 일반 흐름은 Admission Token과 admitted 상태를 검증하고, 취소표 Secret Link 흐름은 라우트에서 검증한 allocation 범위 안에서 일반 Admission Token 검사 없이 처리 → 분산 락 획득 → 상태를 held로 변경 → 결제 타이머 시작. 일반 흐름에서만 입장 제한시간(admission deadline)을 취소하며, 기존 좌석 예매 흐름의 토큰은 무효화하지 않음
-- `confirmSeat()`: MariaDB 예매 기록 저장 → 상태를 sold로 변경 → 토큰 무효화 → admitted에서 제거(`COMPLETED`) → 빈 슬롯 backfill → 매진 시 `sold_out` 설정(standby 접수 유지, closed와 구분). 취소표 allocation이 있으면 RESPONDED로 갱신한 뒤 `waiting_queue`의 해당 standby 항목도 `COMPLETED`로 업데이트하여 `/cancel-queue/mine`에서 제거
+- `confirmSeat()`: 멱등성 보장 — 좌석이 이미 SOLD이고 동일 사용자가 재시도하면 reservations 테이블에서 기존 예약을 조회하여 `{success: true, idempotent: true}` 반환. 핵심 흐름: MariaDB 예매 기록 저장 → seats 테이블·Redis SOLD 동기화 → 이후 비핵심 작업(카운터 조정, 타이머 취소, 이벤트 발행, 토큰 무효화, admitted 제거/backfill, 매진 체크)은 개별 try-catch로 보호되어 실패 시에도 결제 확정 성공 응답 반환. 취소표 allocation이 있으면 RESPONDED로 갱신한 뒤 `waiting_queue`의 해당 standby 항목도 `COMPLETED`로 업데이트하여 `/cancel-queue/mine`에서 제거
 - `cancelSeat()`: Redis 상태와 무관하게 MariaDB 최신 확정 예약을 기준으로 환불 권한을 검증하고, DB 트랜잭션이 완료된 뒤 Redis 좌석·카운터·매진 플래그를 동기화한다. Redis 동기화가 일시 실패해도 MariaDB의 취소 결과를 유지하며, 최초 처리에서만 B파트용 SQS 취소 이벤트를 발행한다.
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
 - `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 + 인덱스 Set 일괄 삭제
