@@ -101,11 +101,30 @@ def handler(event, context=None):
 
     conn = _get_mysql_conn()
     with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE cancel_allocations SET status = %s WHERE event_id = %s AND user_id = %s",
-            (status, event_id, user_id),
-        )
-        if token and status in _LINK_STATUS_MAP:
+        if status == "EXPIRED":
+            # [2026-09-20 patch] A파트 confirmSeat()이 markRespondedById()로
+            # RESPONDED 처리한 직후, B파트 SFN의 5분 타임아웃(MarkExpired)이
+            # 뒤늦게 도착해서 이미 결제 완료된 allocation을 EXPIRED로
+            # 덮어써버리는 사고가 있었다 (실제 발생: RESPONDED 06:18:43 →
+            # EXPIRED로 덮어써짐 06:22:51). 결제/완료가 이미 반영된 상태는
+            # 타임아웃이 뒤늦게 와도 절대 덮어쓰지 않도록 WHERE 절에 가드 추가.
+            cur.execute(
+                "UPDATE cancel_allocations SET status = %s "
+                "WHERE event_id = %s AND user_id = %s "
+                "AND status NOT IN ('RESPONDED', 'COMPLETED')",
+                (status, event_id, user_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE cancel_allocations SET status = %s WHERE event_id = %s AND user_id = %s",
+                (status, event_id, user_id),
+            )
+        allocation_updated = cur.rowcount > 0
+
+        # allocation이 가드에 막혀 실제로 안 바뀐 경우(이미 RESPONDED/COMPLETED
+        # 였던 경우) cancellation_link만 따로 'expired'로 바뀌면 두 테이블이
+        # 서로 모순된 상태가 되므로, allocation이 실제로 바뀐 경우에만 같이 갱신.
+        if token and status in _LINK_STATUS_MAP and allocation_updated:
             cur.execute(
                 "UPDATE cancellation_link SET status = %s WHERE token = %s",
                 (_LINK_STATUS_MAP[status], token),
