@@ -1063,6 +1063,9 @@ async function getPosition(
     };
   }
 
+  const scopedStatus = await redis.get(keys.statusKey);
+  const ticketingStatus = scopedStatus || (!keys.scoped ? await redis.get(TICKETING_STATUS_KEY) : null);
+
   const rank =
     await redis.zrank(
       keys.waitingKey,
@@ -1070,6 +1073,13 @@ async function getPosition(
     );
 
   if (rank !== null) {
+    if (ticketingStatus === 'closed') {
+      return {
+        status: 'closed',
+        message: '예매가 마감되었습니다.',
+      };
+    }
+
     const totalWaiting =
       await redis.zcard(
         keys.waitingKey
