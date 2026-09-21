@@ -632,12 +632,10 @@ async function cancelQueueRoutes(fastify) {
   // 결제가 없는 수동 양도 내역도 마이페이지의 취소·환불내역에서 확인한다.
   // 일반 로그인 세션만 허용해 Secret Link 범위 토큰으로 타인의 이력을 읽지 못하게 한다.
   fastify.get('/cancel-queue/history/mine', { preHandler: [authenticate] }, async (request, reply) => {
-    await ensureCancelQueueHistory();
     const rows = await pool.query(
       `SELECT h.history_id, h.allocation_id, h.event_id, h.session_date, h.session_time,
-              h.seat_id, h.action, h.reason, h.created_at, e.event_name, e.venue
+              h.seat_id, h.action, h.reason, h.created_at
        FROM cancel_queue_history h
-       LEFT JOIN events e ON e.event_id = h.event_id
        WHERE h.user_id = ? AND h.action = 'PASSED'
        ORDER BY h.created_at DESC`,
       [request.authUser.userId],
@@ -647,8 +645,8 @@ async function cancelQueueRoutes(fastify) {
         historyId: row.history_id,
         allocationId: row.allocation_id,
         eventId: row.event_id,
-        eventName: row.event_name || '',
-        venue: row.venue || '',
+        eventName: '',
+        venue: '',
         sessionDate: row.session_date || '',
         sessionTime: row.session_time || '',
         seatId: row.seat_id || null,

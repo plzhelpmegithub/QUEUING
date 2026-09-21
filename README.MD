@@ -296,7 +296,7 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
 | `POST /cancel-queue/hold` | 취소표 좌석 선점. `allocation.seat_id`가 있으면 해당 좌석만 허용하고, `NULL`이면 요청 좌석이 같은 공연·회차의 `AVAILABLE`인지 확인한 뒤 `cancel_allocations.seat_id`에 원자적으로 기록하고 홀드한다. `verify-link`로 발급된 취소표 전용 세션은 allocation 범위를 검증한 뒤 일반 Admission Token 없이 처리 |
 | `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. body의 `reason: 'manual'`은 수동 양도로 처리해 standby 대기 행을 `COMPLETED`로 종료하고 사용자 이력을 저장한다. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/expire`로 포워드 |
-| `GET /cancel-queue/history/mine` | 로그인한 사용자의 B파트 수동 양도(`PASSED`) 이력 조회. 결제·환불 예약과 구분되는 안내 기록으로 마이페이지 취소/환불내역에 사용 |
+| `GET /cancel-queue/history/mine` | 로그인한 사용자의 B파트 수동 양도(`PASSED`) 이력 조회. `cancel_queue_history`만 조회하므로 공연 메타데이터 문제와 분리되며, 결제·환불 예약과 구분되는 안내 기록으로 마이페이지 취소/환불내역에 사용 |
 | `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/complete`로 포워드 |
 | `POST /verify-link` | 이메일 Secret Link 랜딩 — A파트가 발급한 Local SMTP JWT를 먼저 검증하고, 유효하지 않은 경우 `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임한 뒤 할당 정보 + 선택 가능 좌석 목록 + 검증 주체 `source`(`local`/`b`) 반환 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
