@@ -320,7 +320,15 @@ wss.on('connection', (ws, request) => {
   }
 
   const kind = parts[1]; // 'chat' | 'seats'
-  const eventId = parts[2];
+
+  let eventId;
+  try {
+    eventId = decodeURIComponent(parts[2]);   // %3A 를 : 로 되돌린다
+  } catch (e) {
+    ws.close(1008, 'invalid eventId');        // 잘못된 % 시퀀스 — 이 연결만 끊는다
+    return;
+  }
+
   const channelKey = `${kind}:${eventId}`;
 
   ws.channelKey = channelKey;
