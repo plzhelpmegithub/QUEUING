@@ -66,8 +66,12 @@ export const verifyLinkPage = {
         const sessionQuery = new URLSearchParams();
         if (data.sessionDate) sessionQuery.set('sessionDate', data.sessionDate);
         if (data.sessionTime) sessionQuery.set('sessionTime', data.sessionTime);
+        if (data.source === 'b') sessionQuery.set('token', linkToken);
         const querySuffix = sessionQuery.toString() ? `?${sessionQuery.toString()}` : '';
-        navigate(`private-link/${encodeURIComponent(data.eventId)}${querySuffix}`);
+        const destination = data.source === 'b'
+          ? `b-cancel-ticketing/${encodeURIComponent(data.eventId)}`
+          : `private-link/${encodeURIComponent(data.eventId)}`;
+        navigate(`${destination}${querySuffix}`);
       })
       .catch(() => {
         container.innerHTML = `

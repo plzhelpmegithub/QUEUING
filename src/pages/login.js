@@ -54,7 +54,10 @@ export const loginPage = {
           </div>
           <div class="field">
             <label>비밀번호</label>
-            <input type="password" name="password" placeholder="비밀번호" autocomplete="current-password" required />
+            <div class="field--pw-wrap">
+              <input type="password" name="password" placeholder="비밀번호" autocomplete="current-password" required />
+              <button type="button" class="pw-toggle" data-pw-toggle="password">보기</button>
+            </div>
             <div class="field-error" data-err="password"></div>
           </div>
           <div class="field-error field-error--form" data-err="form"></div>
@@ -70,6 +73,15 @@ export const loginPage = {
         <div class="notice-box mt-24">본 사이트는 프론트엔드 데모용으로 제작되었으며, 실제 예매 및 결제가 이루어지지 않습니다.<br/>가입하신 이메일과 비밀번호로 로그인해주세요.</div>
       </div>
     `;
+
+    container.querySelectorAll('[data-pw-toggle]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const input = btn.previousElementSibling;
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.textContent = show ? '숨김' : '보기';
+      });
+    });
 
     const form = container.querySelector('[data-form]');
     const formErr = form.querySelector('[data-err="form"]');

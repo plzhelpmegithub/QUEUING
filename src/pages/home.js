@@ -141,7 +141,7 @@ export const homePage = {
               <button class="slider__arrow" data-prev type="button">‹</button>
               <button class="slider__arrow" data-next type="button">›</button>
             </div>
-            <div class="slider__dots" data-dots></div>
+            <div class="slider__counter" data-counter></div>
           </div>
           <div class="cal" data-calendar></div>
         </div>
@@ -184,7 +184,7 @@ export const homePage = {
     const tonearmEl = container.querySelector('[data-tonearm]');
     const infoEl = container.querySelector('[data-info]');
     const arrowsEl = container.querySelector('[data-arrows]');
-    const dotsEl = container.querySelector('[data-dots]');
+    const counterEl = container.querySelector('[data-counter]');
     let slides = [];
     let idx = 0;
     let swapTimer1 = null;
@@ -211,7 +211,7 @@ export const homePage = {
         <button class="btn btn-primary btn-lg" data-book>예매하기</button>
       `;
       infoEl.querySelector('[data-book]').addEventListener('click', () => navigate(`concert/${e.eventId}`));
-      [...dotsEl.querySelectorAll('[data-dot]')].forEach((d, i) => d.classList.toggle('active', i === idx));
+      counterEl.innerHTML = `<span class="slider__counter-btn">${idx + 1} / ${slides.length}</span>`;
     }
 
     function goTo(newIdx) {
@@ -240,12 +240,10 @@ export const homePage = {
       if (slides.length === 0) {
         infoEl.innerHTML = `<p style="color:#ccc;">등록된 공연이 없습니다.</p>`;
         arrowsEl.style.display = 'none';
-        dotsEl.innerHTML = '';
+        counterEl.innerHTML = '';
         return;
       }
 
-      dotsEl.innerHTML = slides.map((_, i) => `<span class="slider__dot ${i === 0 ? 'active' : ''}" data-dot="${i}"></span>`).join('');
-      dotsEl.querySelectorAll('[data-dot]').forEach((d) => d.addEventListener('click', () => goTo(Number(d.dataset.dot))));
       arrowsEl.style.display = slides.length > 1 ? '' : 'none';
       paintNow();
       if (slides.length > 1) rotateTimer = setInterval(() => goTo(idx + 1), 5000);
@@ -321,22 +319,24 @@ export const homePage = {
         .join('');
       wireEventCards(hotGrid);
 
+      const heroSlides = ranked.slice(0, 20).map(({ event }) => event);
+      if (heroSlides.length) setupHero(heroSlides);
+
       const upcomingEvents = latestRealEvents
         .filter(isUpcoming)
         .sort((a, b) => new Date(getOpenAt(a)).getTime() - new Date(getOpenAt(b)).getTime());
       upcomingSection.hidden = upcomingEvents.length === 0;
       if (upcomingEvents.length) {
         upcomingGrid.innerHTML = upcomingEvents
+          .slice(0, 5)
           .map((event, index) => posterCardHtml(event, index, interestCounts.get(event.eventId) || 0, true))
           .join('');
         wireEventCards(upcomingGrid);
       }
 
-      const excludedIds = new Set([
-        ...hotEvents.map(({ event }) => event.eventId),
-        ...upcomingEvents.map((event) => event.eventId),
-      ]);
-      const exploreEvents = latestRealEvents.filter((event) => !excludedIds.has(event.eventId));
+      const hotIds = new Set(hotEvents.map(({ event }) => event.eventId));
+      const upcomingIds = new Set(upcomingEvents.map((e) => e.eventId));
+      const exploreEvents = latestRealEvents.filter((e) => !hotIds.has(e.eventId) && !upcomingIds.has(e.eventId));
       exploreSection.hidden = exploreEvents.length === 0;
       if (exploreEvents.length) {
         exploreGrid.innerHTML = exploreEvents

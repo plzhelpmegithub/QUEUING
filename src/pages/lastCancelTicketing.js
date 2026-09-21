@@ -14,6 +14,13 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
+function formatPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '').slice(0, 11);
+  if (d.length <= 3) return d;
+  if (d.length <= 7) return `${d.slice(0, 3)}-${d.slice(3)}`;
+  return `${d.slice(0, 3)}-${d.slice(3, d.length === 10 ? 6 : 7)}-${d.slice(d.length === 10 ? 6 : 7)}`;
+}
+
 function lastHeaders(token) {
   const h = { 'Content-Type': 'application/json' };
   if (token) h.Authorization = `Bearer ${token}`;
@@ -88,7 +95,7 @@ export const lastCancelTicketingPage = {
       seatMapApi?.destroy();
       seatMapApi = null;
       container.innerHTML = `
-        <style>${styles()}</style>
+        <style>${lastTicketingStyles()}</style>
         <main class="last-ticketing last-ticketing--state">
           <div class="last-ticketing__ticket">🎟️</div>
           <h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p>
@@ -242,7 +249,7 @@ export const lastCancelTicketingPage = {
       const price = Number(selectedSeat.price || 0);
 
       container.innerHTML = `
-        <style>${styles()}</style>
+        <style>${lastTicketingStyles()}</style>
         <main class="last-ticketing">
           <header class="last-ticketing__top"><span class="last-ticketing__brand">QUEUING</span><span>LAST · CANCEL TICKETING</span></header>
           <div class="last-ticketing__shell">
@@ -278,6 +285,16 @@ export const lastCancelTicketingPage = {
         </main>`;
 
       paintTimer(new Date(data.expiresAt).getTime());
+
+      const lastPhoneInput = container.querySelector('[data-last-buyer-phone]');
+      lastPhoneInput?.addEventListener('input', () => {
+        const pos = lastPhoneInput.selectionStart;
+        const before = lastPhoneInput.value.length;
+        lastPhoneInput.value = formatPhone(lastPhoneInput.value);
+        const diff = lastPhoneInput.value.length - before;
+        lastPhoneInput.setSelectionRange(Math.max(0, pos + diff), Math.max(0, pos + diff));
+      });
+
       container.querySelector('[data-last-return-seat]')?.addEventListener('click', () => releaseHeldSelection(data, event));
 
       container.querySelector('[data-last-pay-confirm]')?.addEventListener('click', async (eventClick) => {
@@ -343,7 +360,7 @@ export const lastCancelTicketingPage = {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
       container.innerHTML = `
-        <style>${styles()}</style>
+        <style>${lastTicketingStyles()}</style>
         <main class="last-ticketing last-ticketing--state">
           <div class="last-ticketing__ticket">✅</div>
           <h1>취소표 예매가 완료되었습니다</h1>
@@ -427,7 +444,7 @@ export const lastCancelTicketingPage = {
       serverHeldSeatId = '';
       selectedSeat = null;
       container.innerHTML = `
-        <style>${styles()}</style>
+        <style>${lastTicketingStyles()}</style>
         <main class="last-ticketing">
           <header class="last-ticketing__top"><span class="last-ticketing__brand">QUEUING</span><span>LAST · CANCEL TICKETING</span></header>
           <div class="last-ticketing__shell">
@@ -552,7 +569,7 @@ export const lastCancelTicketingPage = {
       renderState('유효하지 않은 링크', '취소표 Secret Link가 없습니다.');
       return cleanup;
     }
-    container.innerHTML = `<style>${styles()}</style><main class="last-ticketing last-ticketing--state"><div class="last-ticketing__ticket">🔐</div><h1>링크 확인 중</h1><p>취소표 예매 권한과 회차 정보를 확인하고 있습니다.</p></main>`;
+    container.innerHTML = `<style>${lastTicketingStyles()}</style><main class="last-ticketing last-ticketing--state"><div class="last-ticketing__ticket">🔐</div><h1>링크 확인 중</h1><p>취소표 예매 권한과 회차 정보를 확인하고 있습니다.</p></main>`;
     fetch('/last-simulation/verify-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: rawToken }) })
       .then(async (res) => ({ ok: res.ok, data: await res.json().catch(() => ({})) }))
       .then(async ({ ok, data }) => {
@@ -567,11 +584,14 @@ export const lastCancelTicketingPage = {
   },
 };
 
-function styles() {
+// B파트 Secret Link 화면도 같은 시각 언어를 재사용한다. API와 상태 전이는
+// 각 페이지에 분리해 Last 로컬 시뮬레이션과 B Lambda 흐름이 섞이지 않게 한다.
+export function lastTicketingStyles() {
   return `
     .last-ticketing{min-height:100vh;background:#0b0f16;color:#f4f6fb;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;padding-bottom:34px}
     .last-ticketing__top{height:64px;background:#121a25;border-bottom:1px solid #273346;display:flex;align-items:center;gap:22px;padding:0 clamp(18px,5vw,72px);font-size:11px;letter-spacing:.16em;color:#9aa9be}.last-ticketing__brand{color:#fff;font-weight:900;font-size:15px}.last-ticketing__timer{height:4px;background:#222d3d}.last-ticketing__timer i{display:block;height:100%;background:#ef5570;transition:width .3s;width:100%}.last-ticketing__hero,.last-ticketing__content,.last-ticketing__notice,.last-ticketing__foot{width:min(1080px,calc(100% - 36px));margin-left:auto;margin-right:auto}.last-ticketing__hero{display:flex;gap:22px;align-items:center;padding:46px 0 28px}.last-ticketing__hero--compact{padding-bottom:18px}.last-ticketing__ticket{font-size:34px}.last-ticketing__eyebrow{color:#e95773;font-size:11px;letter-spacing:.14em;font-weight:800}.last-ticketing h1{font-size:32px;margin:8px 0}.last-ticketing h2{font-size:18px;margin:0 0 16px}.last-ticketing__hero p:not(.last-ticketing__eyebrow){color:#9aa9be;line-height:1.7;margin:0}.last-ticketing__notice{border:1px solid #31506a;background:#101d2a;color:#b8d7ef;border-radius:10px;padding:15px 18px;font-size:14px}.last-ticketing__notice--error{border-color:#8e3444;background:#29131a;color:#ffd3da;margin-bottom:18px}.last-ticketing__notice b{color:#fff}.last-ticketing__content{margin-top:18px}.last-ticketing__meta{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;padding:17px;border:1px solid #273346;background:#111823;border-radius:10px;color:#8fa0b5;font-size:12px}.last-ticketing__meta b{color:#f4f6fb;font-size:14px}.last-ticketing__section-title{font-size:16px;font-weight:800;margin-bottom:12px}.last-ticketing__map-wrap{margin-top:18px;border:1px solid #273346;background:#111823;border-radius:10px;padding:18px}.last-ticketing__map{min-height:420px;background:#0b1018;border-radius:8px;padding:12px;overflow:auto}.last-ticketing__selection{margin-top:14px;border:1px solid #326d55;background:#10231d;border-radius:10px;padding:16px;display:flex;align-items:center;gap:18px}.last-ticketing__selection[hidden]{display:none}.last-ticketing__selection small{display:block;color:#8fa0b5;margin-bottom:5px}.last-ticketing__selection strong{font-size:16px}.last-ticketing__selection>b{margin-left:auto;color:#55d69a;font-size:19px}.last-ticketing__selection button,.last-ticketing__primary{border:0;background:#ef334b;color:#fff;border-radius:7px;padding:12px 18px;font-weight:800;cursor:pointer}.last-ticketing__selection button:disabled,.last-ticketing__primary:disabled{opacity:.55;cursor:wait}.last-ticketing__foot{text-align:center;color:#718097;font-size:12px;padding:22px 0}.last-ticketing__pass{display:inline-flex;align-items:center;justify-content:center;min-height:42px;margin-top:14px;border:1px solid #58677b;border-radius:7px;background:#172231;color:#edf2f8;text-decoration:none;box-shadow:0 8px 20px rgba(0,0,0,.18);padding:0 18px;cursor:pointer;font-size:13px;font-weight:800;transition:background .16s,border-color .16s,transform .16s}.last-ticketing__pass:hover{background:#223348;border-color:#aab8c8;transform:translateY(-1px)}.last-ticketing__pass:disabled{opacity:.55;cursor:wait;transform:none}.last-ticketing__payment-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,.8fr);gap:18px;align-items:start}.last-ticketing__payment-card,.last-ticketing__order-card{border:1px solid #273346;background:#111823;border-radius:12px;padding:24px}.last-ticketing__payment-card label:not(.last-ticketing__payment-option):not(.last-ticketing__agree){display:block;color:#b7c4d5;font-size:13px;margin-bottom:14px}.last-ticketing__payment-card input:not([type="radio"]):not([type="checkbox"]){box-sizing:border-box;width:100%;margin-top:7px;border:1px solid #344256;border-radius:7px;background:#0b1018;color:#f4f6fb;padding:12px;font-size:14px}.last-ticketing__subheading{border-top:1px solid #293545;padding-top:22px;margin-top:22px!important}.last-ticketing__payment-option{display:grid;grid-template-columns:20px 1fr auto;gap:8px;align-items:center;border:1px solid #344256;border-radius:8px;padding:13px 14px;margin:10px 0;cursor:pointer}.last-ticketing__payment-option span{font-size:14px;font-weight:700}.last-ticketing__payment-option small{color:#8fa0b5}.last-ticketing__agree{display:block;color:#b7c4d5;font-size:12px;margin-top:20px}.last-ticketing__order-card{position:sticky;top:18px}.last-ticketing__order-card h2{line-height:1.45}.last-ticketing__order-card dl{margin:20px 0}.last-ticketing__order-card dl div{display:flex;justify-content:space-between;gap:18px;border-top:1px solid #293545;padding:12px 0;color:#8fa0b5;font-size:13px}.last-ticketing__order-card dt,.last-ticketing__order-card dd{margin:0}.last-ticketing__order-card dd{color:#f4f6fb;text-align:right}.last-ticketing__total{border-top:1px solid #46566b;padding:18px 0;display:flex;align-items:end;justify-content:space-between;color:#d2dae5;font-weight:700}.last-ticketing__total b{color:#ff637d;font-size:24px}.last-ticketing__pay-button{width:100%;font-size:15px}.last-ticketing__state-actions{display:flex;gap:10px;margin-top:20px;width:min(420px,100%)}.last-ticketing__state-actions button{flex:1;min-height:48px;margin-top:0!important}.last-ticketing__secondary{border:1px solid #445269;background:transparent;color:#e5ebf4;border-radius:7px;padding:12px 18px;font-weight:800;cursor:pointer}.last-ticketing--state{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 18px}.last-ticketing--state p{color:#9aa9be;line-height:1.8}.last-ticketing--state .last-ticketing__primary{margin-top:20px}
     .last-ticketing__shell{width:min(1280px,calc(100% - 36px));margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 245px;gap:26px;align-items:start}.last-ticketing__stage{min-width:0}.last-ticketing__shell .last-ticketing__hero,.last-ticketing__shell .last-ticketing__content,.last-ticketing__shell .last-ticketing__notice,.last-ticketing__shell .last-ticketing__foot{width:100%;margin-left:0;margin-right:0}.last-ticketing__rail{position:sticky;top:18px;display:grid;gap:12px;padding-top:38px}.last-ticketing__timer-card,.last-ticketing__segments,.last-ticketing__rail-note{border:1px solid #2b3a4f;background:linear-gradient(145deg,rgba(25,36,52,.92),rgba(12,18,28,.92));box-shadow:0 12px 30px rgba(0,0,0,.22);border-radius:12px}.last-ticketing__timer-card{padding:17px}.last-ticketing__timer-card>span{display:block;color:#95a5ba;font-size:10px;font-weight:800;letter-spacing:.12em}.last-ticketing__timer-card strong{display:block;margin:8px 0 13px;color:#ff6680;font:800 30px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}.last-ticketing__timer-card .last-ticketing__timer{height:6px;border-radius:999px;overflow:hidden}.last-ticketing__timer-card small{display:block;margin-top:10px;color:#8190a5;font-size:11px;line-height:1.5}.last-ticketing__segments{overflow:hidden}.last-ticketing__segment{box-sizing:border-box;width:100%;min-height:72px;border:0;border-bottom:1px solid #27364a;background:transparent;color:#8493a8;text-align:left;padding:13px 15px;display:grid;grid-template-columns:30px 1fr;column-gap:8px;align-items:center}.last-ticketing__segment:last-child{border-bottom:0}.last-ticketing__segment b{grid-row:span 2;color:#65758b;font-size:11px;letter-spacing:.08em}.last-ticketing__segment span{color:#d8e0eb;font-weight:800;font-size:13px}.last-ticketing__segment small{color:#74849a;font-size:10px;margin-top:3px}.last-ticketing__segment.is-active{background:linear-gradient(90deg,rgba(239,51,75,.16),rgba(239,51,75,.03));box-shadow:inset 3px 0 #ef334b}.last-ticketing__segment.is-active b,.last-ticketing__segment.is-active span{color:#fff}.last-ticketing__segment.is-complete{cursor:pointer}.last-ticketing__segment.is-complete:hover{background:#172336}.last-ticketing__rail-note{margin:0;padding:13px;color:#8fa0b5;font-size:11px;line-height:1.6}.last-ticketing__selection-actions{display:flex;gap:8px;margin-left:auto}.last-ticketing__selection-actions .last-ticketing__secondary{padding:11px 14px}.last-ticketing__payment-grid .last-ticketing__order-card{position:static}.last-ticketing__payment-feedback{min-height:0;color:#ffb3c0;font-size:12px;line-height:1.5}.last-ticketing__payment-feedback:not(:empty){margin-bottom:15px;padding:10px 12px;border:1px solid #8e3444;border-radius:7px;background:#29131a}
+    .last-ticketing button:focus-visible,.last-ticketing input:focus-visible{outline:3px solid rgba(99,179,237,.85);outline-offset:3px}.last-ticketing__primary:hover{filter:brightness(1.08)}.last-ticketing__primary:active{transform:translateY(1px)}.last-ticketing__primary:disabled{filter:none;transform:none}
     @media(max-width:980px){.last-ticketing__shell{grid-template-columns:1fr}.last-ticketing__rail{position:static;padding-top:18px;order:-1}.last-ticketing__segments{display:grid;grid-template-columns:1fr 1fr}.last-ticketing__segment{border-bottom:0;border-right:1px solid #27364a}.last-ticketing__segment:last-child{border-right:0}.last-ticketing__rail-note{display:none}}@media(max-width:700px){.last-ticketing__meta{grid-template-columns:repeat(2,1fr)}.last-ticketing__hero{padding-top:30px}.last-ticketing h1{font-size:25px}.last-ticketing__selection{flex-wrap:wrap}.last-ticketing__selection>b{margin-left:0}.last-ticketing__selection-actions{width:100%;margin-left:0}.last-ticketing__selection-actions button{flex:1}.last-ticketing__payment-grid{grid-template-columns:1fr}.last-ticketing__order-card{position:static}.last-ticketing__state-actions{flex-direction:column}.last-ticketing__state-actions button{width:100%}}
   `;
 }

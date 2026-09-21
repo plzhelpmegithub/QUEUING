@@ -530,6 +530,19 @@ export const myPage = {
     }
 
     function renderCancelQueue() {
+      if (!hasMembership()) {
+        content.innerHTML = `
+          <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
+          <div class="card" style="padding:40px;text-align:center;">
+            <strong>취소표 대기열은 멤버십 회원 전용 서비스입니다.</strong><br>
+            <span class="text-secondary" style="font-size:13px;">멤버십에 가입하면 매진 시 취소표 대기열에 등록할 수 있습니다.</span>
+            <div style="margin-top:18px;"><button type="button" class="btn btn-primary" data-cancel-queue-membership>멤버십 가입하기</button></div>
+          </div>
+        `;
+        content.querySelector('[data-cancel-queue-membership]')?.addEventListener('click', () => navigate('membership'));
+        return;
+      }
+
       if (cancelQueueLoadError) {
         content.innerHTML = `
           <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
@@ -537,14 +550,6 @@ export const myPage = {
             취소표 대기열 정보를 불러오지 못했습니다.<br>
             <span class="text-secondary" style="font-size:12px;">잠시 후 다시 시도해주세요. (${escapeAttr(cancelQueueLoadError)})</span>
           </div>
-        `;
-        return;
-      }
-
-      if (!hasMembership()) {
-        content.innerHTML = `
-          <div class="mypage-section-title" style="margin-top:0;">취소표 대기열</div>
-          ${emptyRow('취소표 대기열은 활성 멤버십 회원만 이용할 수 있습니다.')}
         `;
         return;
       }
@@ -564,21 +569,32 @@ export const myPage = {
             if (!c) return '';
             const total = Number(q.total || 0);
             const position = Number(q.myNumber || 0);
+            const waitMinutes = Number.isFinite(Number(q.estimatedWaitMinutes))
+              ? Number(q.estimatedWaitMinutes)
+              : Math.max(0, position - 1) * 5;
+            const queueTotalLabel = q.simulationQueue
+              ? '시뮬레이션 멤버십 대기자'
+              : '전체 멤버십 대기자';
             const sessionLabel = [q.sessionDate, q.sessionTime].filter(Boolean).join(' ');
             const poster = c.image || getConcertImage(c.name || concertId);
+            const hasSecretLink = q.status === 'allocated' || q.allocation?.active;
+            const linkExpiry = q.allocation?.expiresAt
+              ? new Date(q.allocation.expiresAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+              : '';
             return `
-              <div class="ticket-row">
+              <div class="ticket-row" style="${hasSecretLink ? 'border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.035);' : ''}">
                 <div class="ticket-row__main">
                   <img class="ticket-row__poster" src="${escapeAttr(poster)}" alt="${escapeAttr(c.name)} 포스터" loading="lazy" />
                   <div class="ticket-row__info">
                     <div class="ticket-row__concert">${escapeAttr(c.name)}</div>
-                    <div class="ticket-row__meta">${sessionLabel ? `${escapeAttr(sessionLabel)} · ` : ''}전체 멤버십 대기자 ${total ? formatNumber(total) : '-'}명</div>
-                    <div class="ticket-row__meta">취소표 발생 시 5분 제한 Secret Link 발급</div>
+                    <div class="ticket-row__meta">${sessionLabel ? `${escapeAttr(sessionLabel)} · ` : ''}${queueTotalLabel} ${total ? formatNumber(total) : '-'}명</div>
+                    <div class="ticket-row__meta">${hasSecretLink ? `이메일로 발급된 Secret Link로 입장해주세요${linkExpiry ? ` · ${escapeAttr(linkExpiry)}까지` : ''}` : `취소표 발생 시 5분 제한 Secret Link 발급 · 예상 대기 약 ${formatNumber(waitMinutes)}분`}</div>
                   </div>
                 </div>
                 <div style="text-align:right;">
-                  <div class="ticket-row__price num-mono text-red">${position ? formatNumber(position) : '-'}번</div>
-                  <div class="ticket-row__meta">${q.status === 'allocated' || q.allocation?.active ? 'Secret Link 발급됨' : '취소표 대기 중'}</div>
+                  ${hasSecretLink
+                    ? '<div class="badge badge-green" style="font-size:12px;padding:7px 10px;">Secret Link 발급됨</div>'
+                    : `<div class="ticket-row__price num-mono text-red">${position ? formatNumber(position) : '-'}번</div><div class="ticket-row__meta">취소표 대기 중</div>`}
                 </div>
               </div>`;
           })
@@ -848,8 +864,8 @@ export const myPage = {
             <div class="text-secondary" style="font-size:12px;margin-top:4px;">이메일은 계정 식별자로 사용되어 수정할 수 없습니다.</div>
           </div>
           <div class="field"><label>휴대폰 번호</label><input type="tel" data-edit="phone" value="${escapeAttr(formatPhone(user.phone || ''))}" placeholder="010-1234-5678" maxlength="13" /></div>
-          <div class="field"><label>새 비밀번호</label><input type="password" data-edit="password" placeholder="변경하지 않으려면 비워두세요" /></div>
-          <div class="field"><label>새 비밀번호 확인</label><input type="password" data-edit="password-confirm" placeholder="새 비밀번호를 한 번 더 입력해주세요" /></div>
+          <div class="field"><label>새 비밀번호</label><div class="field--pw-wrap"><input type="password" data-edit="password" placeholder="변경하지 않으려면 비워두세요" /><button type="button" class="pw-toggle" data-pw-toggle>보기</button></div></div>
+          <div class="field"><label>새 비밀번호 확인</label><div class="field--pw-wrap"><input type="password" data-edit="password-confirm" placeholder="새 비밀번호를 한 번 더 입력해주세요" /><button type="button" class="pw-toggle" data-pw-toggle>보기</button></div></div>
           <label class="terms-row" style="margin:4px 0 6px;">
             <input type="checkbox" data-edit="marketing" ${user.marketingOptIn ? 'checked' : ''} />
             <span>이벤트 및 마케팅 정보 수신 동의</span>
@@ -868,6 +884,15 @@ export const myPage = {
       const phoneInput = content.querySelector('[data-edit="phone"]');
       phoneInput?.addEventListener('input', () => {
         phoneInput.value = formatPhone(phoneInput.value);
+      });
+
+      content.querySelectorAll('[data-pw-toggle]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const input = btn.previousElementSibling;
+          const show = input.type === 'password';
+          input.type = show ? 'text' : 'password';
+          btn.textContent = show ? '숨김' : '보기';
+        });
       });
 
       const saveButton = content.querySelector('[data-save-profile]');
@@ -921,13 +946,22 @@ export const myPage = {
           title: '회원탈퇴',
           bodyHtml: `
             <p style="margin-bottom:16px;">탈퇴를 진행하려면 비밀번호를 입력해주세요.</p>
-            <div class="field"><label>비밀번호 확인</label><input type="password" data-withdraw-pw placeholder="현재 비밀번호" /></div>
+            <div class="field"><label>비밀번호 확인</label><div class="field--pw-wrap"><input type="password" data-withdraw-pw placeholder="현재 비밀번호" /><button type="button" class="pw-toggle" data-pw-toggle>보기</button></div></div>
             <p class="text-secondary" style="font-size:12px;margin-top:8px;">탈퇴 즉시 모든 데이터가 삭제되며 복구할 수 없습니다.</p>
           `,
           footerHtml: `
             <button type="button" class="btn" data-modal-close>취소</button>
             <button type="button" class="btn" style="background:var(--color-danger,#ef4444);color:#fff;" data-confirm-withdraw>탈퇴하기</button>
           `,
+        });
+
+        modal.el.querySelectorAll('[data-pw-toggle]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const input = btn.previousElementSibling;
+            const show = input.type === 'password';
+            input.type = show ? 'text' : 'password';
+            btn.textContent = show ? '숨김' : '보기';
+          });
         });
 
         modal.el.querySelector('[data-confirm-withdraw]').addEventListener('click', async () => {

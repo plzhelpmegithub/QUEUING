@@ -1,3 +1,201 @@
+## [2026-09-21 09:39] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: `handleEnterResult()`에서 `code: 'ticketing_not_open'` 분기 추가. 예매 오픈 전 상태일 때 "마감되었습니다" 모달 대신 오픈 카운트다운 UI(`showOpenCountdown()`)를 표시하고, 카운트다운 종료 시 자동으로 `enterQueue()`를 재호출. `formatDeadline` import 추가
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** "즉시 마감" 후 오픈 시간을 10초로 설정하고 공연 페이지에 진입하면, 오픈 대기 중임에도 "마감되었습니다" 모달이 표시되어 30초 후 메인으로 리다이렉트됨
+- **원인(Cause):** `enter()` API가 `ticketOpenAt`이 미래 시간이면 `{ status: 'closed', code: 'ticketing_not_open', openAt: ... }`을 반환하지만, `handleEnterResult()`에서 `status === 'closed'`만 체크하여 오픈 예정과 실제 마감을 구분하지 못함
+- **해결(Solution):** `handleEnterResult()`에서 `code === 'ticketing_not_open'`을 우선 검사하여 `showOpenCountdown(openAt)` 함수 호출. 카운트다운 UI에서 남은 시간을 표시하고, 0이 되면 자동 재진입 시도
+
+## [2026-09-21 09:24] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 공연 목록 테이블의 행별 버튼 이벤트 리스너(오픈 시간, 마감 시간, 즉시 마감, 삭제)를 `bindEventRowListeners()` 함수로 추출. 검색 필터로 테이블이 다시 렌더링될 때도 리스너가 재바인딩되도록 수정
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 공연 검색 후 필터링된 결과에서 "오픈 시간", "마감 시간", "즉시 마감", "삭제" 버튼이 아무런 반응 없음
+- **원인(Cause):** 검색 `input` 핸들러가 `tbody.innerHTML`을 교체하면서 기존 DOM 요소가 파괴되어 이벤트 리스너가 사라짐. `refreshEventsList()`에서는 렌더링 후 리스너를 재바인딩하지만, 검색 필터 핸들러에서는 리스너 바인딩 없이 HTML만 교체
+- **해결(Solution):** 리스너 바인딩 로직을 `bindEventRowListeners(tbody, container)` 공통 함수로 추출하고, `refreshEventsList()`와 검색 필터 핸들러 양쪽에서 호출
+
+## [2026-09-21 02:16] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/liveChat.js]**: 라이브 챗방 설명에서 "전용방" 텍스트 제거 — `${artist} 전용방` → `${artist}`
+- **[src/styles/components.css]**: 토스트 스낵바 위치를 우측 하단에서 좌측 하단(`bottom: 32px; left: 32px`)으로 변경, 슬라이드 애니메이션 방향을 왼쪽에서 진입하도록 수정(`translateX(-30px)`). LP 히어로 슬라이더 도트 인디케이터를 카운터 뱃지(`slider__counter`)로 교체, 전체보기 오버레이 모달(`slider-overlay`) 및 카드 그리드 스타일 추가 — 3열 그리드, 3:4 비율 포스터 카드, 그래디언트 오버레이 텍스트, 반응형(2열/1열) 지원
+- **[src/pages/admin.js]**: 포스터 공연 생성 시 자동 순환 대신 모달 선택 방식으로 변경 — 가수명(좌) + 회차별 날짜/시간(우) 표시, 검색 필터링 지원
+- **[src/components/header.js]**: 어드민 "관리" 텍스트 버튼을 Material Design 톱니바퀴 SVG 아이콘으로 교체 (`fill="#fff"`, 22x22)
+- **[src/utils/calendarEvents.js]**: 캘린더 이벤트 중복 표시 방지 — 동일 공연에 대해 예매완료 > 관심공연 > 공연일정 우선순위로 단일 타입만 표시. 폴백 이벤트도 API 이벤트에 없는 것만 추가
+- **[src/pages/home.js]**: LP 히어로 슬라이더를 5개에서 20개로 확장, 도트 인디케이터를 카운터 뱃지 + 전체보기 팝업으로 교체, "콘서트 둘러보기" 탐색 섹션 재활성화
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 캘린더 이벤트 수정 후 메인 페이지에서 `interests.filter is not a function` 에러 발생
+- **원인(Cause):** store의 `interests`가 `Set` 객체인데 `Array.filter()` 메서드를 직접 호출
+- **해결(Solution):** `interests instanceof Set ? interests : new Set(interests)`로 타입 체크 후, 배열 메서드 사용 시 `[...interestIds].filter(...)` 스프레드 연산자로 변환
+
+---
+
+## [2026-09-21 01:12] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/styles/pages.css]**: 콘서트 상세 페이지 히어로 배너 `.detail-hero__content`의 좌우 패딩을 `0`에서 `40px`로 변경하여 창 모드에서 텍스트 양쪽에 여유 공간 확보. 불필요한 `max-width: 1100px` 제거 (창 너비보다 커서 효과 없음)
+
+---
+
+## [2026-09-21 00:50] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/login.js]**: 비밀번호 입력 필드에 보기/숨김 토글 버튼 추가. `field--pw-wrap` 컨테이너로 감싸고 `pw-toggle` 버튼으로 `type` 속성을 password↔text 전환
+- **[src/pages/signup.js]**: 비밀번호, 비밀번호 확인 2개 필드에 보기/숨김 토글 버튼 추가
+- **[src/pages/mypage.js]**: 회원정보 수정의 새 비밀번호·비밀번호 확인 필드, 회원탈퇴 모달의 비밀번호 확인 필드에 보기/숨김 토글 버튼 추가 (총 3개 필드)
+- **[src/pages/bCancelTicketing.js]**: `formatPhone()` 함수 추가 및 `data-b-buyer-phone` 입력 필드에 자동 포맷팅 리스너 추가 (010-XXXX-XXXX)
+- **[src/pages/lastCancelTicketing.js]**: `formatPhone()` 함수 추가 및 `data-last-buyer-phone` 입력 필드에 자동 포맷팅 리스너 추가
+- **[src/pages/admin.js]**: 사이드바 푸터에서 "API 연결됨" 표시 제거. 공연 목록 테이블 상단에 검색/필터 입력창 추가 — 공연명, 장소, 날짜로 실시간 필터링, 검색 결과 건수 표시
+- **[src/pages/home.js]**: LP 히어로 슬라이더를 관심순 상위 5개 공연으로 제한. "콘서트 둘러보기" 섹션을 숨김 처리하여 메인 페이지 공연을 5개로 제한. 오픈 예정 섹션도 최대 5개로 제한
+- **[src/components/header.js]**: 프로필 드롭다운 메뉴에 다크 모드 토글 스위치 추가. localStorage에 테마 설정 저장
+- **[src/main.js]**: 페이지 로드 시 localStorage에서 사용자 테마 설정을 읽어 `user-dark` 클래스 적용
+- **[src/styles/global.css]**: 비밀번호 토글(`.field--pw-wrap`, `.pw-toggle`), 어드민 공연 검색(`.admin-event-search`), 사용자 다크 모드(`body.user-dark`), 테마 토글 스위치(`.theme-toggle-row`, `.theme-switch`) CSS 추가
+
+---
+
+## [2026-09-20 14:37] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/bCancelTicketing.js]**: B파트 시크릿 링크 취소표 결제를 공용 `payment/cancel` 페이지 대신 인라인 전용 결제 화면으로 전환. 좌석 선택 → 결제 → 완료를 모두 같은 페이지에서 처리. `railMarkup`에 activeStep 파라미터 추가, `renderPaymentStep`과 `renderCompleted` 함수 신규 추가. 결제 성공 시 `expireCancelAllocation` + `loadCancelQueuesFromServer` + `addBooking` 처리. 좌석 다시 고르기(return-seat) 기능 지원
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트 시크릿 링크에서 좌석 확정 후 공용 결제 페이지로 이동하면 scoped JWT로 인해 `/wishlist`, `/membership`, `/reservations` 등 일반 API가 403을 반환하고, `/seats/confirm`이 500 에러 발생
+- **원인(Cause):** `bCancelTicketing.js`가 좌석 확정 후 `navigate('payment/cancel')`로 공용 결제 페이지로 이동. 공용 페이지로 라우팅되면 SPA 앱 쉘이 일반 사용자 데이터(wishlist, membership, reservations, last-simulation/history)를 로딩하려 하지만 `cancel_queue` scope의 JWT는 이 엔드포인트에 접근 불가
+- **해결(Solution):** `lastCancelTicketing.js`와 동일하게 `bCancelTicketing.js` 내에서 결제 UI를 인라인 렌더링. 공용 `payment/cancel` 페이지로 이동하지 않으므로 앱 쉘의 일반 API 호출이 발생하지 않음. `fetchWithRecaptcha`로 `/seats/confirm` 직접 호출
+
+---
+
+## [2026-09-20 14:02] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/payment.js]**: 취소표(`type === 'cancel'`) 결제 에러 시 `zones/` 대신 `mypage/cancel-queue`로 이동하도록 변경. 결제 성공 시 `expireCancelAllocation` 호출로 시크릿 링크 만료 처리 및 `loadCancelQueuesFromServer` 호출로 대기열 갱신 추가
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 결제 완료 후 본 티켓팅 좌석 페이지(`zones/`)가 표시되고, 시크릿 링크가 만료되지 않으며, 마이페이지 취소표 대기열에 "대기 중"이 계속 남아 있음
+- **원인(Cause):** (1) `payment.js`의 에러 fallback 경로가 `zones/${c.eventId}`로 하드코딩되어 취소표 결제에서도 본 티켓팅 좌석 화면으로 이동 (2) 결제 성공 후 `expireCancelAllocation`이 호출되지 않아 시크릿 링크가 유효한 채 남음 (3) 백엔드 `confirmSeat`이 `waiting_queue` 상태를 갱신하지 않고, `/cancel-queue/mine`이 COMPLETED 항목을 필터하지 않음
+- **해결(Solution):** 프론트엔드: 취소표 에러 시 `mypage/cancel-queue`로 이동, 성공 시 `expireCancelAllocation` + `loadCancelQueuesFromServer` 호출. 백엔드: `confirmSeat`에 `waiting_queue` COMPLETED 업데이트 추가, `/cancel-queue/mine` 쿼리에 status 필터 추가 (api 측 CHANGELOG 참고)
+
+---
+
+## [2026-09-20 13:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: `pollPosition` 함수에 `pos.status === 'closed'` 분기 추가. 대기열 마감 시 `showClosedUI()` 호출하여 "마감되었습니다" 알럿 오버레이 표시
+
+---
+
+## [2026-09-20 12:38] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 대기열 드레인을 매진 앞(단계3)으로 복원. 스테이지 순서: `main_queue_open` → `queue_drained` → `sold_out`. sellout은 `main_queue_open`/`queue_drained` 모두 허용
+
+## [2026-09-20 11:31] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: 대기열 폴링(`pollPosition`) 응답 성공 시 `touchSession()`을 호출하도록 추가. 사용자가 대기열에서 아무 조작 없이 대기하더라도 세션 만료(20분)로 로그아웃되지 않음
+
+## [2026-09-20 11:07] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 대기열 드레인 버튼을 매진 **이후**(단계4)로 이동. 스테이지 순서를 `sold_out` → `queue_drained`로 변경. 버튼 활성 조건: drain은 `sold_out`/`queue_drained`, sellout은 `main_queue_open`만. 클릭 시 `batchSize`와 `releaseSeatCount`를 prompt로 입력받아 반복 호출 가능
+
+## [2026-09-20 10:42] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 통합 시뮬레이션 UI에 "단계3: 실제 사용자 입장" 버튼(`data-sim-drain`) 추가. 기존 단계 3~6이 단계 4~7로 번호 이동. 스테이지 진행 표시에 `queue_drained` 단계 추가. drain 버튼은 `main_queue_open` 또는 `queue_drained` 스테이지에서 활성화
+
+## [2026-09-20 09:17] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/queue.js]**: 본 티켓팅 대기열에서 매진(단계3) 전환 시 `showClosedUI()` 매진 알럿이 표시되지 않던 문제 수정. `pollPosition`에서 `eligible→standby` 전환을 감지하면 즉시 매진 알럿 오버레이를 표시하고, 30초 후 메인 페이지로 자동 이동. 비멤버십 사용자가 대기열에서 제거(`not_found`)된 경우에도 동일하게 매진 알럿을 표시
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자가 통합 시뮬레이션 단계3(매진 및 취소표 전환)을 실행하면, 본 티켓팅 대기열 화면이 알럿 없이 조용히 취소표 대기 상태로 바뀜. 사용자에게 매진 안내가 되지 않음
+- **원인(Cause):** `pollPosition`이 응답의 `type`이 `eligible`에서 `standby`로 바뀌는 전환을 감지하지 못하고, `renderWaitingState()`로만 UI를 갱신하여 기존 `showClosedUI()` 매진 알럿이 호출되지 않았음
+- **해결(Solution):** `pollPosition` 핸들러에서 `currentQueueType === 'eligible'`이었다가 `pos.type === 'standby'`가 되거나 `pos.status === 'not_found'`가 되면 `showClosedUI()`를 호출하도록 분기 추가
+
+## [2026-09-20 08:40] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/bCancelTicketing.js]**: Last 시뮬레이션의 어두운 좌석 배치·5분 타이머·2단계 진행 UI를 B파트 Secret Link 전용 화면으로 재구현했습니다. 좌석 확정은 기존 결제로, 수동 양도와 시간 만료는 `/cancel-queue/expire`로 연결합니다.
+- **[src/pages/verifyLink.js]**: `/verify-link` 응답의 `source`가 `b`이면 `b-cancel-ticketing/{eventId}`로 이동하고, Local SMTP 링크는 기존 `private-link/{eventId}` 흐름을 유지하도록 분기했습니다.
+- **[src/pages/lastCancelTicketing.js]**: Last 화면 스타일을 공유 함수로 공개해 B 화면이 동일한 시각 구조를 사용하도록 했으며 키보드 포커스와 주요 버튼 상태를 보완했습니다.
+- **[src/pages/payment.js]**: 취소표 결제 제한시간 만료 요청에 현재 `allocationId`를 포함해 동일 사용자·공연의 과거 할당과 혼동되지 않도록 보강했습니다.
+- **[src/main.js]**: B파트 링크 전용 `b-cancel-ticketing/:eventId` 프론트엔드 라우트를 등록했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** AWS B파트 링크를 열면 Last 시뮬레이션에서 확인한 좌석 선택 UI와 다른 화면이 나타났고, 사용자가 직접 다음 순번에게 넘길 수 없었습니다.
+- **원인(Cause):** Last 화면은 `/last-simulation/*` 전용 A파트 로컬 흐름이며 B 이메일 링크의 `#/verify-link`는 기존 `private-link` 화면으로만 이동했습니다.
+- **해결(Solution):** UI만 Last 화면과 공유하는 B 전용 페이지를 추가했습니다. 실제 좌석 선점·결제 완료·양도·만료는 각각 기존 `/cancel-queue/hold`, `/seats/confirm`, `/cancel-queue/expire`를 사용하므로 B Lambda 완료·만료 콜백이 유지됩니다.
+
+## [2026-09-20 08:18] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 기존 `취소표 시뮬레이션 AWS`, `취소표 시뮬레이션 Final`과 별도로 `통합 티켓팅 시뮬레이션` 관리자 패널을 추가했습니다. 초기화, 본 티켓팅 대기열 구성, 매진·멤버십 취소표 전환, 마감, 취소표 생성, B파트 링크 요청을 순서대로 실행합니다.
+- **[src/pages/admin.js]**: 통합 패널에 두 대기열의 현재 인원과 실제 B파트 후보 수를 분리 표시하고, 패널 접기·펼치기 상태를 보조기기에 전달하도록 접근성 속성을 갱신했습니다.
+- **[src/pages/admin.js]**: 단계6 실행 시 멤버십 더미가 B파트 후보 원장에서 자동 제외되고 실제 회원만 링크 대상이 된다는 안내를 추가했습니다.
+- **[src/styles/components.css]**: 통합 흐름의 6단계 진행 상태와 본 티켓팅·취소표 대기열 비교 지표를 기존 관리자 디자인에 맞춘 반응형 UI로 추가했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자가 본 티켓팅 대기열과 멤버십 취소표 대기열의 전환 관계를 기존 시뮬레이션 패널만으로 구분하기 어려웠습니다.
+- **원인(Cause):** 기존 UI는 취소표 시나리오별 제어에 집중해 본 티켓팅 단계와 취소표 단계의 인원 변화를 한 흐름으로 보여 주지 않았습니다.
+- **해결(Solution):** 기존 패널은 그대로 보존하고, 별도 패널에 단계 표시와 대기열별 인원 지표를 추가했습니다.
+
+## [2026-09-19 15:41] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/soldOutModal.js]**: 매진 시 활성 멤버십 사용자만 취소표 대기열에 자동 등록하도록 복원했습니다. 비멤버십 사용자는 멤버십 가입 안내와 요금제 화면 이동만 제공받습니다.
+- **[src/pages/mypage.js]**: 취소표 대기열을 멤버십 회원 전용 화면으로 복원하고, 멤버십 대기 순번·5분 기준 예상 시간과 Secret Link 발급 상태만 표시하도록 변경했습니다.
+- **[src/pages/admin.js]**: AWS·Final 시뮬레이션의 더미 조작 UI를 일반 더미 전체 삭제와 멤버십 더미 10명씩 삭제 방식으로 복원했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 비멤버십 사용자의 본 티켓팅 순번이 취소표 전용 마이페이지에 노출되어 기존 서비스 정책과 달라졌습니다.
+- **원인(Cause):** 매진 모달과 마이페이지가 일반 본 티켓팅 대기열 정책을 공유하도록 변경되어 있었습니다.
+- **해결(Solution):** 멤버십 확인을 다시 취소표 등록·조회 화면의 기준으로 사용하고, 비멤버십 사용자에게는 가입 안내만 표시하도록 복원했습니다.
+
+## [2026-09-19 15:27] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/mypage.js]**: 비멤버십 사용자의 취소표 대기열 카드에도 본 티켓팅 대기 순번과 `1인당 5분` 기준 예상 대기시간을 표시하도록 변경했습니다. 멤버십 여부는 Secret Link 발급 가능 여부 안내에만 사용합니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 비멤버십 사용자는 대기열에 정상 등록되어도 마이페이지에서 예상 대기시간을 확인할 수 없었습니다.
+- **원인(Cause):** 예상 시간 문구가 `membershipEligible` 조건 내부에서만 렌더링되었습니다.
+- **해결(Solution):** 본 티켓팅 순번·예상 시간과 Secret Link 정책 문구를 분리해 모든 대기자에게 순번 정보를 보여 주도록 수정했습니다.
+
+## [2026-09-19 15:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/soldOutModal.js]**: 매진 모달이 멤버십 여부와 관계없이 로그인 사용자를 본 티켓팅 standby 대기열에 등록하고, 마이페이지에서 자신의 순번을 확인하도록 변경했습니다. Secret Link 발급 제한은 멤버십 사용자에게만 그대로 적용됩니다.
+- **[src/pages/admin.js]**: AWS·Final 시뮬레이션 패널의 일반 더미 전체 삭제 버튼을 제거하고, 단계1 뒤 조기 마감 전 지정 일반 더미 번호를 이탈시키는 입력·버튼을 추가했습니다. 단계2-2도 지정한 더미 멤버십 번호를 최대 10명씩 삭제하도록 바꿨습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 비멤버십 사용자는 매진 후 마이페이지에서 자신의 대기 순번을 볼 수 없었습니다.
+- **원인(Cause):** 매진 모달이 비멤버십 사용자에게는 멤버십 가입 안내만 보여 주고, 대기열 등록 API를 호출하지 않았습니다.
+- **해결(Solution):** 로그인 사용자 공통으로 `POST /cancel-queue/join`을 호출하고, 비멤버십 사용자에게는 Secret Link 제한만 별도로 안내합니다.
+
+## [2026-09-19 13:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/concertDetail.js]**: 공연 상세의 `멤버십 가입하기` 버튼이 마이페이지를 거치지 않고 월간·연간 멤버십 요금제 페이지로 바로 이동하도록 변경했습니다. 로그인 전 사용자는 로그인 후 같은 요금제 페이지로 복귀합니다.
+
+## [2026-09-19 13:05] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/concertDetail.js]**: 공연 상세의 관람일·회차 예매 패널에서 활성 멤버십 사용자에게 가입 상태와 Secret Link 이용 가능 여부를 표시하고, 비가입자에게는 마이페이지 멤버십 탭으로 이동하는 가입 버튼을 추가했습니다.
+- **[src/pages/mypage.js]**: 활성 취소표 할당이 있으면 대기 순번 대신 `Secret Link 발급됨` 배지와 이메일 링크 이용 안내를 표시하도록 변경했습니다.
+- **[src/state/store.js]**: 서버가 반환한 `allocated` 상태를 대기열 원본 상태(`WAITING`)로 덮어쓰지 않도록 동기화 규칙을 보완했습니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** AWS에서 Secret Link가 발급되어도 마이페이지 취소표 대기열이 계속 `취소표 대기 중`으로 표시될 수 있었습니다.
+- **원인(Cause):** B파트 초기 allocation에는 회차 정보가 비어 있을 수 있고, 프론트 상태 복원 과정에서 `allocated` 상태가 대기열 원본 상태로 덮어써질 수 있었습니다.
+- **해결(Solution):** 서버의 단일 회차 legacy allocation 연결 결과와 `allocation.active`를 우선 표시하고, 프론트 상태에도 `allocated` 상태를 보존했습니다.
+
 ## [2026-09-18 07:40] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
@@ -1150,3 +1348,33 @@
 - **증상(Issue):** 멤버십 가입/해지는 완료되지만 사용자는 안내 메일 발송 여부를 알 수 없음.
 - **원인(Cause):** 프론트엔드가 기존 API의 `success`만 확인하고 메일 발송 결과를 표시하지 않음.
 - **해결(Solution):** API의 `emailSent`를 기준으로 메일 발송 성공 또는 설정 확인 안내를 토스트에 표시하도록 수정.
+## [2026-09-19 13:48] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: AWS·Final 시뮬레이션 패널에 `더미 멤버십 대기자 수` 입력과 `단계2-1: 더미 멤버십 사용자 삭제`를 추가했습니다. 실제 사용자는 입력 인원 뒤 순번을 받고, 단계3은 더미 삭제가 끝난 뒤에만 실행됩니다.
+- **[src/pages/mypage.js]**: 취소표 대기열 카드에 앞 순번 전체를 1명당 5분으로 환산한 예상 대기시간을 표시합니다.
+- **[src/state/store.js]**: 서버의 예상 대기시간·산정 기준값을 취소표 대기열 동기화 상태에 보존합니다.
+## [2026-09-19 14:20] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: AWS·Final 패널의 단계2-1 버튼을 `더미 멤버십 10명 삭제`로 변경했습니다. 클릭할 때마다 앞 10명만 지우고 상태를 새로고침하므로 실제 사용자의 순번과 예상 대기시간 감소를 단계적으로 확인할 수 있습니다.
+
+## [2026-09-19 14:39] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: AWS·Final 패널의 조기 마감 이후 단계를 `단계2-1: 일반 더미 전체 삭제`와 `단계2-2: 더미 멤버십 10명 삭제`로 분리했습니다. 상태 카드에 일반 더미 잔여 수를 표시하고, 실제 사용자는 전체 Redis standby 순번과 1인당 5분 기준 예상 시간을 확인합니다.
+- **[README.md]**: 일반 더미 10,000명·멤버십 더미 100명일 때 실제 첫 사용자가 10,101번으로 시작하고, 일반 더미 삭제 후 101번으로 전환되는 흐름을 문서화했습니다.
+
+## [2026-09-19 14:51] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/state/store.js]**: 서버의 `simulationQueue` 플래그를 취소표 대기열 상태에 보존합니다.
+- **[src/pages/mypage.js]**: 활성 AWS·Final 시뮬레이션에서는 일반 운영의 “전체 멤버십 대기자” 대신 일반 더미까지 포함한 “시뮬레이션 전체 대기자”를 표시합니다. 숫자는 50,000명 이상도 그대로 포맷해 자르지 않습니다.
+- **[README.md]**: 시뮬레이션 전체 대기 인원 표시와 더미 입력 최대값을 문서화했습니다.
+
+## [2026-09-19 15:00] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/mypage.js]**: 취소표 대기열을 본 티켓팅 대기열 기준으로 표시해 비멤버십 사용자도 전체 순번을 확인할 수 있도록 변경했습니다. 비멤버십 사용자는 마감 후 Secret Link가 멤버십 회원에게만 발급된다는 안내를 표시합니다.
+- **[src/state/store.js]**: 서버의 `membershipEligible` 값을 보존해 화면이 링크 발급 자격 안내를 정확히 표시하도록 했습니다.
+- **[README.md]**: 본 티켓팅 일반 대기열과 멤버십 전용 Secret Link 후보 정책을 문서화했습니다.

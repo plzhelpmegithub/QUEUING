@@ -1,10 +1,10 @@
 // 대기열 페이지 — 서버에서 SSE로 실시간 순번을 받아 로켓 진행 바로 표시.
 // 입장 승인 시 admissionToken을 store에 저장하고 구역 선택 화면으로 이동한다.
 
-import { formatNumber } from '../utils/format.js';
+import { formatNumber, formatDeadline } from '../utils/format.js';
 import { mountRocketProgress } from '../components/rocketProgress.js';
 import { navigate } from '../router.js';
-import { getSelectedSession, getState, hasMembership, setAdmissionToken, setSelectedSession } from '../state/store.js';
+import { getSelectedSession, getState, hasMembership, setAdmissionToken, setSelectedSession, touchSession } from '../state/store.js';
 import { fetchWithRecaptcha } from '../utils/recaptcha.js';
 import { authHeaders } from '../utils/authToken.js';
 import { leaveQueueBeacon } from '../utils/backendApi.js';
@@ -213,7 +213,12 @@ export const queuePage = {
               return payload;
             })
             .then((pos) => {
+              touchSession();
               if (settled) return;
+              if (pos.status === 'closed') {
+                showClosedUI();
+                return;
+              }
               if (pos.status === 'admitted') {
                 statusEl.textContent = '입장 허용됨 · 토큰 발급 중...';
                 if (admissionRequestRunning) return;
@@ -234,12 +239,15 @@ export const queuePage = {
                 return;
               }
               if (pos.status === 'not_found') {
-                // We were registered a moment ago but the backend no longer has us
-                // in any queue (server restart, Redis reset, or a stale token that
-                // got us evicted) — without this, the page would sit here forever
-                // saying "waiting" while the server has no queue entry to process
-                // for us. Recover by just re-entering, exactly like a first-time visit.
+                if (currentQueueType === 'eligible') {
+                  showClosedUI();
+                  return;
+                }
                 recoverByReentering();
+                return;
+              }
+              if (currentQueueType === 'eligible' && pos.type === 'standby') {
+                showClosedUI();
                 return;
               }
               renderWaitingState(pos);
@@ -344,8 +352,46 @@ export const queuePage = {
           }, 1000);
         }
 
+        function showOpenCountdown(openAt) {
+          const openMs = new Date(openAt).getTime();
+          if (Number.isNaN(openMs)) { showClosedUI(); return; }
+
+          statusEl.textContent = '예매 오픈 대기 중';
+          etaEl.textContent = '';
+
+          let openCountdownTimer = null;
+          function paintCountdown() {
+            const remaining = openMs - Date.now();
+            if (remaining <= 0) {
+              clearInterval(openCountdownTimer);
+              statusEl.textContent = '대기열 진입 중...';
+              enterBox.innerHTML = '';
+              enterQueue();
+              return;
+            }
+            enterBox.innerHTML = `
+              <div style="text-align:center;padding:24px 0;">
+                <div style="font-size:36px;margin-bottom:12px;">🎫</div>
+                <div style="font-size:18px;font-weight:700;color:var(--color-text);margin-bottom:12px;">예매 오픈까지</div>
+                <div class="num-mono" style="font-size:32px;font-weight:900;color:var(--color-primary);margin-bottom:8px;">${formatDeadline(remaining)}</div>
+                <div style="font-size:13px;color:var(--color-text-secondary);">오픈 시간이 되면 자동으로 대기열에 진입합니다</div>
+              </div>`;
+          }
+          paintCountdown();
+          openCountdownTimer = setInterval(paintCountdown, 1000);
+
+          cleanupFn = ((prev) => () => {
+            clearInterval(openCountdownTimer);
+            if (prev) prev();
+          })(cleanupFn);
+        }
+
         function handleEnterResult(enterResult) {
           if (settled) return;
+          if (enterResult.status === 'closed' && enterResult.code === 'ticketing_not_open' && enterResult.openAt) {
+            showOpenCountdown(enterResult.openAt);
+            return;
+          }
           if (enterResult.status === 'closed') {
             showClosedUI();
             return;

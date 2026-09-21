@@ -45,7 +45,7 @@
 }
 .detail-hero__overlay { position:absolute; inset:0; z-index:0; background: linear-gradient(180deg, rgba(0,0,0,.04) 0%, rgba(0,0,0,.28) 40%, rgba(0,0,0,.9) 100%); }
 .detail-hero__content {
-  position: relative; z-index:1; padding: 44px 0; width:100%;
+  position: relative; z-index:1; padding: 44px 40px; width:100%;
   animation: detailFadeUp .6s cubic-bezier(.22,1,.36,1) both;
 }
 @keyframes detailFadeUp { from { opacity:0; transform: translateY(24px); } to { opacity:1; transform: none; } }

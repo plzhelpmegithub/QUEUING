@@ -40,12 +40,18 @@ export const signupPage = {
           </div>
           <div class="field">
             <label>비밀번호</label>
-            <input type="password" name="password" placeholder="8자 이상 입력해주세요" autocomplete="new-password" required />
+            <div class="field--pw-wrap">
+              <input type="password" name="password" placeholder="8자 이상 입력해주세요" autocomplete="new-password" required />
+              <button type="button" class="pw-toggle" data-pw-toggle>보기</button>
+            </div>
             <div class="field-error" data-err="password"></div>
           </div>
           <div class="field">
             <label>비밀번호 확인</label>
-            <input type="password" name="password2" placeholder="비밀번호를 다시 입력해주세요" autocomplete="new-password" required />
+            <div class="field--pw-wrap">
+              <input type="password" name="password2" placeholder="비밀번호를 다시 입력해주세요" autocomplete="new-password" required />
+              <button type="button" class="pw-toggle" data-pw-toggle>보기</button>
+            </div>
             <div class="field-error" data-err="password2"></div>
           </div>
           <div class="field">
@@ -81,6 +87,15 @@ export const signupPage = {
         <div class="auth-switch">이미 회원이신가요? <a href="#/login">로그인</a></div>
       </div>
     `;
+
+    container.querySelectorAll('[data-pw-toggle]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const input = btn.previousElementSibling;
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.textContent = show ? '숨김' : '보기';
+      });
+    });
 
     const form = container.querySelector('[data-form]');
     const submitBtn = form.querySelector('button[type="submit"]');

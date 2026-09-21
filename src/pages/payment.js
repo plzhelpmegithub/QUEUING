@@ -5,7 +5,7 @@ import { formatPrice, uid } from '../utils/format.js';
 import { mountCountdown } from '../components/countdown.js';
 import { mountRefundSummary } from '../components/refundPolicy.js';
 import { openModal, closeModal } from '../components/modal.js';
-import { getState, clearCurrentOrder, addBooking, clearSeatSelectTimer, updateProfileOnServer } from '../state/store.js';
+import { getState, clearCurrentOrder, addBooking, clearSeatSelectTimer, updateProfileOnServer, loadCancelQueuesFromServer } from '../state/store.js';
 import { showToast } from '../components/toast.js';
 import { navigate } from '../router.js';
 import { fetchWithRecaptcha } from '../utils/recaptcha.js';
@@ -336,6 +336,7 @@ export const paymentPage = {
               const expirePromise = releasePromise.then(() => (
                 type === 'cancel' && currentUserId && order.cancelAllocation && !lastSimulationAllocation
                   ? expireCancelAllocation(currentUserId, c.eventId, order.cancelAllocation.seatId, {
+                      allocationId: order.cancelAllocation.allocationId || order.cancelAllocation.id,
                       sessionDate: order.cancelAllocation.sessionDate || order.session?.date || '',
                       sessionTime: order.cancelAllocation.sessionTime || order.session?.time || '',
                     }).catch(() => null)
@@ -429,12 +430,21 @@ export const paymentPage = {
                 clearCurrentOrder();
                 clearSeatSelectTimer();
                 showToast({ title: '결제를 완료하지 못했습니다', body: data.message || '좌석 선점이 만료되어 입장 슬롯을 반납했습니다. 다시 시도해주세요.', type: 'default' });
-                navigate(`zones/${c.eventId}`);
+                navigate(type === 'cancel' ? `mypage/cancel-queue` : `zones/${c.eventId}`);
               });
               return;
             }
 
             settled = true;
+            if (type === 'cancel' && order.cancelAllocation) {
+              const cancelUserId = getState().user?.userId || getState().user?.email || order.userId;
+              expireCancelAllocation(cancelUserId, c.eventId, order.cancelAllocation.seatId, {
+                allocationId: order.cancelAllocation.allocationId || order.cancelAllocation.id,
+                sessionDate: order.cancelAllocation.sessionDate || order.session?.date || '',
+                sessionTime: order.cancelAllocation.sessionTime || order.session?.time || '',
+              }).catch(() => {});
+              loadCancelQueuesFromServer().catch(() => {});
+            }
             const bookingId = uid('A');
             addBooking({
               bookingId,
@@ -459,7 +469,7 @@ export const paymentPage = {
               clearCurrentOrder();
               clearSeatSelectTimer();
               showToast({ title: '결제 요청에 실패했습니다', body: '좌석과 입장 슬롯을 반납했습니다. 다시 시도해주세요.', type: 'default' });
-              navigate(`zones/${c.eventId}`);
+              navigate(type === 'cancel' ? `mypage/cancel-queue` : `zones/${c.eventId}`);
             });
           });
       };

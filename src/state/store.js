@@ -517,8 +517,14 @@ export function loadCancelQueuesFromServer() {
           ...queue,
           myNumber: Number(queue.myNumber || 0),
           total: Number(queue.total || 0),
+          simulationQueue: Boolean(queue.simulationQueue),
+          membershipEligible: Boolean(queue.membershipEligible),
+          estimatedWaitMinutes: Number(queue.estimatedWaitMinutes || 0),
+          waitMinutesPerPerson: Number(queue.waitMinutesPerPerson || 5),
           joinedAt: queue.joinedAt ? new Date(queue.joinedAt).getTime() : Date.now(),
-          status: queue.queueStatus || queue.status || 'waiting',
+          // 서버는 대기열 원본 상태(queueStatus)와 Secret Link 배정 상태(status)를
+          // 함께 보낸다. 활성 링크가 있으면 원본 WAITING 상태로 덮어쓰지 않는다.
+          status: queue.status === 'allocated' ? 'allocated' : (queue.queueStatus || queue.status || 'waiting'),
         };
       });
       state.cancelQueues = next;

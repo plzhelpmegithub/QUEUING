@@ -42,24 +42,28 @@ export function buildCalendarEvents(realEvents = []) {
   const apiEvents = Array.isArray(realEvents) ? realEvents : [];
   const events = [];
 
-  // 실제 API 공연의 공연일·회차를 기본 일정으로 표시한다. 이 데이터를 기반으로
-  // 관심 공연/예매 완료 일정도 아래에서 별도 상태로 겹쳐 표시한다.
+  const bookedIds = new Set(
+    bookings.filter((b) => b.status === 'confirmed').map((b) => b.concertId)
+  );
+  const interestIds = interests instanceof Set ? interests : new Set(interests);
+
   apiEvents.forEach((event) => {
     const status = String(event.status || '').toLowerCase();
     if (status !== 'cancelled') {
+      const id = event.eventId;
+      const isBooked = bookedIds.has(id);
+      const isInterest = interestIds.has(id);
+      const type = isBooked ? 'booked' : isInterest ? 'interest' : 'performance';
       eventDates(event).forEach((date) => {
         events.push({
           date,
-          type: 'performance',
+          type,
           title: event.eventName || '공연 일정',
-          concertId: event.eventId,
+          concertId: id,
         });
       });
     }
 
-    // 예매 오픈 일정은 프론트 목업의 bookingOpenAt이 아니라 실제 API 이벤트의
-    // ticketOpenAt을 사용한다. 오픈 시간이 없는 즉시 오픈 공연은 별도 오픈 점을
-    // 만들지 않는다.
     const openAt = event.ticketOpenAt || event.bookingOpenAt;
     if (openAt && !['closed', 'cancelled'].includes(status) && new Date(openAt).getTime() > Date.now()) {
       const openDate = dateOnly(openAt);
@@ -74,7 +78,7 @@ export function buildCalendarEvents(realEvents = []) {
   });
 
   bookings
-    .filter((b) => b.status === 'confirmed')
+    .filter((b) => b.status === 'confirmed' && !apiEvents.some((e) => e.eventId === b.concertId))
     .forEach((b) => {
       const r = resolveConcert(b.concertId, apiEvents);
       if (!r) return;
@@ -84,13 +88,15 @@ export function buildCalendarEvents(realEvents = []) {
       });
     });
 
-  interests.forEach((id) => {
-    const r = resolveConcert(id, apiEvents);
-    if (!r) return;
-    (r.dates || [r.date]).filter(Boolean).forEach((date) => {
-      events.push({ date, type: 'interest', title: r.title, concertId: id });
+  [...interestIds]
+    .filter((id) => !apiEvents.some((e) => e.eventId === id))
+    .forEach((id) => {
+      const r = resolveConcert(id, apiEvents);
+      if (!r) return;
+      (r.dates || [r.date]).filter(Boolean).forEach((date) => {
+        events.push({ date, type: 'interest', title: r.title, concertId: id });
+      });
     });
-  });
 
   return events;
 }

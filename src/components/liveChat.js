@@ -80,7 +80,7 @@ export function mountLiveChat(el, { concertId, artist }) {
           <span class="live-dot"></span>
           현재 <b data-viewers class="num-mono">${formatNumber(viewers)}</b>명이 함께 보고 있어요
         </div>
-        <div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:10px;">${artist} 전용방</div>
+        <div style="font-size:13px;font-weight:700;color:var(--color-text-secondary);margin-bottom:10px;">${artist}</div>
         <div class="live-chat__list" data-list></div>
         <form class="live-chat__form" data-form>
           <input type="text" data-input maxlength="120" placeholder="${isLoggedIn() ? '메시지를 입력하세요' : '로그인 후 채팅에 참여할 수 있어요'}" />

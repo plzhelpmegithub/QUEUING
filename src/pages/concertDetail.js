@@ -6,7 +6,7 @@ import { mountRefundSummary } from '../components/refundPolicy.js';
 import { mountLiveChat } from '../components/liveChat.js';
 import { mountSeatMap } from '../components/seatMap.js';
 import { navigate } from '../router.js';
-import { isLoggedIn, setReturnTo, setSelectedSession, getState } from '../state/store.js';
+import { isLoggedIn, setReturnTo, setSelectedSession, getState, hasMembership } from '../state/store.js';
 import { generateEventSessions, formatStoredSessions, getConcertImage, getTicketPriceRows, getVenueZoneLayout } from '../data/concerts.js';
 import { OLYMPIC_HALL_CSV_ZONES, OLYMPIC_HALL_FLOOR_SEAT_COUNT } from '../data/olympicHallSeats.js';
 
@@ -140,11 +140,19 @@ export const concertDetailPage = {
               <div class="detail-info-card" data-refund-summary></div>
             </div>
 
-            <div class="detail-right-col">
+              <div class="detail-right-col">
               <div class="booking-panel" data-panel style="padding:0;overflow:hidden;">
                 <div data-booking-cal></div>
                 <div style="padding:0 24px 20px;">
                   <button class="btn btn-primary btn-block" data-book disabled>날짜를 선택해주세요</button>
+                  <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--color-border);" data-membership-guide>
+                    ${isLoggedIn() && hasMembership()
+                      ? '<div style="font-size:12.5px;font-weight:700;color:#15803d;text-align:center;">✓ 이미 멤버십 가입자입니다 · 취소표 Secret Link 이용 가능</div>'
+                      : `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                          <span style="font-size:12px;line-height:1.45;color:var(--color-text-secondary);">멤버십 가입 후 취소표 대기열과 Secret Link를 이용할 수 있습니다.</span>
+                          <button type="button" class="btn btn-outline btn-sm" data-membership-cta style="white-space:nowrap;">멤버십 가입하기</button>
+                        </div>`}
+                  </div>
                 </div>
               </div>
               <div class="live-panel" data-live></div>
@@ -255,6 +263,15 @@ export const concertDetailPage = {
         }
 
         renderBookingCal(container.querySelector('[data-booking-cal]'));
+
+        container.querySelector('[data-membership-cta]')?.addEventListener('click', () => {
+          if (!isLoggedIn()) {
+            setReturnTo('membership');
+            navigate('login');
+            return;
+          }
+          navigate('membership');
+        });
 
         function updateBookBtn() {
           if (!bookingOpen) return;

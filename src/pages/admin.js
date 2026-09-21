@@ -294,6 +294,80 @@ function paintOpenStatuses(container) {
   });
 }
 
+function getEventSearchTerm(container) {
+  const input = container.querySelector('[data-event-search-input]');
+  return (input?.value || '').trim().toLowerCase();
+}
+
+function bindEventRowListeners(tbody, container) {
+  tbody.querySelectorAll('[data-set-open-time]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const ev = eventsCache.find((x) => x.eventId === btn.dataset.setOpenTime);
+      if (ev) openSetOpenTimeModal(ev, () => refreshEventsList(container));
+    });
+  });
+  tbody.querySelectorAll('[data-set-close-time]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const ev = eventsCache.find((x) => x.eventId === btn.dataset.setCloseTime);
+      if (ev) openSetCloseTimeModal(ev, () => refreshEventsList(container));
+    });
+  });
+  tbody.querySelectorAll('[data-close-now]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const ev = eventsCache.find((x) => x.eventId === btn.dataset.closeNow);
+      const name = ev?.eventName || btn.dataset.closeNow;
+      if (!confirm(`"${name}" 공연을 즉시 마감할까요?`)) return;
+      btn.disabled = true;
+      const now = new Date().toISOString();
+      setEventCloseTime(btn.dataset.closeNow, now)
+        .then((result) => {
+          if (result.error) {
+            showToast({ title: '즉시 마감 실패', body: result.error });
+            btn.disabled = false;
+            return;
+          }
+          showToast({ title: `"${name}" 예매가 즉시 마감되었습니다`, type: 'success' });
+          refreshEventsList(container);
+        })
+        .catch(() => { showToast({ title: '즉시 마감 중 오류가 발생했습니다' }); btn.disabled = false; });
+    });
+  });
+  tbody.querySelectorAll('[data-delete-event]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const name = btn.closest('tr')?.children[1]?.textContent || '';
+      if (!confirm(`"${name}" 공연을 삭제할까요? (좌석 데이터도 함께 삭제됩니다)`)) return;
+      btn.disabled = true;
+      authFetch(`/events/${btn.dataset.deleteEvent}`, { method: 'DELETE' })
+        .then(async (res) => {
+          const result = await res.json();
+          if (!res.ok || !result.success) throw new Error(result.message || '삭제 실패');
+          return result;
+        })
+        .then((result) => {
+          showToast({
+            title: result.dbSynced === false ? '공연은 삭제됐지만 DB 동기화 실패' : '공연이 삭제되었습니다',
+            body: name,
+            type: result.dbSynced === false ? 'default' : 'success',
+          });
+          refreshEventsList(container);
+        })
+        .catch((err) => {
+          showToast({ title: '삭제 중 오류가 발생했습니다', body: err.message });
+          btn.disabled = false;
+        });
+    });
+  });
+}
+
+function filterEvents(events, term) {
+  if (!term) return events;
+  return events.filter((e) =>
+    (e.eventName || '').toLowerCase().includes(term) ||
+    (e.venue || '').toLowerCase().includes(term) ||
+    (e.eventDate || '').toLowerCase().includes(term)
+  );
+}
+
 function refreshEventsList(container) {
   const tbody = container.querySelector('[data-events-tbody]');
   if (!tbody) return;
@@ -307,9 +381,21 @@ function refreshEventsList(container) {
       if (eventsCache.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="text-secondary">생성된 공연이 없습니다.</td></tr>';
         updateBulkDeleteButton(container);
+        const countEl = container.querySelector('[data-event-search-count]');
+        if (countEl) countEl.textContent = '';
         return;
       }
-      tbody.innerHTML = eventsCache
+      const term = getEventSearchTerm(container);
+      const filtered = filterEvents(eventsCache, term);
+      const countEl = container.querySelector('[data-event-search-count]');
+      if (countEl) countEl.textContent = term ? `${filtered.length} / ${eventsCache.length}건` : `${eventsCache.length}건`;
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-secondary">검색 결과가 없습니다.</td></tr>';
+        updateBulkDeleteButton(container);
+        paintOpenStatuses(container);
+        return;
+      }
+      tbody.innerHTML = filtered
         .map(
         (e, i) => `
         <tr class="admin-event-row" data-admin-row="${e.eventId}" tabindex="0">
@@ -330,63 +416,7 @@ function refreshEventsList(container) {
         .join('');
       paintOpenStatuses(container);
       updateBulkDeleteButton(container);
-      tbody.querySelectorAll('[data-set-open-time]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const ev = eventsCache.find((x) => x.eventId === btn.dataset.setOpenTime);
-          if (ev) openSetOpenTimeModal(ev, () => refreshEventsList(container));
-        });
-      });
-      tbody.querySelectorAll('[data-set-close-time]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const ev = eventsCache.find((x) => x.eventId === btn.dataset.setCloseTime);
-          if (ev) openSetCloseTimeModal(ev, () => refreshEventsList(container));
-        });
-      });
-      tbody.querySelectorAll('[data-close-now]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const ev = eventsCache.find((x) => x.eventId === btn.dataset.closeNow);
-          const name = ev?.eventName || btn.dataset.closeNow;
-          if (!confirm(`"${name}" 공연을 즉시 마감할까요?`)) return;
-          btn.disabled = true;
-          const now = new Date().toISOString();
-          setEventCloseTime(btn.dataset.closeNow, now)
-            .then((result) => {
-              if (result.error) {
-                showToast({ title: '즉시 마감 실패', body: result.error });
-                btn.disabled = false;
-                return;
-              }
-              showToast({ title: `"${name}" 예매가 즉시 마감되었습니다`, type: 'success' });
-              refreshEventsList(container);
-            })
-            .catch(() => { showToast({ title: '즉시 마감 중 오류가 발생했습니다' }); btn.disabled = false; });
-        });
-      });
-      tbody.querySelectorAll('[data-delete-event]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const name = btn.closest('tr')?.children[1]?.textContent || '';
-          if (!confirm(`"${name}" 공연을 삭제할까요? (좌석 데이터도 함께 삭제됩니다)`)) return;
-          btn.disabled = true;
-          authFetch(`/events/${btn.dataset.deleteEvent}`, { method: 'DELETE' })
-            .then(async (res) => {
-              const result = await res.json();
-              if (!res.ok || !result.success) throw new Error(result.message || '삭제 실패');
-              return result;
-            })
-            .then((result) => {
-              showToast({
-                title: result.dbSynced === false ? '공연은 삭제됐지만 DB 동기화 실패' : '공연이 삭제되었습니다',
-                body: name,
-                type: result.dbSynced === false ? 'default' : 'success',
-              });
-              refreshEventsList(container);
-            })
-            .catch((err) => {
-              showToast({ title: '삭제 중 오류가 발생했습니다', body: err.message });
-              btn.disabled = false;
-            });
-        });
-      });
+      bindEventRowListeners(tbody, container);
     })
     .catch(() => {
       tbody.innerHTML = '<tr><td colspan="7" class="text-red">목록을 불러오지 못했습니다.</td></tr>';
@@ -851,6 +881,7 @@ function initSimulationPanel(container, options = {}) {
   const apiBase = options.apiBase || '/admin/simulation';
   const isLocal = options.mode === 'local';
   const isFinal = options.mode === 'final';
+  const isIntegrated = options.mode === 'integrated';
   const simulationFetch = (path, body) => simFetch(`${apiBase}${path}`, body);
   const finalLastFetch = (path, body) => simFetch(`/admin/last-simulation${path}`, body);
 
@@ -859,13 +890,18 @@ function initSimulationPanel(container, options = {}) {
   const eventSelect = panel.querySelector('[data-sim-event]');
   const sessionSelect = panel.querySelector('[data-sim-session]');
   const dummyCountInput = panel.querySelector('[data-sim-dummy-count]');
+  const memberDummyCountInput = panel.querySelector('[data-sim-member-dummy-count]');
   const cancelCountInput = panel.querySelector('[data-sim-cancel-count]');
   const statusArea = panel.querySelector('[data-sim-status]');
   const logArea = panel.querySelector('[data-sim-log]');
 
   const btnInit = panel.querySelector('[data-sim-init]');
+  const btnMainQueue = panel.querySelector('[data-sim-main-queue]');
+  const btnDrain = panel.querySelector('[data-sim-drain]');
   const btnSellout = panel.querySelector('[data-sim-sellout]');
   const btnClose = panel.querySelector('[data-sim-close]');
+  const btnRemoveStandardDummies = panel.querySelector('[data-sim-remove-standard-dummies]');
+  const btnRemoveDummyMembers = panel.querySelector('[data-sim-remove-dummy-members]');
   const btnCancel = panel.querySelector('[data-sim-cancel]');
   const btnLinks = panel.querySelector('[data-sim-links]');
   const btnCleanup = panel.querySelector('[data-sim-cleanup]');
@@ -876,11 +912,15 @@ function initSimulationPanel(container, options = {}) {
   let actionInProgress = false;
   let finalCampaignId = '';
   let finalPoolSize = 0;
+  let standardDummiesRemaining = 0;
+  let dummyMembersRemaining = 0;
 
+  toggleBtn.setAttribute('aria-expanded', String(body.style.display !== 'none'));
   toggleBtn.addEventListener('click', () => {
     const hidden = body.style.display === 'none';
     body.style.display = hidden ? 'block' : 'none';
     toggleBtn.textContent = hidden ? '접기' : '펼치기';
+    toggleBtn.setAttribute('aria-expanded', String(hidden));
     if (hidden) loadSimEvents();
   });
 
@@ -897,18 +937,28 @@ function initSimulationPanel(container, options = {}) {
     // 단계3을 단계2보다 먼저 실행하면 본 대기열은 열린 상태인데 취소표
     // 좌석만 풀리는 불일치가 생긴다. UI에서도 권장 순서를 강제하고,
     // API가 동일한 순서를 최종 검증한다.
-    const canSellout = currentStage === 'initialized';
+    const canMainQueue = isIntegrated && currentStage === 'initialized';
+    const canDrain = isIntegrated && (currentStage === 'main_queue_open' || currentStage === 'queue_drained');
+    const canSellout = isIntegrated ? (currentStage === 'main_queue_open' || currentStage === 'queue_drained') : currentStage === 'initialized';
     const canClose = currentStage === 'sold_out';
-    const canCancel = currentStage === 'closed' || currentStage === 'seats_cancelled';
+    const canRemoveStandardDummies = !isIntegrated && ['closed', 'standard_dummies_removed', 'dummy_members_removed', 'seats_cancelled', 'link_requested'].includes(currentStage) && standardDummiesRemaining > 0;
+    const canRemoveDummyMembers = !isIntegrated && ['standard_dummies_removed', 'dummy_members_removed', 'seats_cancelled', 'link_requested'].includes(currentStage) && dummyMembersRemaining > 0;
+    const canCancel = isIntegrated
+      ? currentStage === 'closed' || currentStage === 'seats_cancelled'
+      : currentStage === 'dummy_members_removed' || currentStage === 'seats_cancelled';
     const canIssueLinks = currentStage === 'seats_cancelled' || currentStage === 'link_requested';
 
-    btnSellout.disabled = manualActionDisabled || !canSellout;
-    btnClose.disabled = manualActionDisabled || !canClose;
-    btnCancel.disabled = manualActionDisabled || !canCancel;
+    if (btnMainQueue) btnMainQueue.disabled = manualActionDisabled || !canMainQueue;
+    if (btnDrain) btnDrain.disabled = manualActionDisabled || !canDrain;
+    if (btnSellout) btnSellout.disabled = manualActionDisabled || !canSellout;
+    if (btnClose) btnClose.disabled = manualActionDisabled || !canClose;
+    if (btnRemoveStandardDummies) btnRemoveStandardDummies.disabled = manualActionDisabled || !canRemoveStandardDummies;
+    if (btnRemoveDummyMembers) btnRemoveDummyMembers.disabled = manualActionDisabled || !canRemoveDummyMembers;
+    if (btnCancel) btnCancel.disabled = manualActionDisabled || !canCancel;
     // 취소표 순차 배정·Secret Link 발급은 B파트가 담당한다.
     // 단계4는 이 시뮬레이션에서 본 대기열에 참여했고 대기열 진입 당시
     // 멤버십이었던 실제 사용자 후보가 확인된 경우에만 요청할 수 있다.
-    btnLinks.disabled = manualActionDisabled || !canIssueLinks;
+    if (btnLinks) btnLinks.disabled = manualActionDisabled || !canIssueLinks;
     btnInit.disabled = actionInProgress;
     btnCleanup.disabled = actionInProgress;
   }
@@ -923,16 +973,42 @@ function initSimulationPanel(container, options = {}) {
     const q = data.queue || {};
     const cancellation = data.cancellation || {};
     const ru = data.realUser;
+    standardDummiesRemaining = Number(data.standardDummiesRemaining || 0);
+    dummyMembersRemaining = Number(data.dummyMembersRemaining || 0);
     const deliveryLabel = isFinal ? 'Gmail SMTP · Last' : (isLocal ? '로컬 SMTP' : 'B파트 연동');
     const deliveryMessage = isFinal
       ? 'Local 단계에서 생성한 취소 좌석 풀을 Last 순번 흐름으로 열고, 현재 1번 멤버십 후보 한 명에게만 Gmail 링크를 발급합니다. 결제·양도·만료 후 다음 후보에게 자동 발급됩니다.'
       : isLocal
       ? '본 대기열에 참여한 실제 멤버십 사용자만 순번대로 Gmail SMTP 링크 발급 대상이 됩니다.'
       : '본 대기열 참여 이력과 진입 당시 멤버십이 확인된 사용자만 B파트 순차 배정 후보가 됩니다.';
-    let html = `
+    const integratedStages = ['initialized', 'main_queue_open', 'queue_drained', 'sold_out', 'closed', 'seats_cancelled', 'link_requested'];
+    const integratedLabels = ['초기화', '본 티켓팅 대기', '대기열 드레인', '매진 및 전환', '티켓팅 마감', '취소표 생성', 'B파트 요청'];
+    const activeIntegratedIndex = integratedStages.indexOf(data.stage);
+    let html = isIntegrated ? `
+      <ol class="admin-simulation-flow" aria-label="통합 시뮬레이션 진행 단계">
+        ${integratedLabels.map((label, index) => `
+          <li class="admin-simulation-flow__step ${index < activeIntegratedIndex ? 'is-complete' : ''} ${index === activeIntegratedIndex ? 'is-current' : ''}" ${index === activeIntegratedIndex ? 'aria-current="step"' : ''}>
+            <span>${index + 1}</span><strong>${label}</strong>
+          </li>`).join('')}
+      </ol>
+      <div class="admin-simulation-split" aria-label="본 티켓팅과 취소표 대기열 상태">
+        <div><span>본 티켓팅 대기</span><strong>${Number(q.waiting || 0).toLocaleString()}명</strong><small>일반·멤버십 공통</small></div>
+        <div><span>취소표 대기</span><strong>${Number(q.standby || 0).toLocaleString()}명</strong><small>활성 멤버십 전용</small></div>
+        <div><span>취소표 후보</span><strong>${Number(data.candidateCount || 0).toLocaleString()}명</strong><small>실제 사용자만</small></div>
+      </div>` : '';
+    html += `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px;">
         <div><b>단계</b><br/><span class="badge badge-blue">${data.stage}</span></div>
-        <div><b>더미 유저</b><br/>${(data.dummyCount || 0).toLocaleString()}명</div>
+        ${isIntegrated ? `
+          <div><b>본 티켓팅 일반 더미</b><br/>${Number(data.mainQueueStandardCount || data.dummyCount || 0).toLocaleString()}명</div>
+          <div><b>본 티켓팅 멤버십 더미</b><br/>${Number(data.mainQueueMemberCount || data.memberDummyCount || 0).toLocaleString()}명</div>
+          <div><b>전환된 멤버십 더미</b><br/><span style="color:#8e44ad;">${Number(data.cancellationQueueCount || 0).toLocaleString()}명</span></div>
+        ` : `
+          <div><b>더미 유저</b><br/>${(data.dummyCount || 0).toLocaleString()}명</div>
+          <div><b>일반 더미 대기</b><br/><span style="color:${standardDummiesRemaining ? '#e67e22' : '#27ae60'};">${standardDummiesRemaining.toLocaleString()}명</span></div>
+          <div><b>더미 멤버십 대기</b><br/>${Number(data.memberDummyCount || 0).toLocaleString()}명</div>
+          <div><b>멤버십 더미 대기</b><br/><span style="color:${dummyMembersRemaining ? '#e67e22' : '#27ae60'};">${dummyMembersRemaining.toLocaleString()}명</span></div>
+        `}
         <div><b>총 좌석</b><br/>${(data.totalSeats || 0).toLocaleString()}석</div>
         <div><b>판매됨</b><br/><span style="color:#e74c3c;">${(s.sold || 0).toLocaleString()}</span></div>
         <div><b>남은 좌석</b><br/><span style="color:#27ae60;">${(s.available || 0).toLocaleString()}</span></div>
@@ -955,7 +1031,9 @@ function initSimulationPanel(container, options = {}) {
     if (ru) {
       html += `<div style="padding:10px;background:var(--color-bg);border-radius:6px;border:1px solid var(--color-border);">
         <b>현재 대상 멤버십 사용자: ${ru.email}</b><br/>`;
-      if (ru.standbyPosition) html += `취소표 대기 <b>${ru.memberStandbyPosition || ru.standbyPosition}번째</b> · `;
+      const queuePosition = Number(ru.standbyPosition || ru.memberStandbyPosition || 0);
+      if (queuePosition) html += `취소표 대기 <b>${queuePosition}번째</b> · `;
+      if (queuePosition) html += `예상 대기 <b>약 ${Math.max(0, queuePosition - 1) * Number(data.waitMinutesPerPerson || 5)}분</b> · `;
       if (ru.isAdmitted) html += '<span style="color:#27ae60;">입장 허용됨</span> · ';
       if (ru.hasAllocation) {
         const allocatedSeat = ru.allocation.seatId || '좌석 선택 전';
@@ -968,7 +1046,7 @@ function initSimulationPanel(container, options = {}) {
       html += '</div>';
     } else {
       html += `<div style="padding:10px;background:var(--color-bg);border-radius:6px;border:1px solid var(--color-border);color:var(--color-text-secondary);">
-        단계1 이후 본 대기열에 참여한 실제 멤버십 계정이 취소표 대기열에 등록되어야 단계4 후보로 표시됩니다. 더미 사용자와 대기열 진입 당시 비회원은 링크 발급 대상에서 제외됩니다.
+        ${isIntegrated ? '본 티켓팅 참여 후 매진 단계에서 취소표 대기열로 전환된' : '단계1 이후 본 대기열에 참여한'} 실제 멤버십 계정만 B파트 후보로 표시됩니다. 더미 멤버십 사용자는 순번 계산에만 포함되며, Secret Link 발급 대상에서는 제외됩니다.
       </div>`;
     }
 
@@ -1041,13 +1119,14 @@ function initSimulationPanel(container, options = {}) {
     const params = getSimParams();
     if (!params.eventId) { showToast({ title: '공연을 선택해주세요' }); return; }
     const count = parseInt(dummyCountInput.value, 10) || 10000;
+    const memberDummyCount = Math.max(0, parseInt(memberDummyCountInput.value, 10) || 0);
     actionInProgress = true;
     updateButtons();
-    btnInit.textContent = isFinal ? 'Final 초기화 중...' : '초기화 중...';
-    logMsg(`초기화 시작 — ${params.eventId}, 더미 ${count.toLocaleString()}명`);
+    btnInit.textContent = isFinal ? 'Final 초기화 중...' : (isIntegrated ? '통합 초기화 중...' : '초기화 중...');
+    logMsg(`초기화 시작 — 좌석 더미 ${count.toLocaleString()}명, 멤버십 대기 더미 ${memberDummyCount.toLocaleString()}명`);
     finalCampaignId = '';
     finalPoolSize = 0;
-    simulationFetch('/init', { ...params, dummyCount: count })
+    simulationFetch('/init', { ...params, dummyCount: count, memberDummyCount })
       .then((r) => {
         if (r.error) { showToast({ title: '초기화 실패', body: r.error }); return; }
         showToast({ title: '시뮬레이션 초기화 완료', body: r.message, type: 'success' });
@@ -1058,7 +1137,55 @@ function initSimulationPanel(container, options = {}) {
       .catch((e) => showToast({ title: '초기화 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
-        btnInit.textContent = isFinal ? 'Final 시뮬레이션 초기화' : '시뮬레이션 초기화';
+        btnInit.textContent = isFinal ? 'Final 시뮬레이션 초기화' : (isIntegrated ? '통합 시뮬레이션 초기화' : '시뮬레이션 초기화');
+        updateButtons();
+      });
+  });
+
+  btnMainQueue?.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    actionInProgress = true;
+    updateButtons();
+    btnMainQueue.textContent = '대기열 구성 중...';
+    logMsg('단계2: 본 티켓팅 대기열 구성 시작');
+    simulationFetch('/main-queue', params)
+      .then((r) => {
+        if (r.error) { showToast({ title: '본 티켓팅 대기열 구성 실패', body: r.error }); return; }
+        showToast({ title: '본 티켓팅 대기열 구성 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '본 티켓팅 대기열 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnMainQueue.textContent = '단계2: 본 티켓팅 대기열 구성';
+        updateButtons();
+      });
+  });
+
+  btnDrain?.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    const batchSize = parseInt(prompt('한 번에 처리할 더미 수 (기본 1000):', '1000'), 10) || 1000;
+    const releaseSeatCount = parseInt(prompt('해제할 좌석 수 (매진 전이면 0):', '0'), 10) || 0;
+    actionInProgress = true;
+    updateButtons();
+    btnDrain.textContent = '드레인 처리 중...';
+    logMsg(`단계3: 대기열 드레인 — 더미 ${batchSize}명 처리, 좌석 ${releaseSeatCount}석 해제 요청`);
+    simulationFetch('/drain-queue', { ...params, batchSize, releaseSeatCount })
+      .then((r) => {
+        if (r.error) { showToast({ title: '대기열 드레인 실패', body: r.error }); return; }
+        showToast({ title: '대기열 드레인 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '대기열 드레인 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnDrain.textContent = '단계3: 대기열 드레인';
         updateButtons();
       });
   });
@@ -1070,7 +1197,7 @@ function initSimulationPanel(container, options = {}) {
     actionInProgress = true;
     updateButtons();
     btnSellout.textContent = '매진 처리 중...';
-    logMsg('단계1: 매진 연출 시작');
+    logMsg(isIntegrated ? '단계3: 매진 및 멤버십 취소표 전환 시작' : '단계1: 매진 연출 시작');
     simulationFetch('/sellout', params)
       .then((r) => {
         if (r.error) { showToast({ title: '매진 연출 실패', body: r.error }); return; }
@@ -1082,7 +1209,7 @@ function initSimulationPanel(container, options = {}) {
       .catch((e) => showToast({ title: '매진 연출 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
-        btnSellout.textContent = '단계1: 매진 연출';
+        btnSellout.textContent = isIntegrated ? '단계4: 매진 및 취소표 전환' : '단계1: 매진 연출';
         updateButtons();
       });
   });
@@ -1094,7 +1221,7 @@ function initSimulationPanel(container, options = {}) {
     actionInProgress = true;
     updateButtons();
     btnClose.textContent = '마감 처리 중...';
-    logMsg('단계2: 조기 마감 시작');
+    logMsg(isIntegrated ? '단계4: 통합 티켓팅 마감 시작' : '단계2: 조기 마감 시작');
     simulationFetch('/close', params)
       .then((r) => {
         if (r.error) { showToast({ title: '마감 실패', body: r.error }); return; }
@@ -1106,7 +1233,7 @@ function initSimulationPanel(container, options = {}) {
       .catch((e) => showToast({ title: '마감 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
-        btnClose.textContent = '단계2: 조기 마감';
+        btnClose.textContent = isIntegrated ? '단계5: 티켓팅 마감' : '단계2: 조기 마감';
         updateButtons();
       });
   });
@@ -1119,7 +1246,7 @@ function initSimulationPanel(container, options = {}) {
     actionInProgress = true;
     updateButtons();
     btnCancel.textContent = '좌석 취소 중...';
-    logMsg(`단계3: 더미 좌석 ${count}석 취소 시작`);
+    logMsg(`${isIntegrated ? '단계5' : '단계3'}: 더미 좌석 ${count}석 취소 시작`);
     simulationFetch('/cancel-seats', { ...params, count })
       .then((r) => {
         if (r.error) { showToast({ title: '좌석 취소 실패', body: r.error }); return; }
@@ -1132,7 +1259,55 @@ function initSimulationPanel(container, options = {}) {
       .catch((e) => showToast({ title: '좌석 취소 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
-        btnCancel.textContent = '단계3: 취소표 생성';
+        btnCancel.textContent = isIntegrated ? '단계6: 취소표 생성' : '단계3: 취소표 생성';
+        updateButtons();
+      });
+  });
+
+  btnRemoveStandardDummies?.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    if (!confirm('일반 더미 대기자 전체를 삭제할까요?\n다른 사용자의 순번과 예상 대기시간이 즉시 다시 계산됩니다.')) return;
+    actionInProgress = true;
+    updateButtons();
+    btnRemoveStandardDummies.textContent = '이탈 처리 중...';
+    logMsg('단계2-1: 일반 더미 대기자 전체 삭제 시작');
+    simulationFetch('/remove-standard-dummies', params)
+      .then((r) => {
+        if (r.error) { showToast({ title: '일반 더미 이탈 실패', body: r.error }); return; }
+        showToast({ title: '일반 더미 이탈 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '일반 더미 이탈 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnRemoveStandardDummies.textContent = '단계2-1: 일반 더미 전체 삭제';
+        updateButtons();
+      });
+  });
+
+  btnRemoveDummyMembers?.addEventListener('click', () => {
+    const params = getSimParams();
+    if (!params.eventId) return;
+    if (!confirm('앞 순번의 더미 멤버십 사용자 10명을 대기열에서 삭제할까요?\n삭제 후 실제 사용자의 취소표 순번과 예상 대기시간이 즉시 다시 계산됩니다.')) return;
+    actionInProgress = true;
+    updateButtons();
+    btnRemoveDummyMembers.textContent = '삭제 중...';
+    logMsg('단계2-2: 더미 멤버십 사용자 10명 삭제 시작');
+    simulationFetch('/remove-dummy-members', params)
+      .then((r) => {
+        if (r.error) { showToast({ title: '더미 멤버십 삭제 실패', body: r.error }); return; }
+        showToast({ title: '더미 멤버십 대기자 삭제 완료', body: r.message, type: 'success' });
+        logMsg(r.message);
+        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
+      })
+      .then((s) => { if (s) renderStatus(s); })
+      .catch((e) => showToast({ title: '더미 멤버십 삭제 오류', body: e.message }))
+      .finally(() => {
+        actionInProgress = false;
+        btnRemoveDummyMembers.textContent = '단계2-2: 멤버십 더미 10명 삭제';
         updateButtons();
       });
   });
@@ -1145,7 +1320,7 @@ function initSimulationPanel(container, options = {}) {
     actionInProgress = true;
     updateButtons();
     btnLinks.textContent = isFinal || isLocal ? 'SMTP 발송 중...' : 'B파트 전송 중...';
-    logMsg(`단계4: 실제 멤버십 standby 후보만 선별하여 ${deliveryLabel} 링크 발급 요청 시작`);
+    logMsg(`${isIntegrated ? '단계6' : '단계4'}: 실제 멤버십 standby 후보만 선별하여 ${deliveryLabel} 링크 발급 요청 시작`);
     const issueRequest = isFinal
       ? (async () => {
         if (!finalCampaignId) {
@@ -1195,7 +1370,9 @@ function initSimulationPanel(container, options = {}) {
       .catch((e) => showToast({ title: `${deliveryLabel} 링크 발급 오류`, body: e.message }))
       .finally(() => {
         actionInProgress = false;
-        btnLinks.textContent = isFinal ? '단계4: Gmail SMTP Last 링크 발급' : (isLocal ? '단계4: Gmail SMTP 링크 발급' : '단계4: B파트 링크 발급');
+        btnLinks.textContent = isFinal
+          ? '단계4: Gmail SMTP Last 링크 발급'
+          : (isLocal ? '단계4: Gmail SMTP 링크 발급' : `${isIntegrated ? '단계7' : '단계4'}: B파트 링크 발급`);
         updateButtons();
       });
   });
@@ -1486,14 +1663,9 @@ function initAdminCommandPalette(container) {
     { id: 'overview', label: '개요로 이동', hint: '운영 대시보드', action: () => focusAdminSection(container, 'overview') },
     { id: 'events', label: '공연 관리로 이동', hint: '등록된 공연 목록', action: () => focusAdminSection(container, 'events') },
     { id: 'dummy', label: '더미 유저 도구로 이동', hint: 'HOT 공연 관리', action: () => focusAdminSection(container, 'dummy') },
-    { id: 'simulation', label: '취소표 시뮬레이션 AWS로 이동', hint: 'B파트 SQS 연동 수동 실행 패널', action: () => focusAdminSection(container, 'simulation') },
+    { id: 'integrated-simulation', label: '통합 티켓팅 시뮬레이션으로 이동', hint: '본 티켓팅부터 B파트 링크까지 검증', action: () => focusAdminSection(container, 'integrated-simulation') },
     { id: 'create-event', label: '새 공연 생성', hint: '공연 생성 모달 열기', action: () => container.querySelector('[data-open-create-event]')?.click() },
     { id: 'refresh-events', label: '공연 목록 새로고침', hint: '최신 상태 조회', action: () => refreshEventsList(container) },
-    { id: 'toggle-simulation', label: '취소표 시뮬레이션 AWS 펼치기', hint: '패널 열기', action: () => {
-      const body = container.querySelector('[data-sim-body]');
-      if (body?.style.display === 'none') container.querySelector('[data-sim-toggle]')?.click();
-      focusAdminSection(container, 'simulation');
-    } },
   ];
 
   let filteredCommands = commands;
@@ -1649,16 +1821,17 @@ export const adminPage = {
               <button type="button" class="admin-nav-item" data-admin-section="dummy" tabindex="-1">
                 <span class="admin-nav-item__index">03</span><span>더미 유저 도구</span>
               </button>
-              <button type="button" class="admin-nav-item" data-admin-section="simulation" tabindex="-1">
+              <button type="button" class="admin-nav-item" data-admin-section="simulation" tabindex="-1" style="display:none;">
                 <span class="admin-nav-item__index">04</span><span>취소표 시뮬레이션 AWS</span>
               </button>
-              <button type="button" class="admin-nav-item" data-admin-section="last-simulation" tabindex="-1">
+              <button type="button" class="admin-nav-item" data-admin-section="last-simulation" tabindex="-1" style="display:none;">
                 <span class="admin-nav-item__index">05</span><span>취소표 시뮬레이션 Final</span>
+              </button>
+              <button type="button" class="admin-nav-item" data-admin-section="integrated-simulation" tabindex="-1">
+                <span class="admin-nav-item__index">04</span><span>통합 티켓팅 시뮬레이션</span>
               </button>
             </nav>
             <div class="admin-sidebar__footer">
-              <span class="admin-live-indicator" aria-hidden="true"></span>
-              <span>API 연결됨</span>
               <span class="admin-sidebar__shortcut">?</span>
             </div>
           </aside>
@@ -1698,6 +1871,10 @@ export const adminPage = {
                     <span class="mchart__title">생성된 공연 목록</span>
                   </div>
                   <span class="admin-panel__hint">행을 선택하고 방향키로 이동</span>
+                </div>
+                <div class="admin-event-search" data-event-search>
+                  <input type="text" placeholder="공연명, 장소, 날짜로 검색..." data-event-search-input />
+                  <span class="admin-event-search__count" data-event-search-count></span>
                 </div>
                 <div class="admin-table-wrap">
                   <table class="qtable admin-events-table">
@@ -1741,7 +1918,7 @@ export const adminPage = {
                 </div>
               </section>
 
-              <section class="admin-panel admin-panel--wide" data-sim-panel data-admin-focus="simulation">
+              <section class="admin-panel admin-panel--wide" data-sim-panel data-admin-focus="simulation" style="display:none;" aria-hidden="true">
                 <div class="mchart__head admin-panel__head">
                   <div>
                     <span class="admin-panel__eyebrow">CANCELLATION QUEUE</span>
@@ -1769,16 +1946,23 @@ export const adminPage = {
                       <label>더미 유저 수</label>
                       <input type="number" data-sim-dummy-count value="10000" min="100" max="50000" />
                     </div>
+                    <div class="field">
+                      <label>더미 멤버십 대기자 수</label>
+                      <input type="number" data-sim-member-dummy-count value="100" min="0" max="50000" />
+                      <span class="field__hint">실제 사용자는 이 인원 뒤 순번을 받고, 앞 대기자 1명당 5분으로 예상 시간이 표시됩니다.</span>
+                    </div>
                   </div>
 
                   <p class="text-secondary admin-panel__description">
-                    수동 실행 모드: 공연을 선택하면 각 단계 버튼을 원하는 시점에 직접 실행할 수 있습니다. 권장 순서는 초기화 → 매진 → 본 대기열에 참여한 실제 멤버십 계정의 취소표 대기열 등록 → 마감 → 취소표 생성 → B파트 링크 발급입니다. 단계4는 시뮬레이션에 실제로 참여했고 진입 당시 멤버십이었던 후보만 확인한 뒤 취소 이벤트를 B파트 SQS에 전달합니다.
+                    수동 실행 모드: 권장 순서는 초기화 → 매진 → 실제 멤버십 사용자의 취소표 대기열 등록 → 조기 마감 → 일반 더미 대기자 전체 삭제 → 멤버십 더미 10명씩 삭제 → 취소표 생성 → B파트 링크 발급입니다. 취소표 대기열과 Secret Link는 멤버십 사용자에게만 제공됩니다.
                   </p>
 
                   <div class="admin-action-row admin-action-row--simulation">
                     <button type="button" class="btn btn-primary btn-sm" data-sim-init>시뮬레이션 초기화</button>
                     <button type="button" class="btn btn-outline btn-sm" data-sim-sellout disabled style="border-color:#e74c3c;color:#e74c3c;">단계1: 매진 연출</button>
                     <button type="button" class="btn btn-outline btn-sm" data-sim-close disabled style="border-color:#e67e22;color:#e67e22;">단계2: 조기 마감</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-remove-standard-dummies disabled style="border-color:#d35400;color:#d35400;">단계2-1: 일반 더미 전체 삭제</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-remove-dummy-members disabled style="border-color:#d35400;color:#d35400;">단계2-2: 멤버십 더미 10명 삭제</button>
                     <div class="admin-inline-action">
                       <input type="number" data-sim-cancel-count value="5" min="1" max="100" aria-label="취소표 생성 수" />
                       <button type="button" class="btn btn-outline btn-sm" data-sim-cancel disabled style="border-color:#8e44ad;color:#8e44ad;">단계3: 취소표 생성</button>
@@ -1797,7 +1981,7 @@ export const adminPage = {
                 </div>
               </section>
 
-              <section class="admin-panel admin-panel--wide" data-final-sim-panel data-admin-focus="last-simulation">
+              <section class="admin-panel admin-panel--wide" data-final-sim-panel data-admin-focus="last-simulation" style="display:none;" aria-hidden="true">
                 <div class="mchart__head admin-panel__head">
                   <div>
                     <span class="admin-panel__eyebrow">A-PART / LOCAL + SHARED POOL</span>
@@ -1821,14 +2005,21 @@ export const adminPage = {
                       <label>더미 유저 수</label>
                       <input type="number" data-sim-dummy-count value="10000" min="100" max="50000" />
                     </div>
+                    <div class="field">
+                      <label>더미 멤버십 대기자 수</label>
+                      <input type="number" data-sim-member-dummy-count value="100" min="0" max="50000" />
+                      <span class="field__hint">실제 사용자는 이 인원 뒤 순번을 받고, 앞 대기자 1명당 5분으로 예상 시간이 표시됩니다.</span>
+                    </div>
                   </div>
                   <p class="text-secondary admin-panel__description">
-                    Local의 단계별 매진·조기 마감·취소표 생성 기능과 Last의 회차별 공용 좌석 풀·순번 제어를 하나의 테스트 흐름으로 연결합니다. 권장 순서는 초기화 → 매진 → 본 대기열에 참여한 실제 멤버십 계정의 취소표 대기열 등록 → 조기 마감 → 취소표 풀 생성 → Gmail SMTP Last 링크 발급입니다. 단계4는 1번 멤버십 후보 한 명에게만 링크를 발급하며, 결제·양도·5분 만료 뒤 다음 후보에게 새 링크가 자동 발급됩니다. 발급된 링크는 Last 화면의 전체 인터랙티브 좌석맵으로 이동합니다.
+                    Local의 단계별 매진·조기 마감·취소표 생성 기능과 Last의 회차별 공용 좌석 풀·순번 제어를 하나의 테스트 흐름으로 연결합니다. 권장 순서는 초기화 → 매진 → 실제 멤버십 사용자의 취소표 대기열 등록 → 조기 마감 → 일반 더미 전체 삭제 → 멤버십 더미 10명씩 삭제 → 취소표 풀 생성 → Gmail SMTP Last 링크 발급입니다. 단계4는 1번 실제 멤버십 후보 한 명에게만 링크를 발급하며, 결제·양도·5분 만료 뒤 다음 후보에게 새 링크가 자동 발급됩니다. 발급된 링크는 Last 화면의 전체 인터랙티브 좌석맵으로 이동합니다.
                   </p>
                   <div class="admin-action-row admin-action-row--simulation">
                     <button type="button" class="btn btn-primary btn-sm" data-sim-init>Final 시뮬레이션 초기화</button>
                     <button type="button" class="btn btn-outline btn-sm" data-sim-sellout disabled style="border-color:#e74c3c;color:#e74c3c;">단계1: 매진 연출</button>
                     <button type="button" class="btn btn-outline btn-sm" data-sim-close disabled style="border-color:#e67e22;color:#e67e22;">단계2: 조기 마감</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-remove-standard-dummies disabled style="border-color:#d35400;color:#d35400;">단계2-1: 일반 더미 전체 삭제</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-remove-dummy-members disabled style="border-color:#d35400;color:#d35400;">단계2-2: 멤버십 더미 10명 삭제</button>
                     <div class="admin-inline-action">
                       <input type="number" data-sim-cancel-count value="5" min="1" max="100" aria-label="취소표 생성 수" />
                       <button type="button" class="btn btn-outline btn-sm" data-sim-cancel disabled style="border-color:#8e44ad;color:#8e44ad;">단계3: 취소표 생성</button>
@@ -1841,6 +2032,63 @@ export const adminPage = {
                     <p class="text-secondary">로컬 시뮬레이션을 초기화하면 여기에 진행 상태가 표시됩니다.</p>
                   </div>
                   <div data-sim-log class="admin-log-box"></div>
+                </div>
+              </section>
+
+              <section class="admin-panel admin-panel--wide" data-integrated-sim-panel data-admin-focus="integrated-simulation">
+                <div class="mchart__head admin-panel__head">
+                  <div>
+                    <span class="admin-panel__eyebrow">MAIN QUEUE + CANCELLATION</span>
+                    <span class="mchart__title">통합 티켓팅 시뮬레이션</span>
+                  </div>
+                  <button type="button" class="btn btn-outline btn-sm" data-sim-toggle aria-expanded="false">펼치기</button>
+                </div>
+                <div data-sim-body style="display:none;">
+                  <p class="text-secondary admin-panel__description">
+                    일반·멤버십 더미를 본 티켓팅 대기열에 먼저 등록하고, 매진 시 멤버십 더미만 취소표 대기열로 전환합니다. 실제 멤버십 사용자는 매진 화면의 기존 서비스 경로로 취소표 대기열에 진입합니다. 단계6에서는 테스트 더미를 B파트 후보 원장에서 자동 제외한 뒤 실제 회원에게 Secret Link를 발급합니다.
+                  </p>
+                  <div class="admin-form-grid admin-form-grid--two">
+                    <div class="field">
+                      <label>공연 선택</label>
+                      <select data-sim-event><option value="">불러오는 중...</option></select>
+                    </div>
+                    <div class="field">
+                      <label>회차 선택</label>
+                      <select data-sim-session><option value="">공연을 먼저 선택하세요</option></select>
+                    </div>
+                  </div>
+                  <div class="admin-form-grid admin-form-grid--three">
+                    <div class="field">
+                      <label>일반 더미 사용자 수</label>
+                      <input type="number" data-sim-dummy-count value="10000" min="1" max="50000" />
+                      <span class="field__hint">본 티켓팅 대기열에만 남고 취소표 대기열에는 포함되지 않습니다.</span>
+                    </div>
+                    <div class="field">
+                      <label>멤버십 더미 사용자 수</label>
+                      <input type="number" data-sim-member-dummy-count value="100" min="0" max="50000" />
+                      <span class="field__hint">본 티켓팅 참여 후 매진 시 취소표 대기열로 전환됩니다.</span>
+                    </div>
+                    <div class="field">
+                      <label>생성할 취소표 수</label>
+                      <input type="number" data-sim-cancel-count value="5" min="1" max="100" />
+                      <span class="field__hint">마감 후 취소 처리할 확정 좌석 수입니다.</span>
+                    </div>
+                  </div>
+                  <div class="admin-action-row admin-action-row--simulation">
+                    <button type="button" class="btn btn-primary btn-sm" data-sim-init>통합 시뮬레이션 초기화</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-main-queue disabled>단계2: 본 티켓팅 대기열 구성</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-drain disabled style="border-color:#3498db;color:#3498db;">단계3: 대기열 드레인</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-sellout disabled>단계4: 매진 및 전환</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-close disabled>단계5: 티켓팅 마감</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-cancel disabled>단계6: 취소표 생성</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-links disabled>단계7: B파트 링크 발급</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-cleanup>데이터 삭제</button>
+                    <button type="button" class="btn btn-outline btn-sm" data-sim-refresh>상태 새로고침</button>
+                  </div>
+                  <div data-sim-status class="admin-result-box admin-result-box--large" aria-live="polite">
+                    <p class="text-secondary">공연과 회차를 선택한 뒤 통합 시뮬레이션을 초기화해주세요.</p>
+                  </div>
+                  <div data-sim-log class="admin-log-box" aria-live="polite"></div>
                 </div>
               </section>
 
@@ -1896,6 +2144,38 @@ export const adminPage = {
     `;
 
     refreshEventsList(container);
+
+    const eventSearchInput = container.querySelector('[data-event-search-input]');
+    eventSearchInput?.addEventListener('input', () => {
+      const term = (eventSearchInput.value || '').trim().toLowerCase();
+      const tbody = container.querySelector('[data-events-tbody]');
+      if (!tbody || eventsCache.length === 0) return;
+      const filtered = filterEvents(eventsCache, term);
+      const countEl = container.querySelector('[data-event-search-count]');
+      if (countEl) countEl.textContent = term ? `${filtered.length} / ${eventsCache.length}건` : `${eventsCache.length}건`;
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-secondary">검색 결과가 없습니다.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = filtered.map((e, i) => `
+        <tr class="admin-event-row" data-admin-row="${e.eventId}" tabindex="0">
+          <td class="num-mono">${i + 1}</td>
+          <td>${e.eventName}</td>
+          <td>${e.eventDate || '-'}</td>
+          <td>${e.venue || '-'}</td>
+          <td class="seat-tip-wrap">${Number(e.totalSeats || 0).toLocaleString()}석${(e.sections || []).length ? `<span class="seat-tip">${(e.sections || []).map(s => `<span>${s.name}: ${s.seats.toLocaleString()}석</span>`).join('')}</span>` : ''}</td>
+          <td data-open-status="${e.eventId}"></td>
+          <td>
+            <button type="button" class="btn btn-outline btn-sm" data-set-open-time="${e.eventId}">오픈 시간</button>
+            <button type="button" class="btn btn-outline btn-sm" data-set-close-time="${e.eventId}">마감 시간</button>
+            <button type="button" class="btn btn-outline btn-sm btn-danger-outline" data-close-now="${e.eventId}">즉시 마감</button>
+            <button type="button" class="btn btn-outline btn-sm" data-delete-event="${e.eventId}">삭제</button>
+          </td>
+        </tr>`).join('');
+      paintOpenStatuses(container);
+      bindEventRowListeners(tbody, container);
+    });
+
     const openStatusTimer = setInterval(() => paintOpenStatuses(container), 1000);
     initDummyPanel(container);
     initSimulationPanel(container);
@@ -1903,6 +2183,11 @@ export const adminPage = {
       panelSelector: '[data-final-sim-panel]',
       apiBase: '/admin/local-simulation',
       mode: 'final',
+    });
+    initSimulationPanel(container, {
+      panelSelector: '[data-integrated-sim-panel]',
+      apiBase: '/admin/integrated-simulation',
+      mode: 'integrated',
     });
     const cleanupAdminInteractions = initAdminInteractions(container);
     const cleanupCommandPalette = initAdminCommandPalette(container);
@@ -1939,32 +2224,59 @@ export const adminPage = {
     container.querySelector('[data-open-create-event]').addEventListener('click', () => {
       openCreateEventModal(() => refreshEventsList(container));
     });
-    container.querySelector('[data-random-create-event]').addEventListener('click', (e) => {
-      const btn = e.currentTarget;
+    container.querySelector('[data-random-create-event]').addEventListener('click', () => {
       const existingNames = new Set(eventsCache.map((ev) => ev.eventName));
       const remaining = POSTER_CONCERTS.filter((p) => !existingNames.has(p.eventName));
       if (remaining.length === 0) {
         showToast({ title: '모든 포스터 공연이 이미 생성되었습니다', body: `${POSTER_CONCERTS.length}개 공연 등록 완료` });
         return;
       }
-      btn.disabled = true;
-      const saved = posterCycleIdx;
-      posterCycleIdx = POSTER_CONCERTS.indexOf(remaining[0]);
-      const payload = buildRandomEventPayload();
-      posterCycleIdx = saved;
-      createEvent(payload)
-        .then((result) => {
-          if (result.error) {
-            showToast({ title: '생성 실패', body: result.error });
-            return;
-          }
-          showToast({ title: '공연이 생성되었습니다', body: `${payload.eventName} (남은 포스터: ${remaining.length - 1}개)`, type: 'success' });
-          refreshEventsList(container);
-        })
-        .catch(() => showToast({ title: '포스터 공연 생성 중 오류가 발생했습니다' }))
-        .finally(() => {
-          btn.disabled = false;
+      openModal({
+        title: '포스터 공연 선택',
+        bodyHtml: `
+          <input type="text" data-poster-search placeholder="아티스트 또는 공연명 검색" style="width:100%;padding:10px 12px;border:1px solid var(--color-border);border-radius:8px;background:var(--color-bg-secondary);color:var(--color-text);margin-bottom:12px;font-size:14px;" />
+          <div data-poster-list style="max-height:400px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;">
+            ${remaining.map((p, i) => `
+              <button type="button" class="btn btn-outline btn-block" data-poster-pick="${i}" style="text-align:left;padding:10px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                <b>${p.artist}</b>
+                <span style="font-size:12px;color:var(--color-text-secondary);text-align:right;white-space:nowrap;">${p.sessions.map((s, si) => `${si + 1}회 ${s.date} ${s.time}`).join('<br/>')}</span>
+              </button>
+            `).join('')}
+          </div>
+        `,
+        footerHtml: '',
+      });
+      const searchInput = document.querySelector('[data-poster-search]');
+      const listWrap = document.querySelector('[data-poster-list]');
+      if (searchInput && listWrap) {
+        searchInput.addEventListener('input', () => {
+          const q = searchInput.value.trim().toLowerCase();
+          listWrap.querySelectorAll('[data-poster-pick]').forEach((btn, i) => {
+            const p = remaining[i];
+            const match = !q || p.artist.toLowerCase().includes(q) || p.eventName.toLowerCase().includes(q);
+            btn.style.display = match ? '' : 'none';
+          });
         });
+      }
+      remaining.forEach((p, i) => {
+        document.querySelector(`[data-poster-pick="${i}"]`)?.addEventListener('click', () => {
+          closeModal();
+          const saved = posterCycleIdx;
+          posterCycleIdx = POSTER_CONCERTS.indexOf(p);
+          const payload = buildRandomEventPayload();
+          posterCycleIdx = saved;
+          createEvent(payload)
+            .then((result) => {
+              if (result.error) {
+                showToast({ title: '생성 실패', body: result.error });
+                return;
+              }
+              showToast({ title: '공연이 생성되었습니다', body: `${payload.eventName}`, type: 'success' });
+              refreshEventsList(container);
+            })
+            .catch(() => showToast({ title: '포스터 공연 생성 중 오류가 발생했습니다' }));
+        });
+      });
     });
 
     container.querySelector('[data-redis-reset]').addEventListener('click', () => {

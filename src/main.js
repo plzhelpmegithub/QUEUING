@@ -20,6 +20,7 @@ import { privateLinkPage } from './pages/privateLink.js';
 import { verifyLinkPage } from './pages/verifyLink.js';
 import { cancelSeatSelectPage } from './pages/cancelSeatSelect.js';
 import { lastCancelTicketingPage } from './pages/lastCancelTicketing.js';
+import { bCancelTicketingPage } from './pages/bCancelTicketing.js';
 import { myPage } from './pages/mypage.js';
 import { loginPage } from './pages/login.js';
 import { signupPage } from './pages/signup.js';
@@ -51,6 +52,8 @@ registerRoute(/^private-link\/(?<id>[\w-]+)$/, privateLinkPage);
 registerRoute(/^cancel-seats\/(?<id>[\w-]+)$/, cancelSeatSelectPage);
 // [보존 / LAST LOCAL SIMULATION] B파트와 분리된 공용 취소표 풀 검증 화면.
 registerRoute(/^last-cancel-ticketing$/, lastCancelTicketingPage);
+// B파트 링크는 Last와 같은 UI를 쓰되 실제 완료·만료 콜백은 B 워크플로우로 보낸다.
+registerRoute(/^b-cancel-ticketing\/(?<id>[\w-]+)$/, bCancelTicketingPage);
 registerRoute(/^mypage(?:\/(?<section>[\w-]+))?$/, myPage);
 registerRoute(/^login$/, loginPage);
 registerRoute(/^signup$/, signupPage);
@@ -74,6 +77,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.body.classList.toggle('admin-dark', isAdmin());
   subscribe(() => document.body.classList.toggle('admin-dark', isAdmin()));
+
+  try {
+    const savedTheme = localStorage.getItem('queuing-theme');
+    if (savedTheme === 'dark') document.body.classList.add('user-dark');
+  } catch {}
 
   const rawHash = (location.hash || '#/').replace(/^#\/?/, '');
   if (BOOKING_GUARD_RE.test(rawHash)) {
