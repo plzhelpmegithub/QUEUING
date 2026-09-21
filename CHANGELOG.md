@@ -1,3 +1,47 @@
+## [2026-09-21 10:19] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/queueService.js]**: `enter()` 함수에서 session-scoped `totalSeatsKey` Redis 키가 없을 때(0), `events:list` 카드의 `seatsPerSession` 값으로 자동 복원하도록 폴백 로직 추가. 복원 시 Redis 키도 재설정하여 이후 호출에서는 정상 동작
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 대기열 카운트다운 완료 후 자동 진입 시 "이벤트 좌석이 설정되지 않았습니다" 에러 발생
+- **원인(Cause):** `totalSeatsKey`는 session-scoped Redis 키(`event:total-seats:evt-301:2027-02-28_18:00`)로, 이벤트 생성 시에만 설정됨. Redis 재시작이나 키 만료 시 해당 키가 사라지면 `enter()` 함수가 `totalSeats === 0`으로 판단하여 에러 반환
+- **해결(Solution):** `enter()` 함수 내에서 이미 파싱하고 있는 `events:list` 카드의 `seatsPerSession` 값을 `cardSeatsPerSession` 변수로 추출. `totalSeats === 0`일 때 이 값으로 폴백하고, Redis 키도 함께 복원하여 자가 치유(self-healing) 동작 구현
+
+## [2026-09-21 10:04] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/eventRoutes.js]**: open-time API에서 `ticketCloseAt` 정리 조건을 확장. 기존 `card.status === 'closed'`뿐 아니라 `ticketCloseAt`이 과거 시간인 경우(`hasExpiredClose`)에도 `status='open'`, `ticketCloseAt=null`로 정리. events:list 카드, event:info, MariaDB 모두 동일 적용
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** "즉시 마감" 후 "10초 후 오픈"을 설정하면, 공연 페이지 큐 진입 시 오픈 시간이 지나도 "마감되었습니다" 모달이 표시됨. admin에서도 계속 "마감됨" 배지가 유지됨
+- **원인(Cause):** open-time API의 `ticketCloseAt` 정리 조건이 `card.status === 'closed'`만 확인. Recovery가 status를 'open'으로 복구하면 `wasClosedByAdmin`이 false가 되어 `ticketCloseAt`(과거 시간)이 남음. `enter()`는 `ticketOpenAt` 통과 후에도 `ticketCloseAt <= now`를 보고 `eventClosed = true` 반환
+- **해결(Solution):** `hasExpiredClose = card.ticketCloseAt && new Date(card.ticketCloseAt).getTime() <= Date.now()` 조건을 추가하여, status가 'open'이어도 과거 `ticketCloseAt`이 있으면 정리
+
+## [2026-09-21 09:19] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/redisRecoveryService.js]**: periodic 복구 시 이미 존재하는 `events:list` 카드를 덮어쓰지 않도록 변경. DB에 없는 신규 카드만 추가, stale 카드만 제거. Recovery와 API 간 레이스 컨디션으로 관리자 변경이 구 데이터로 덮어씌워지는 문제 해결
+- **[src/services/redisRecoveryService.js]**: periodic 복구 시 `event:info`도 누락된 경우에만 재생성. 기존 `event:info`가 있으면 스킵하여 API가 설정한 데이터를 보존
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자가 "지금 바로 오픈"을 눌러 API가 200 응답 + `[Ticketing] 오픈`이 출력되지만, 직후 recovery가 `events:list` 카드를 구 DB 데이터로 덮어씌워 `enter()` 함수가 구 `ticketOpenAt`(미래)을 보고 대기열 진입 거부. Recovery가 다시 돌아야 정상 복구됨
+- **원인(Cause):** `recoverAll()`의 `events:list` pipeline이 모든 카드를 DB 기준으로 무조건 덮어씀. Recovery가 API의 DB UPDATE보다 먼저 SELECT를 실행한 경우, 구 데이터로 API의 Redis 변경을 덮어쓰는 레이스 컨디션 발생
+- **해결(Solution):** periodic 복구 시 이미 존재하는 `events:list` 카드는 건드리지 않고, 신규(누락) 카드만 추가. `event:info`도 같은 원칙 적용. startup/manual/forced 복구에서는 기존대로 전체 재구축
+
+## [2026-09-21 08:26] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/redisRecoveryService.js]**: Redis 자동 복구 주기를 60초(`60 * 1000`)에서 5분(`5 * 60 * 1000`)으로 변경. 불필요한 전체 복구 반복으로 인한 MariaDB/Redis 부하를 1/5로 감소시킴
+- **[src/routes/eventRoutes.js]**: close-time API "즉시 마감" 시 `ticket_open_at`을 MariaDB·Redis 양쪽에서 NULL로 해제하도록 수정. Recovery가 DB의 미래 `ticket_open_at`을 읽고 마감을 되돌리는 문제 해결
+- **[src/services/redisRecoveryService.js]**: `restoreTicketingState()`에서 `status === 'closed'`인 이벤트도 마감 상태를 유지하도록 조건 추가 (기존에는 `cancelled`만 처리)
+- **[src/services/redisRecoveryService.js]**: `recoverAll()`에서 periodic 복구 시 `event:ticketing-status`가 이미 존재하면 ticketing 복구를 스킵하도록 조건부 처리 추가. startup/manual 복구에서는 항상 실행
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자가 "즉시 마감" 후 "지금 바로 오픈"을 누르면 약 30초~1분 후 다시 마감됨
+- **원인(Cause):** (1) close-time API가 `ticket_open_at`을 DB에서 해제하지 않아, Recovery가 DB의 미래 `ticket_open_at`을 읽고 "미래인데 open이다"로 판단하여 강제로 closed로 되돌림. (2) `restoreTicketingState()`가 `status === 'closed'`를 처리하지 않아 마감된 이벤트도 `ticketOpenAt` 기준으로 재스케줄링됨. (3) periodic 복구가 매 주기마다 무조건 ticketing 상태를 DB 기준으로 덮어씀
+- **해결(Solution):** (1) "즉시 마감" 시 DB/Redis의 `ticket_open_at`을 NULL로 해제하여 Recovery가 미래 오픈 시간으로 판단하지 않도록 함. (2) `restoreTicketingState()`에서 `closed` 상태도 마감 유지. (3) periodic 복구 시 `event:ticketing-status`가 존재하면 ticketing 복구를 스킵하여 관리자 변경을 보존
+
 ## [2026-09-20 21:05] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

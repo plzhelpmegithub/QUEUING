@@ -149,8 +149,8 @@ mariadb 라이브러리 기반 커넥션 풀.
 | `POST /event/cancel` | 공연 취소. 좌석 전체 정리, 대기열 초기화, 취소 알림 |
 | `GET /events` | 이벤트 목록 조회 (Redis 최신 카드 + MariaDB 누락 이벤트 병합, 좌석 원장에서 회차 보완) |
 | `GET /events/:eventId/sessions` | 특정 공연의 회차 목록 조회. Redis 이벤트 카드의 `sessions`를 우선 사용하고, 없으면 MariaDB `seats.session_date/session_time`에서 복원. 응답: `{ eventId, eventName, eventDate, sessions: [{ date, time, ... }], count, source }` |
-| `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정/해제. Redis 이벤트 카드(`events:list`)와 MariaDB `events.ticket_open_at`에 함께 저장. 전역 `event:ticketing-status`나 스케줄 타이머를 변경하지 않음 — 대기열 진입 시 `enter()` 함수가 해당 이벤트 카드의 `ticketOpenAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
-| `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제. 이벤트 카드(`events:list`)에만 저장하며 전역 `event:ticketing-status`를 변경하지 않음 — `enter()` 함수가 해당 이벤트 카드의 `ticketCloseAt`을 직접 확인하므로 다른 이벤트에 영향 없음 |
+| `PATCH /events/:eventId/open-time` | 예매 오픈 시간 설정/해제. Redis 카드(`events:list`·`event:info`)와 MariaDB `events.ticket_open_at`에 함께 저장. 미래 시간이면 `scheduleTicketing()`으로 예약, 과거/현재면 `openTicketing()`으로 즉시 오픈. 마감 상태(`status === 'closed'`)이거나 `ticketCloseAt`이 과거 시간인 이벤트는 `open`으로 복구하고 `ticket_close_at`도 해제 |
+| `PATCH /events/:eventId/close-time` | 공연 마감 시간 설정/해제. "즉시 마감" 시 `closeTicketing()` 호출 + MariaDB `status=closed`, `ticket_open_at=NULL`, `ticket_close_at` 저장. 미래 시간이면 `scheduleCloseTime()`으로 예약. `ticket_open_at` 해제로 Recovery가 마감을 되돌리지 않음 |
 | `DELETE /events/:eventId` | 이벤트 삭제. Redis 카드가 이미 없어도 DB 정리를 항상 진행하며, Redis·DB 양쪽 모두에 없을 때만 404 반환 |
 | `POST /events/batch-delete` | 최대 5개 이벤트를 순차 삭제하며 Redis 좌석과 MariaDB 관련 데이터를 함께 정리 |
 | `POST /events/seed` | 데모용 더미 이벤트 5개 생성 |
@@ -414,7 +414,7 @@ Redis 기반 대기열 관리의 핵심 로직.
 | `event:schedule` | Hash | 예약 오픈 시각과 자동 마감 설정 |
 
 **주요 함수:**
-- `enter()`: 멤버십 여부와 무관하게 Redis `INCR` 값을 그대로 Sorted Set score로 사용해 완전 선착순으로 대기열에 등록한다. 멤버십 score 보정은 하지 않는다. 참여 표식은 Redis `queue:main-participants`와 MariaDB `waiting_queue`에 남겨 취소표 자격 확인에 사용한다. 이미 standby에 등록된 사용자가 조기 마감 뒤 재요청하면 대기열 데이터를 유지하면서 `status: 'closed'`, `type: 'standby'`, `preserveStandby: true`를 반환해 프론트 마감 안내를 표시한다.
+- `enter()`: 멤버십 여부와 무관하게 Redis `INCR` 값을 그대로 Sorted Set score로 사용해 완전 선착순으로 대기열에 등록한다. 멤버십 score 보정은 하지 않는다. 참여 표식은 Redis `queue:main-participants`와 MariaDB `waiting_queue`에 남겨 취소표 자격 확인에 사용한다. 이미 standby에 등록된 사용자가 조기 마감 뒤 재요청하면 대기열 데이터를 유지하면서 `status: 'closed'`, `type: 'standby'`, `preserveStandby: true`를 반환해 프론트 마감 안내를 표시한다. session-scoped `totalSeatsKey` Redis 키가 존재하지 않을 경우, `events:list` 카드의 `seatsPerSession` 값으로 자동 복원(self-healing)하여 Redis 재시작 후에도 대기열 진입이 가능하다.
 - `enterStandby()`: 활성 멤버십과 동일 공연·회차의 본 티켓팅 참여 이력이 확인된 사용자를 취소표 standby에 등록한다. `/cancel-queue/join`은 이 함수를 사용하므로 일반 사용자는 취소표 대기열에 포함되지 않는다.
 - `backfillOne()`: 입장 슬롯이 비면 먼저 일반 eligible 대기자를 승격한다. 본 티켓팅이 열려 있고 일반 대기자가 없을 때만 `main-participants` 표식이 있는 standby 사용자를 일반 Admission Token 대상으로 승격하며, 마감 후 standby는 B파트 Secret Link 흐름으로 남긴다.
 - `getStandbyMemberStats()`: 활성 멤버십·본 티켓팅 참여 이력이 확인된 standby 사용자의 회차별 순번·전체 인원을 반환한다. 일반 standby 데이터는 취소표 순번에 포함하지 않는다.
@@ -434,19 +434,21 @@ Redis 기반 대기열 관리의 핵심 로직.
 MariaDB를 원본 데이터로 보고 Redis의 필수 상태를 자동으로 맞춘다.
 
 - API 시작 시 Redis 연결 후 DB를 기준으로 복구를 최대 3회 시도
-- Redis가 실행 중인 상태에서도 기본 60초마다 누락·불일치 여부 점검
+- Redis가 실행 중인 상태에서도 기본 5분(300초)마다 누락·불일치 여부 점검
 - `event:info`, `events:list`, 회차별 좌석, 회차별 대기열, `event:schedule`, `event:ticketing-status` 복구
 - 여러 API 인스턴스가 동시에 복구하지 않도록 `lock:redis-recovery` 분산 락 사용
 - Redis `FLUSHALL`처럼 키가 모두 사라진 경우 다음 점검 주기에 전체 이벤트·좌석·대기열을 복구
 - 복구된 미래 오픈 시간은 Node.js 타이머에 다시 등록하고, API가 재시작되어도 DB의 오픈 시간을 기준으로 타이머 재생성
 - **양방향 동기화**: DB에 없는 `events:list` Redis 항목을 `hkeys` 비교 후 `hdel`로 자동 제거. 삭제와 복구가 겹쳐도 다음 주기에서 유령 카드가 정리됨
+- **관리자 변경 보존 (periodic 안전 모드)**: periodic 복구는 API의 실시간 변경을 덮어쓰지 않도록 최소한의 작업만 수행 — `events:list`는 누락 카드 추가/stale 카드 제거만, `event:info`는 누락 시에만 재생성, `event:ticketing-status`는 존재 시 스킵. startup/manual/forced 복구에서는 기존대로 전체 재구축
+- **마감 상태 인식**: `restoreTicketingState()`가 `status === 'closed'`인 이벤트도 마감 상태를 유지 (cancelled뿐 아니라 관리자 마감도 존중)
 
 자동 복구 관련 환경변수:
 
 | 변수 | 기본값 | 설명 |
 |---|---:|---|
 | `REDIS_RECOVERY_ATTEMPTS` | `3` | 시작/복구 실패 시 재시도 횟수 |
-| `REDIS_RECOVERY_INTERVAL_MS` | `60000` | Redis 정합성 점검 주기(밀리초, 최소 5000) |
+| `REDIS_RECOVERY_INTERVAL_MS` | `300000` | Redis 정합성 점검 주기(밀리초, 최소 5000) |
 
 ---
 

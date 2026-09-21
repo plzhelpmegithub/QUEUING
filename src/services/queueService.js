@@ -436,6 +436,7 @@ async function enter(userId, context = {}) {
       : {}
   );
   let eventClosed = false;
+  let cardSeatsPerSession = 0;
 
   // 조기 마감 이후에도 이미 standby에 등록된 사용자의 Redis/MariaDB
   // 대기열 기록은 유지해야 한다. 다만 프론트에는 마감 상태를 알려
@@ -480,6 +481,7 @@ async function enter(userId, context = {}) {
     if (eventCard) {
       try {
         const parsedCard = JSON.parse(eventCard);
+        cardSeatsPerSession = Number(parsedCard.seatsPerSession) || 0;
 
         eventClosed = parsedCard.status === 'closed' || parsedCard.status === 'cancelled';
 
@@ -625,11 +627,16 @@ async function enter(userId, context = {}) {
       userId
     );
 
-    const totalSeats =
+    let totalSeats =
       parseInt(
         await redis.get(keys.totalSeatsKey),
         10
       ) || 0;
+
+    if (totalSeats === 0 && cardSeatsPerSession > 0) {
+      totalSeats = cardSeatsPerSession;
+      await redis.set(keys.totalSeatsKey, totalSeats);
+    }
 
     const type =
       integratedMainQueueOpen || position + 1 <= totalSeats
@@ -662,13 +669,16 @@ async function enter(userId, context = {}) {
     };
   }
 
-  const totalSeats =
+  let totalSeats =
     parseInt(
       await redis.get(keys.totalSeatsKey),
       10
     ) || 0;
 
-  if (totalSeats === 0) {
+  if (totalSeats === 0 && cardSeatsPerSession > 0) {
+    totalSeats = cardSeatsPerSession;
+    await redis.set(keys.totalSeatsKey, totalSeats);
+  } else if (totalSeats === 0) {
     return {
       status: 'error',
       message: '이벤트 좌석이 설정되지 않았습니다.',

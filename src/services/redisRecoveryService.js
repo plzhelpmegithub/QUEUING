@@ -12,7 +12,7 @@ const RECOVERY_LOCK_KEY = 'lock:redis-recovery';
 const RECOVERY_LOCK_TTL = 180;
 
 const DEFAULT_ATTEMPTS = 3;
-const DEFAULT_INTERVAL_MS = 60 * 1000;
+const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 
 let recoveryTimer = null;
 let recoveryInFlight = null;
@@ -242,7 +242,7 @@ async function restoreEventSequence(rows) {
 }
 
 async function restoreTicketingState(targetCard) {
-  if (!targetCard || targetCard.status === 'cancelled') {
+  if (!targetCard || targetCard.status === 'cancelled' || targetCard.status === 'closed') {
     await queueService.cancelSchedule();
     await queueService.closeTicketing();
     return { status: 'closed', scheduled: false };
@@ -276,8 +276,10 @@ async function recoverAll({ eventId = null, reason = 'manual', force = false } =
       const allRedisFields = await redis.hkeys(EVENT_LIST_KEY);
       const staleFields = allRedisFields.filter((field) => !dbEventIds.has(field));
 
+      const existingSet = new Set(allRedisFields);
       const pipeline = redis.pipeline();
       rows.forEach((row) => {
+        if (reason === 'periodic' && existingSet.has(row.event_id)) return;
         const card = eventCardFromRow(row);
         pipeline.hset(EVENT_LIST_KEY, card.eventId, JSON.stringify(card));
       });
@@ -291,7 +293,10 @@ async function recoverAll({ eventId = null, reason = 'manual', force = false } =
       const targetRow = eventId
         ? rows.find((row) => row.event_id === eventId) || inspection.target
         : inspection.target || chooseTargetEvent(rows);
-      const targetCard = await restoreEventInfo(targetRow);
+      const eventInfoMissing = (inspection.reasons || []).some((r) => r.includes('event:info missing'));
+      const targetCard = (reason === 'periodic' && !eventInfoMissing)
+        ? (targetRow ? eventCardFromRow(targetRow) : null)
+        : await restoreEventInfo(targetRow);
 
       const seats = [];
       for (const row of rows) {
@@ -327,7 +332,11 @@ async function recoverAll({ eventId = null, reason = 'manual', force = false } =
         }
       }
 
-      const ticketing = await restoreTicketingState(targetCard);
+      const ticketingMissing = (inspection.reasons || []).some((r) => r.includes('event:ticketing-status missing'));
+      const shouldRestoreTicketing = reason !== 'periodic' || ticketingMissing;
+      const ticketing = shouldRestoreTicketing
+        ? await restoreTicketingState(targetCard)
+        : { skipped: true, reason: 'periodic: ticketing status exists' };
       const result = {
         recovered: true,
         reason,

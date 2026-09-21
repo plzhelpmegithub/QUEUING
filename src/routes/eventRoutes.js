@@ -594,6 +594,22 @@ async function eventRoutes(fastify) {
     }
 
     card.ticketOpenAt = normalizedOpenAt;
+
+    const wasClosedByAdmin = card.status === 'closed';
+    const hasExpiredClose = card.ticketCloseAt && new Date(card.ticketCloseAt).getTime() <= Date.now();
+    if (wasClosedByAdmin || hasExpiredClose) {
+      card.status = 'open';
+      card.ticketCloseAt = null;
+      try {
+        await pool.query(
+          'UPDATE events SET status = ?, ticket_close_at = NULL WHERE event_id = ?',
+          ['open', eventId],
+        );
+      } catch (dbErr) {
+        console.error('[Event] 상태 복구 MariaDB 저장 실패:', dbErr.message);
+      }
+    }
+
     await redis.hset(EVENT_LIST_KEY, eventId, JSON.stringify(card));
 
     const info = await redis.hgetall(EVENT_KEY);
@@ -603,14 +619,36 @@ async function eventRoutes(fastify) {
       } else {
         await redis.hdel(EVENT_KEY, 'ticketOpenAt');
       }
+      if (wasClosedByAdmin || hasExpiredClose) {
+        await redis.hset(EVENT_KEY, 'status', 'open');
+        await redis.hdel(EVENT_KEY, 'ticketCloseAt');
+      }
+    }
+
+    try {
+      if (normalizedOpenAt) {
+        const openTime = new Date(normalizedOpenAt).getTime();
+        if (openTime > Date.now()) {
+          await queueService.scheduleTicketing(normalizedOpenAt);
+        } else {
+          await queueService.cancelSchedule();
+          await queueService.openTicketing();
+        }
+      } else {
+        await queueService.cancelSchedule();
+        await queueService.openTicketing();
+      }
+    } catch (ticketErr) {
+      console.error('[Event] 티켓팅 상태 변경 실패:', ticketErr.message);
     }
 
     return reply.send({
       success: true,
       eventId,
       ticketOpenAt: card.ticketOpenAt,
+      status: card.status,
       message: card.ticketOpenAt
-        ? `예매 오픈 시간이 ${card.ticketOpenAt}로 설정되었습니다.`
+        ? `예매 오픈 시간이 ${card.ticketOpenAt}로 설정되었습니다.${wasClosedByAdmin ? ' (마감 상태가 해제되었습니다)' : ''}`
         : '예매 오픈 시간 제한이 해제되었습니다.',
     });
   });
@@ -638,6 +676,7 @@ async function eventRoutes(fastify) {
 
     if (isImmediatelyClosed && card.status !== 'cancelled' && card.status !== 'sold_out') {
       card.status = 'closed';
+      card.ticketOpenAt = null;
     }
 
     await redis.hset(EVENT_LIST_KEY, eventId, JSON.stringify(card));
@@ -651,6 +690,7 @@ async function eventRoutes(fastify) {
       }
       if (isImmediatelyClosed) {
         await redis.hset(EVENT_KEY, 'status', 'closed');
+        await redis.hdel(EVENT_KEY, 'ticketOpenAt');
       }
     }
 
@@ -658,7 +698,7 @@ async function eventRoutes(fastify) {
       const parsedCloseAt = card.ticketCloseAt ? new Date(card.ticketCloseAt) : null;
       if (isImmediatelyClosed) {
         await pool.query(
-          'UPDATE events SET ticket_close_at = ?, status = ? WHERE event_id = ?',
+          'UPDATE events SET ticket_close_at = ?, status = ?, ticket_open_at = NULL WHERE event_id = ?',
           [parsedCloseAt, 'closed', eventId],
         );
       } else {
@@ -669,6 +709,20 @@ async function eventRoutes(fastify) {
       }
     } catch (dbErr) {
       console.error('[Event] 마감 시간 MariaDB 저장 실패:', dbErr.message);
+    }
+
+    try {
+      if (isImmediatelyClosed) {
+        await queueService.cancelSchedule();
+        await queueService.closeTicketing();
+      } else if (card.ticketCloseAt) {
+        const closeTime = new Date(card.ticketCloseAt).getTime();
+        if (closeTime > Date.now()) {
+          await queueService.scheduleCloseTime(card.ticketCloseAt);
+        }
+      }
+    } catch (ticketErr) {
+      console.error('[Event] 티켓팅 상태 변경 실패:', ticketErr.message);
     }
 
     return reply.send({
