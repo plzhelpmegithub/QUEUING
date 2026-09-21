@@ -1158,7 +1158,7 @@ async function simulationRoutes(fastify, options = {}) {
       standbyDummies: (mode === 'integrated' ? memberDummyCount : dummyCount + memberDummyCount).toString(),
       standardStandbyDummies: (mode === 'integrated' ? 0 : dummyCount).toString(),
       standardDummiesRemaining: (mode === 'integrated' ? 0 : dummyCount).toString(),
-      dummyMembersRemaining: (mode === 'integrated' ? 0 : memberDummyCount).toString(),
+      dummyMembersRemaining: memberDummyCount.toString(),
       mainQueueRemaining: (mode === 'integrated' ? dummyCount : 0).toString(),
       cancellationQueueCount: (memberDummyCount + actualMembersTransitioned).toString(),
       soldOutAt: new Date().toISOString(),
