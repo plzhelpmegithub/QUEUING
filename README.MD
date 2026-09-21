@@ -188,9 +188,9 @@ mariadb 라이브러리 기반 커넥션 풀.
 - `POST /admin/simulation/init`은 공연·회차, 좌석 점유용 더미 유저 수와 멤버십 standby용 더미 인원수를 받아 시뮬레이션 메타데이터·테스트 계정을 준비한다. 실제 사용자 이메일이나 멤버십을 관리자 입력으로 받지 않는다.
 - `POST /admin/simulation/sellout`은 더미 좌석을 매진 처리하고 일반 `sim-user-*`와 `sim-member-*` 더미를 시뮬레이션 원장에 넣는다. 취소표 화면의 순번은 활성 멤버십 대기자만 집계하므로 일반 더미는 표시 순번과 Secret Link 후보에 포함되지 않는다.
 - 실제 활성 멤버십 사용자만 단계1 이후 프론트엔드의 `POST /cancel-queue/join`으로 취소표 대기열에 등록된다. API는 동일 공연·회차의 본 대기열 참여 이력을 확인해 Redis standby와 MariaDB `waiting_queue`를 함께 기록하며, 비멤버십 사용자는 등록·순번 조회 대상이 아니다.
-- `POST /admin/simulation/close`는 ticketing 상태를 `closed`로 변경한다. 이후 `POST /admin/simulation/remove-standard-dummies`가 일반 `sim-user-*` 더미를 전체 삭제하고, `POST /admin/simulation/remove-dummy-members`가 선두 더미 멤버십 사용자 최대 10명을 standby·본 대기열 이력·테스트 계정에서 제거한다.
+- `POST /admin/simulation/close`는 ticketing 상태를 `closed`로 변경한다. 이후 `POST /admin/simulation/remove-standard-dummies`가 일반 `sim-user-*` 더미를 전체 삭제하고, `POST /admin/simulation/remove-dummy-members`가 선두 더미 멤버십 사용자를 요청 body의 `count` 파라미터(기본 10, 최대 10,000)만큼 standby·본 대기열 이력·테스트 계정에서 제거한다.
 - `POST /admin/simulation/issue-links`는 현재 회차의 `waiting_queue`에서 이 시뮬레이션 동안 실제 서비스 경로로 참여했고, 대기열 진입 당시 멤버십이었던 활성 standby 대기자만 `queue_index` 순으로 후보 확인한다. 더미 ID·진입 당시 비회원·본 대기열 참여 이력이 없는 standby 행은 제외하며, 준비된 취소 이벤트를 SQS로 전달한다. A가 임의 사용자를 standby 최우선으로 올리지 않으며 B파트가 후보 정책에 따라 Secret Link 대상을 처리한다.
-- 동일한 흐름을 온프레미스에서 검증할 수 있도록 `/admin/local-simulation/*`를 별도 제공한다. 초기화·매진·마감·일반 더미 전체 삭제·멤버십 더미 10명 삭제·취소표 생성은 AWS 시뮬레이션과 같은 Redis/MariaDB 흐름을 사용한다. 단계4만 B파트 SQS 대신 A 서버의 Gmail SMTP로 시뮬레이션 중 실제로 참여한 멤버십 대기자만 `queue_index` 순서로 1:1 매칭해 각각 5분 제한 A파트 Secret Link를 발송한다. 이미 유효한 할당은 재발송하지 않고, 만료된 할당은 다음 발급에서 재사용한다.
+- 동일한 흐름을 온프레미스에서 검증할 수 있도록 `/admin/local-simulation/*`를 별도 제공한다. 초기화·매진·마감·일반 더미 전체 삭제·멤버십 더미 삭제(지정 인원)·취소표 생성은 AWS 시뮬레이션과 같은 Redis/MariaDB 흐름을 사용한다. 단계4만 B파트 SQS 대신 A 서버의 Gmail SMTP로 시뮬레이션 중 실제로 참여한 멤버십 대기자만 `queue_index` 순서로 1:1 매칭해 각각 5분 제한 A파트 Secret Link를 발송한다. 이미 유효한 할당은 재발송하지 않고, 만료된 할당은 다음 발급에서 재사용한다.
 - 기존 AWS·Final 흐름을 변경하지 않고 `/admin/integrated-simulation/*`를 추가 제공한다. `main-queue`가 일반·멤버십 더미를 본 티켓팅 waiting에 함께 등록하고, `sellout`이 멤버십 더미만 취소표 standby로 전환한다. 실제 멤버십 사용자는 매진 화면의 기존 `/cancel-queue/join` 경로로 진입해야 B파트 후보로 추적된다.
 
 ### src/routes/lastSimulationRoutes.js — 취소표 시뮬레이션 Final 공용 풀
@@ -321,7 +321,7 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 | `POST /admin/simulation/sellout` | [단계1] 매진 연출 — 전체 좌석 더미 점유(SOLD) + 일반·멤버십 더미를 회차별 시뮬레이션 대기열에 등록. 실제 멤버십 유저는 멤버십 더미 뒤 순번으로 직접 진입 |
 | `POST /admin/simulation/close` | [단계2] 조기 마감 — ticketing 상태 closed + 현재 시뮬레이션에서 직접 진입한 활성 멤버십 standby 대기자 집계 |
 | `POST /admin/simulation/remove-standard-dummies` | [단계2-1] 일반 더미 전체 삭제 — 조기 마감 뒤 모든 `sim-user-*`를 대기열에서 제거 |
-| `POST /admin/simulation/remove-dummy-members` | [단계2-2] 멤버십 더미 삭제 — 선두 `sim-member-*`를 최대 10명까지 standby·본 대기열 이력·테스트 계정에서 제거 |
+| `POST /admin/simulation/remove-dummy-members` | [단계2-2] 멤버십 더미 삭제 — 선두 `sim-member-*`를 `count` 파라미터(기본 10, 최대 10,000)만큼 standby·본 대기열 이력·테스트 계정에서 제거 |
 | `POST /admin/simulation/cancel-seats` | [단계3] 취소표 생성 — 조기 마감 뒤 모든 더미 멤버십 대기자가 제거된 경우에만 더미 좌석 랜덤 취소(AVAILABLE 복원) 및 B파트 전송용 이벤트 준비 |
 | `POST /admin/simulation/issue-links` | [단계4] 기존 standby 대기열의 최상위 활성 멤버십 사용자를 확인한 뒤 준비된 취소 이벤트를 B파트 SQS로 전송 |
 | `POST /admin/simulation/cleanup` | 시뮬레이션 데이터 일괄 삭제 (더미 유저·좌석·대기열·예약 및 시뮬레이션 중 직접 진입한 standby 행, 실제 계정 자체는 유지) |

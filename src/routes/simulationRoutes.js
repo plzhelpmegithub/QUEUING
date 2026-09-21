@@ -1321,21 +1321,27 @@ async function simulationRoutes(fastify, options = {}) {
   });
 
   fastify.post(route('/remove-dummy-members'), adminAuth, async (request, reply) => {
-    const { eventId, sessionDate, sessionTime } = request.body || {};
+    const { eventId, sessionDate, sessionTime, count } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
 
     const simData = await redis.hgetall(stateKey(eventId));
     if (!simData?.stage) {
       return reply.status(400).send({ error: '먼저 시뮬레이션을 초기화해주세요.' });
     }
-    if (!['standard_dummies_removed', 'dummy_members_removed', 'seats_cancelled', 'link_requested'].includes(simData.stage)) {
+    const allowedStages = mode === 'integrated'
+      ? ['closed', 'dummy_members_removed', 'seats_cancelled', 'link_requested']
+      : ['standard_dummies_removed', 'dummy_members_removed', 'seats_cancelled', 'link_requested'];
+    if (!allowedStages.includes(simData.stage)) {
       return reply.status(409).send({
         success: false,
         code: 'simulation_stage_order',
-        message: '일반 더미 대기열을 삭제한 뒤에만 더미 멤버십 사용자를 삭제할 수 있습니다.',
+        message: mode === 'integrated'
+          ? '티켓팅 마감(단계5) 이후에만 더미 멤버십 사용자를 삭제할 수 있습니다.'
+          : '일반 더미 대기열을 삭제한 뒤에만 더미 멤버십 사용자를 삭제할 수 있습니다.',
       });
     }
 
+    const limit = Math.max(1, Math.min(10000, Number(count) || 10));
     const context = getContext({
       eventId,
       sessionDate: sessionDate || simData.sessionDate,
@@ -1345,7 +1351,7 @@ async function simulationRoutes(fastify, options = {}) {
       eventId,
       context,
       deleteAccounts: true,
-      limit: 10,
+      limit,
     });
     const isComplete = removed.remaining === 0;
     await redis.hset(stateKey(eventId), {
