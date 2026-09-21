@@ -1,0 +1,14 @@
+apiVersion: 1
+
+datasources:
+  - name: AMP
+    type: prometheus
+    access: proxy
+    url: https://aps-workspaces.ap-northeast-2.amazonaws.com/workspaces/ws-04c2d505-c943-4be1-ac52-ce324014362e
+    jsonData:
+      sigV4Auth: true
+      sigV4AuthType: default
+      sigV4Region: ap-northeast-2
+      httpMethod: POST
+    isDefault: false
+    editable: true
