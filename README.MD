@@ -295,7 +295,8 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
 | `POST /cancel-queue/hold` | 취소표 좌석 선점. `allocation.seat_id`가 있으면 해당 좌석만 허용하고, `NULL`이면 요청 좌석이 같은 공연·회차의 `AVAILABLE`인지 확인한 뒤 `cancel_allocations.seat_id`에 원자적으로 기록하고 홀드한다. `verify-link`로 발급된 취소표 전용 세션은 allocation 범위를 검증한 뒤 일반 Admission Token 없이 처리 |
-| `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/expire`로 포워드 |
+| `POST /cancel-queue/expire` | Secret Link 만료 처리 및 선점 해제. body의 `reason: 'manual'`은 수동 양도로 처리해 standby 대기 행을 `COMPLETED`로 종료하고 사용자 이력을 저장한다. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/expire`로 포워드 |
+| `GET /cancel-queue/history/mine` | 로그인한 사용자의 B파트 수동 양도(`PASSED`) 이력 조회. 결제·환불 예약과 구분되는 안내 기록으로 마이페이지 취소/환불내역에 사용 |
 | `POST /cancel-queue/respond` | 취소표 링크 사용자가 좌석 처리 완료. `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link/complete`로 포워드 |
 | `POST /verify-link` | 이메일 Secret Link 랜딩 — A파트가 발급한 Local SMTP JWT를 먼저 검증하고, 유효하지 않은 경우 `B_CALLBACK_BASE_URL` 설정 시 B파트 `/b-callback/verify-link`로 서버 간 검증을 위임한 뒤 할당 정보 + 선택 가능 좌석 목록 + 검증 주체 `source`(`local`/`b`) 반환 |
 | `GET /cancel-queue/pool/:eventId` | Redis 좌석 상태 기반 회차별 취소표 현황 조회 |
@@ -304,7 +305,7 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 
 `/cancel-queue/respond`와 `/cancel-queue/expire`는 `allocationId` 또는 `allocation_id`를 선택적으로 받을 수 있다. 지정하지 않으면 사용자·공연 기준의 현재 처리 대상 할당을 찾는다. 같은 `allocation_id`에 대해 같은 요청을 반복하면 이미 `RESPONDED`/`COMPLETED`인 complete는 `200`과 `idempotent: true`, 이미 `EXPIRED`인 expire는 `200`과 `idempotent: true`로 반환한다. 반대 상태로의 충돌 요청(완료 후 expire, 만료 후 complete)은 `409`로 거부한다.
 
-`POST /verify-link`의 `source`는 프론트 화면 선택 전용이다. `local`은 기존 `private-link` 화면으로, `b`는 Last 스타일의 B 전용 좌석 화면으로 이동한다. B 화면의 수동 양도와 5분 만료는 모두 `POST /cancel-queue/expire`를 호출하므로 `B_CALLBACK_BASE_URL`이 설정된 운영 환경에서는 B파트 만료 콜백과 다음 후보 워크플로우가 그대로 실행된다.
+`POST /verify-link`의 `source`는 프론트 화면 선택 전용이다. `local`은 기존 `private-link` 화면으로, `b`는 Last 스타일의 B 전용 좌석 화면으로 이동한다. B 화면의 수동 양도와 5분 만료는 모두 `POST /cancel-queue/expire`를 호출하므로 `B_CALLBACK_BASE_URL`이 설정된 운영 환경에서는 B파트 만료 콜백과 다음 후보 워크플로우가 그대로 실행된다. 이 중 수동 양도만 `reason: 'manual'`로 전달되어 대기열 종료와 `cancel_queue_history` 기록이 추가로 수행되며, 시간 만료는 기존 만료 흐름만 유지한다.
 
 `GET /cancel-queue/mine`은 공연·회차가 모두 저장된 allocation을 우선 정확히 매칭한다. 과거 AWS B Lambda가 회차를 비워 저장한 활성 allocation은 현재 사용자가 해당 공연에서 하나의 standby 회차만 갖는 경우에만 호환용으로 연결하며, 여러 회차라면 잘못된 Secret Link 표시를 방지하기 위해 연결하지 않는다.
 

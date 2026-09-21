@@ -61,6 +61,80 @@ function cancelQueueKey(eventId, sessionDate, sessionTime) {
   return [eventId || '', sessionDate || '', sessionTime || ''].map(String).join('::');
 }
 
+let cancelQueueHistoryReady = null;
+
+// B파트 Secret Link의 수동 양도는 결제가 발생하지 않는다. 예약·환불 테이블을
+// 만들지 않고, 취소표 순번 종료 사실만 마이페이지에 보여 줄 전용 이력으로 남긴다.
+async function ensureCancelQueueHistory() {
+  if (!cancelQueueHistoryReady) {
+    cancelQueueHistoryReady = pool.query(`CREATE TABLE IF NOT EXISTS cancel_queue_history (
+      history_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      allocation_id INT NOT NULL,
+      user_id VARCHAR(100) NOT NULL,
+      event_id VARCHAR(100) NOT NULL,
+      session_date VARCHAR(50) NOT NULL DEFAULT '',
+      session_time VARCHAR(10) NOT NULL DEFAULT '',
+      seat_id VARCHAR(100) NULL,
+      action VARCHAR(30) NOT NULL,
+      reason VARCHAR(30) NOT NULL DEFAULT 'manual',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_cancel_queue_history_allocation_action (allocation_id, action),
+      INDEX idx_cancel_queue_history_user (user_id, created_at)
+    )`).catch((err) => {
+      cancelQueueHistoryReady = null;
+      throw err;
+    });
+  }
+  return cancelQueueHistoryReady;
+}
+
+// 대기열 종료와 이력 저장은 같은 DB 트랜잭션으로 처리한다. 콜백 재시도 시에도
+// COMPLETED 갱신과 UNIQUE KEY가 멱등성을 보장한다.
+async function completeManualPass(allocation) {
+  await ensureCancelQueueHistory();
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const queueResult = await conn.query(
+      `UPDATE waiting_queue
+       SET status = 'COMPLETED', updated_at = NOW()
+       WHERE user_id = ?
+         AND event_id = ?
+         AND queue_type = 'standby'
+         AND COALESCE(session_date, '') = ?
+         AND COALESCE(session_time, '') = ?
+         AND status NOT IN ('COMPLETED', 'LEFT')`,
+      [
+        allocation.userId,
+        allocation.eventId,
+        allocation.sessionDate || '',
+        allocation.sessionTime || '',
+      ],
+    );
+    await conn.query(
+      `INSERT INTO cancel_queue_history
+       (allocation_id, user_id, event_id, session_date, session_time, seat_id, action, reason)
+       VALUES (?, ?, ?, ?, ?, ?, 'PASSED', 'manual')
+       ON DUPLICATE KEY UPDATE history_id = history_id`,
+      [
+        allocation.id,
+        allocation.userId,
+        allocation.eventId,
+        allocation.sessionDate || '',
+        allocation.sessionTime || '',
+        allocation.seatId || null,
+      ],
+    );
+    await conn.commit();
+    return { queueRemoved: (queueResult.affectedRows || 0) > 0, historyRecorded: true };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 async function cancelQueueRoutes(fastify) {
 
   fastify.post('/cancel-queue/join', userAuth, async (request, reply) => {
@@ -460,6 +534,7 @@ async function cancelQueueRoutes(fastify) {
   fastify.post('/cancel-queue/expire', userAuth, async (request, reply) => {
     const body = request.body || {};
     const { userId, eventId, seatId } = body;
+    const isManualPass = body.reason === 'manual';
     const requestedAllocationId = getRequestedAllocationId(body);
     if (!userId || !eventId) {
       return reply.status(400).send({ error: 'userId와 eventId는 필수입니다.' });
@@ -478,13 +553,17 @@ async function cancelQueueRoutes(fastify) {
       return reply.status(409).send({ success: false, reason: 'seat_mismatch', message: '취소표 할당의 좌석과 요청한 좌석이 다릅니다.' });
     }
     if (allocation.status === 'EXPIRED') {
+      const passResult = isManualPass ? await completeManualPass(allocation) : null;
       return reply.send({
         success: true,
         idempotent: true,
         alreadyProcessed: true,
         allocationId: allocation.id,
-        status: allocation.status,
-        message: '이미 만료 처리된 취소표 할당입니다.',
+        status: isManualPass ? 'PASSED' : allocation.status,
+        ...passResult,
+        message: isManualPass
+          ? '이미 종료된 취소표 순번을 양도 이력에 반영했습니다.'
+          : '이미 만료 처리된 취소표 할당입니다.',
       });
     }
     if (allocation.status === 'RESPONDED' || allocation.status === 'COMPLETED') {
@@ -516,15 +595,19 @@ async function cancelQueueRoutes(fastify) {
         if (!stateResult.affected && !stateResult.idempotent) {
           return reply.status(502).send({ success: false, reason: 'local_state_sync_failed', message: 'B파트 처리 후 A파트 할당 상태 동기화에 실패했습니다.' });
         }
+        const passResult = isManualPass ? await completeManualPass(allocation) : null;
         return reply.send({
           success: true,
           idempotent: !!stateResult.idempotent,
           alreadyProcessed: !!stateResult.idempotent,
           allocationId: allocation.id,
-          status: stateResult.status || 'EXPIRED',
-          message: stateResult.idempotent
-            ? '이미 만료 처리된 취소표 할당입니다.'
-            : '취소표 만료가 B파트 파이프라인으로 전달되었습니다.',
+          status: isManualPass ? 'PASSED' : (stateResult.status || 'EXPIRED'),
+          ...passResult,
+          message: isManualPass
+            ? '취소표 순번을 다음 대기자에게 넘기고, 취소·환불내역에 기록했습니다.'
+            : (stateResult.idempotent
+              ? '이미 만료 처리된 취소표 할당입니다.'
+              : '취소표 만료가 B파트 파이프라인으로 전달되었습니다.'),
         });
       } catch (err) {
         console.error('[CancelQueue] B callback /expire 실패 → 재시도 큐 저장:', err.message);
@@ -534,7 +617,46 @@ async function cancelQueueRoutes(fastify) {
     }
 
     const result = await cancelAllocationService.expireAllocation(userId, eventId, seatId, getQueueContext(request, eventId));
+    if (result.success && isManualPass) {
+      const passResult = await completeManualPass(result.expired || allocation);
+      return reply.send({
+        ...result,
+        status: 'PASSED',
+        ...passResult,
+        message: '취소표 순번을 다음 대기자에게 넘기고, 취소·환불내역에 기록했습니다.',
+      });
+    }
     return reply.status(result.success ? 200 : 409).send(result);
+  });
+
+  // 결제가 없는 수동 양도 내역도 마이페이지의 취소·환불내역에서 확인한다.
+  // 일반 로그인 세션만 허용해 Secret Link 범위 토큰으로 타인의 이력을 읽지 못하게 한다.
+  fastify.get('/cancel-queue/history/mine', { preHandler: [authenticate] }, async (request, reply) => {
+    await ensureCancelQueueHistory();
+    const rows = await pool.query(
+      `SELECT h.history_id, h.allocation_id, h.event_id, h.session_date, h.session_time,
+              h.seat_id, h.action, h.reason, h.created_at, e.event_name, e.venue
+       FROM cancel_queue_history h
+       LEFT JOIN events e ON e.event_id = h.event_id
+       WHERE h.user_id = ? AND h.action = 'PASSED'
+       ORDER BY h.created_at DESC`,
+      [request.authUser.userId],
+    );
+    return reply.send({
+      history: rows.map((row) => ({
+        historyId: row.history_id,
+        allocationId: row.allocation_id,
+        eventId: row.event_id,
+        eventName: row.event_name || '',
+        venue: row.venue || '',
+        sessionDate: row.session_date || '',
+        sessionTime: row.session_time || '',
+        seatId: row.seat_id || null,
+        action: row.action,
+        reason: row.reason || 'manual',
+        createdAt: toIso(row.created_at),
+      })),
+    });
   });
 
   // 결제 완료 콜백도 중복 호출을 허용한다. 이미 RESPONDED/COMPLETED이면

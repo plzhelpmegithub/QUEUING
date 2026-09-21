@@ -1,3 +1,14 @@
+## [2026-09-21 17:18] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: B파트 Secret Link 화면에서 사용자가 `reason: "manual"`로 순번을 넘길 때, 해당 공연·회차의 `waiting_queue` standby 행을 `COMPLETED`로 종료하고 `cancel_queue_history`에 `PASSED` 이력을 저장하도록 추가. 두 작업은 MariaDB 트랜잭션으로 처리하며, 같은 allocation의 재요청은 이력을 중복 생성하지 않음.
+- **[src/routes/cancelQueueRoutes.js]**: `GET /cancel-queue/history/mine` 추가. 로그인한 사용자의 수동 취소표 양도 이력을 공연·회차 정보와 함께 반환.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** B파트 Secret Link에서 “다음 순번에게 넘기기”를 완료해도 마이페이지 취소표 대기열에 기존 항목이 남고, 취소/환불내역에는 양도 기록이 표시되지 않음.
+- **원인(Cause):** `/cancel-queue/expire`가 B파트 만료 콜백과 allocation `EXPIRED` 처리만 수행하고, standby 대기 행 종료 및 사용자용 이력 저장을 수행하지 않았음.
+- **해결(Solution):** 수동 양도를 만료와 구분해 standby 행을 `COMPLETED`로 변경하고 `PASSED` 이력을 저장. B 콜백 성공 뒤 로컬 반영이 중단된 경우에도 동일 요청 재시 시 멱등적으로 완료됨.
+
 ## [2026-09-21 15:54] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
