@@ -379,12 +379,14 @@ async function confirmSeat(userId, seatId, requestedContext = {}, options = {}) 
     : normalizeSessionContext({ eventId: inferredContext.eventId, ...requestedContext });
   const eventId = sessionContext.eventId;
   await ensureEventInMariaDB(eventId);
+  const seatPrice = Number(seatInfo.price) || 0;
   const reservation = await saveReservation({
     seatId,
     userId,
     eventId,
     sessionDate: sessionContext.sessionDate,
     sessionTime: sessionContext.sessionTime,
+    price: seatPrice,
   });
 
   await syncToMariaDB(

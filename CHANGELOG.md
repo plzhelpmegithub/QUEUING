@@ -1,3 +1,14 @@
+## [2026-09-21 15:54] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/dbService.js]**: `reservations` 테이블에 `price INT NOT NULL DEFAULT 0` 컬럼 추가. `initTable()`에서 `ALTER TABLE ... ADD COLUMN` 자동 마이그레이션 포함(이미 존재하면 무시). `saveReservation()`에서 `price` 파라미터를 받아 DB에 저장. `toItem()` 매핑에 `price` 필드 추가. `getReservationsByUser()`, `getReservationsBySeat()`, `getAllReservations()` SELECT 쿼리에 `price` 컬럼 포함
+- **[src/services/seatService.js]**: `confirmSeat()`에서 Redis의 좌석 가격(`seatInfo.price`)을 읽어 `saveReservation({ price })` 호출 시 함께 전달. 예매 생성 시점에 가격이 DB에 영구 보존됨
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 링크로 결제 완료 후 마이페이지에서 예매 가격이 ₩0으로 표시
+- **원인(Cause):** `reservations` 테이블에 `price` 컬럼이 없어, 마이페이지의 `syncBookingsFromServer()`가 `/seats` API에서 가격을 조회하는 간접 방식 사용. Redis 좌석 데이터가 캐시 만료/이벤트 전환 등으로 조회 불가 시 가격이 0으로 폴백
+- **해결(Solution):** `reservations` 테이블에 `price` 컬럼 추가, `confirmSeat()` → `saveReservation()` 호출 시 좌석 가격을 함께 저장하여 예약 자체에 가격 정보를 영구 보존. 프론트엔드에서 `r.price`를 우선 사용하고, 없을 경우 기존 `/seats` API 폴백 유지
+
 ## [2026-09-21 14:17] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

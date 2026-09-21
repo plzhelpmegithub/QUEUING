@@ -144,11 +144,15 @@ async function initTable({ includeLastSimulation = false } = {}) {
       cancelled_at DATETIME NULL,
       reservation_status VARCHAR(20) DEFAULT 'PENDING',
       payment_method VARCHAR(20) DEFAULT NULL,
+      price INT NOT NULL DEFAULT 0,
       INDEX idx_seat (seat_id),
       INDEX idx_user (user_id),
       INDEX idx_event (event_id)
     )
   `);
+  try {
+    await pool.query(`ALTER TABLE reservations ADD COLUMN price INT NOT NULL DEFAULT 0`);
+  } catch (_) {}
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cancellation_outbox (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -257,36 +261,38 @@ function toItem(row) {
     status: row.status,
     reservedAt: row.reserved_at instanceof Date ? row.reserved_at.toISOString() : row.reserved_at,
     cancelledAt: row.cancelled_at instanceof Date ? row.cancelled_at.toISOString() : row.cancelled_at || null,
+    price: Number(row.price) || 0,
   };
 }
 
 async function saveReservation(data) {
   const reservedAt = new Date();
+  const price = Number(data.price) || 0;
   const insertResult = await pool.query(
-    `INSERT INTO reservations (seat_id, user_id, event_id, session_date, session_time, status, reserved_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [data.seatId, data.userId, data.eventId || '', data.sessionDate || '', data.sessionTime || '', 'CONFIRMED', reservedAt],
+    `INSERT INTO reservations (seat_id, user_id, event_id, session_date, session_time, status, reserved_at, price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [data.seatId, data.userId, data.eventId || '', data.sessionDate || '', data.sessionTime || '', 'CONFIRMED', reservedAt, price],
   );
-  console.log(`[MariaDB] 예약 저장: ${data.seatId} → ${data.userId}`);
+  console.log(`[MariaDB] 예약 저장: ${data.seatId} → ${data.userId} (₩${price.toLocaleString()})`);
   const reservationId = typeof insertResult.insertId === 'bigint' ? Number(insertResult.insertId) : (insertResult.insertId || null);
-  return { reservationId, seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', sessionDate: data.sessionDate || '', sessionTime: data.sessionTime || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString() };
+  return { reservationId, seatId: data.seatId, userId: data.userId, eventId: data.eventId || '', sessionDate: data.sessionDate || '', sessionTime: data.sessionTime || '', status: 'CONFIRMED', reservedAt: reservedAt.toISOString(), price };
 }
 
 async function getReservationsBySeat(seatId) {
   const rows = await pool.query(
-    `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
+    `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at, price FROM reservations WHERE seat_id = ? ORDER BY reserved_at`,
     [seatId],
   );
   return rows.map(toItem);
 }
 
 async function getAllReservations() {
-  const rows = await pool.query(`SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations`);
+  const rows = await pool.query(`SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at, price FROM reservations`);
   return rows.map(toItem);
 }
 
 async function getReservationsByUser(userId) {
   const rows = await pool.query(
-    `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
+    `SELECT reservation_id, seat_id, user_id, event_id, session_date, session_time, status, reserved_at, cancelled_at, price FROM reservations WHERE user_id = ? ORDER BY reserved_at DESC`,
     [userId],
   );
   return rows.map(toItem);
