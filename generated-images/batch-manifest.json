@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "seventeen-poster",
+      "prompt": "K-pop concert poster, dramatic stage with blue and white lighting beams, large arena atmosphere, ocean of lightsticks glowing in diamond blue, powerful choreography silhouettes on stage, modern minimalist design, 16:9, high quality",
+      "out": "generated-images/poster-seventeen.png"
+    },
+    {
+      "id": "iu-poster",
+      "prompt": "Elegant solo artist concert poster, warm golden spotlight on a grand piano stage, soft purple and lavender bokeh lights, intimate concert hall atmosphere, dreamy and romantic mood, 16:9, high quality",
+      "out": "generated-images/poster-iu.png"
+    },
+    {
+      "id": "straykids-poster",
+      "prompt": "Intense K-pop concert poster, fiery red and black stage with pyrotechnics and flames, aggressive industrial lighting, heavy bass energy, dark urban concert atmosphere with laser beams, 16:9, high quality",
+      "out": "generated-images/poster-straykids.png"
+    },
+    {
+      "id": "aespa-poster",
+      "prompt": "Futuristic K-pop concert poster, neon cyber stage with holographic projections, purple and electric blue AI-themed lighting, digital matrix effects, sci-fi concert atmosphere, 16:9, high quality",
+      "out": "generated-images/poster-aespa.png"
+    },
+    {
+      "id": "twice-poster",
+      "prompt": "Bright colorful K-pop concert poster, vibrant pink and coral stage with confetti and streamers, cheerful party atmosphere, rainbow LED panels, energetic pop concert mood, 16:9, high quality",
+      "out": "generated-images/poster-twice.png"
+    },
+    {
+      "id": "ateez-poster",
+      "prompt": "Epic pirate-themed K-pop concert poster, dramatic golden and crimson stage with theatrical fog, treasure map projections, adventurous concert atmosphere with fire effects, 16:9, high quality",
+      "out": "generated-images/poster-ateez.png"
+    },
+    {
+      "id": "lesserafim-poster",
+      "prompt": "Sleek modern K-pop concert poster, elegant black and emerald green stage, sharp geometric lighting design, sophisticated minimalist concert atmosphere, glass and steel aesthetics, 16:9, high quality",
+      "out": "generated-images/poster-lesserafim.png"
+    },
+    {
+      "id": "newjeans-poster",
+      "prompt": "Retro Y2K K-pop concert poster, pastel mint and sky blue stage with vintage CRT screen aesthetics, nostalgic 2000s pop concert atmosphere, soft dreamy lighting with bubble effects, 16:9, high quality",
+      "out": "generated-images/poster-newjeans.png"
+    },
+    {
+      "id": "enhypen-poster",
+      "prompt": "Dark fantasy K-pop concert poster, deep midnight blue and silver stage with gothic castle projections, mystical fog and moonlight effects, vampire-themed concert atmosphere, 16:9, high quality",
+      "out": "generated-images/poster-enhypen.png"
+    }
+  ]
+}

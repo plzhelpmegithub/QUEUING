@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>올림픽홀 좌석 에디터</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#1a1a2e; color:#eee; font-family:'Segoe UI',sans-serif; overflow:hidden; height:100vh; display:flex; flex-direction:column; }
+  .toolbar { display:flex; gap:8px; padding:8px 12px; background:#16213e; align-items:center; flex-wrap:wrap; font-size:13px; border-bottom:1px solid #333; }
+  .toolbar label { display:flex; align-items:center; gap:4px; }
+  .toolbar select, .toolbar input[type=number] { background:#0f3460; color:#fff; border:1px solid #555; padding:2px 6px; border-radius:3px; }
+  .toolbar select { min-width:80px; }
+  .toolbar button { padding:4px 12px; border:none; border-radius:4px; cursor:pointer; font-size:12px; }
+  .btn-primary { background:#e94560; color:#fff; }
+  .btn-secondary { background:#0f3460; color:#fff; }
+  .btn-success { background:#2ecc71; color:#111; }
+  .btn-warn { background:#f39c12; color:#111; }
+  #info { padding:4px 12px; font-size:11px; color:#aaa; background:#0d1b2a; border-bottom:1px solid #222; }
+  .canvas-wrap { flex:1; position:relative; overflow:hidden; cursor:grab; }
+  .canvas-wrap.dragging-seat { cursor:move; }
+  .canvas-wrap.panning { cursor:grabbing; }
+  canvas { position:absolute; top:0; left:0; image-rendering:pixelated; }
+  #exportPanel { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#16213e; border:2px solid #e94560; border-radius:8px; padding:20px; z-index:100; max-width:90vw; max-height:80vh; }
+  #exportPanel textarea { width:600px; height:400px; background:#0d1b2a; color:#0f0; border:1px solid #333; font-family:monospace; font-size:11px; }
+  #overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:99; }
+  .zone-chip { display:inline-flex; align-items:center; gap:2px; padding:1px 6px; border-radius:10px; font-size:11px; cursor:pointer; border:2px solid transparent; }
+  .zone-chip.active { border-color:#fff; }
+  .zone-chip .dot { width:8px; height:8px; border-radius:50%; }
+  .stats { margin-left:auto; font-size:11px; color:#aaa; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <label>구역:
+    <select id="zoneFilter"><option value="ALL">전체</option></select>
+  </label>
+  <label>좌석크기:
+    <input type="number" id="seatSize" value="7" min="3" max="20" step="1">
+  </label>
+  <label>불투명도:
+    <input type="range" id="opacity" min="10" max="100" value="70" style="width:60px">
+  </label>
+  <label style="background:#0f3460;padding:2px 8px;border-radius:3px;cursor:pointer">
+    <input type="checkbox" id="zoneMoveMode"> 구역 전체 이동
+  </label>
+  <label style="background:#2e4a0f;padding:2px 8px;border-radius:3px;cursor:pointer">
+    <input type="checkbox" id="addSeatMode"> 좌석 추가
+  </label>
+  <span style="border-left:1px solid #444;height:20px;margin:0 4px"></span>
+  <label>회전°:
+    <input type="number" id="rotAngle" value="1" min="-180" max="180" step="0.5" style="width:55px">
+  </label>
+  <button class="btn-primary" id="btnRotCW">↻ 시계</button>
+  <button class="btn-primary" id="btnRotCCW">↺ 반시계</button>
+  <span style="border-left:1px solid #444;height:20px;margin:0 4px"></span>
+  <label>X:
+    <input type="number" id="inputX" step="0.1" placeholder="X좌표" style="width:65px">
+  </label>
+  <label>Y:
+    <input type="number" id="inputY" step="0.1" placeholder="Y좌표" style="width:65px">
+  </label>
+  <button class="btn-primary" id="btnApplyXY">좌표 적용</button>
+  <span style="border-left:1px solid #444;height:20px;margin:0 4px"></span>
+  <button class="btn-warn" id="btnUndo">↩ 되돌리기</button>
+  <button class="btn-success" id="btnExport">📋 변경사항 내보내기</button>
+  <button class="btn-secondary" id="btnReset">전체 초기화</button>
+  <span class="stats" id="statsText"></span>
+</div>
+<div id="info">휠: 줌 | 우클릭드래그: 이동 | 좌클릭드래그: 좌석이동 | Ctrl/Shift+클릭: 다중선택 | Ctrl+A: 구역전체선택 | R/E: 회전 | 방향키: 미세조정 | X/Y입력: 선택좌석 좌표 일괄지정</div>
+
+<div class="canvas-wrap" id="canvasWrap">
+  <canvas id="cvs"></canvas>
+</div>
+
+<div id="overlay"></div>
+<div id="exportPanel">
+  <h3 style="margin-bottom:10px">변경된 좌석 좌표</h3>
+  <p style="font-size:12px;color:#aaa;margin-bottom:8px">아래 내용을 복사해서 전달해주세요. 변경된 구역만 표시됩니다.</p>
+  <textarea id="exportText" readonly></textarea>
+  <div style="margin-top:10px;display:flex;gap:8px">
+    <button class="btn-primary" onclick="copyExport()">복사</button>
+    <button class="btn-secondary" onclick="closeExport()">닫기</button>
+  </div>
+</div>
+
+<script type="module">
+import { OLYMPIC_HALL } from '/src/data/olympicHallSeats.js';
+
+const IMG_W = 1426, IMG_H = 1103;
+const X_SCALE = 1.27, X_OFFSET = 70, Y_SCALE = 0.9025, Y_OFFSET = 1057;
+
+const ZONE_COLORS = {
+  A1:'#ff4444',A2:'#ff7744',A3:'#ffaa44',A4:'#ffcc44',
+  B1:'#44ff44',B2:'#66ff88',
+  C1:'#4488ff',C2:'#66aaff',C3:'#88ccff',
+  D1:'#ff44ff',D2:'#ff88ff',
+  E1:'#44ffff',E2:'#66ffff',E3:'#88ffff',E4:'#aaffff',
+  F1:'#ffff44',F2:'#ffff88',F3:'#ffffaa',
+  G:'#ff8800',H:'#00ff88',
+  I1:'#ff0088',I2:'#8800ff',I3:'#0088ff',
+  Floor:'#00ff00',
+};
+
+// CSV → 캔버스 변환
+function csvToCanvas(x, y) {
+  return { x: x * X_SCALE + X_OFFSET, y: Y_OFFSET - y * Y_SCALE };
+}
+// 캔버스 → CSV 역변환
+function canvasToCsv(cx, cy) {
+  return { x: (cx - X_OFFSET) / X_SCALE, y: (Y_OFFSET - cy) / Y_SCALE };
+}
+
+// 대각선 구역 시각적 회전 각도 (seatMap.js의 OH_ZONE_ANGLES와 동일)
+const ZONE_ANGLES = {
+  B1: 48 * Math.PI / 180,
+  B2: 48 * Math.PI / 180,
+  D1: -48 * Math.PI / 180,
+  D2: -48 * Math.PI / 180,
+};
+
+// 좌석 데이터 로드 (원본 좌표 복사 보관)
+const allSeats = [];
+const originalCoords = new Map();
+const modifiedZones = new Set();
+
+OLYMPIC_HALL.zones.forEach(zone => {
+  zone.seats.forEach((s, i) => {
+    const canvasPos = csvToCanvas(s.x, s.y);
+    const seat = {
+      id: s.id,
+      zone: zone.id,
+      csvX: s.x,
+      csvY: s.y,
+      cx: canvasPos.x,
+      cy: canvasPos.y,
+      angle: ZONE_ANGLES[zone.id] || 0,
+      selected: false,
+    };
+    allSeats.push(seat);
+    originalCoords.set(s.id, { x: s.x, y: s.y });
+  });
+});
+
+// 구역 필터
+const zoneFilter = document.getElementById('zoneFilter');
+const zoneIds = [...new Set(allSeats.map(s => s.zone))];
+zoneIds.forEach(id => {
+  const opt = document.createElement('option');
+  opt.value = id;
+  opt.textContent = id;
+  zoneFilter.appendChild(opt);
+});
+
+// 캔버스 설정
+const cvs = document.getElementById('cvs');
+const ctx = cvs.getContext('2d');
+const wrap = document.getElementById('canvasWrap');
+
+let viewX = 0, viewY = 0, zoom = 1;
+let seatSize = 7;
+
+// 배경 이미지
+const bgImg = new Image();
+bgImg.src = '/images/seatmaps/올림픽홀-csv.png';
+
+// 히스토리 (되돌리기)
+const history = [];
+
+function pushHistory(seats) {
+  history.push(seats.map(s => ({ id: s.id, cx: s.cx, cy: s.cy, csvX: s.csvX, csvY: s.csvY })));
+  if (history.length > 100) history.shift();
+}
+
+// 렌더링
+function paint() {
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  cvs.width = w;
+  cvs.height = h;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(viewX, viewY);
+  ctx.scale(zoom, zoom);
+
+  // 배경
+  if (bgImg.complete) ctx.drawImage(bgImg, 0, 0, IMG_W, IMG_H);
+
+  // 좌석
+  const activeZone = zoneFilter.value;
+  const opacity = parseInt(document.getElementById('opacity').value) / 100;
+  const sz = parseInt(document.getElementById('seatSize').value) || 7;
+
+  allSeats.forEach(s => {
+    if (activeZone !== 'ALL' && s.zone !== activeZone) return;
+    const color = ZONE_COLORS[s.zone] || '#ff0000';
+
+    ctx.globalAlpha = s.selected ? 1 : opacity;
+
+    // 변경된 좌석은 테두리 표시
+    const orig = originalCoords.get(s.id);
+    const moved = Math.abs(s.csvX - orig.x) > 0.05 || Math.abs(s.csvY - orig.y) > 0.05;
+
+    ctx.save();
+    ctx.translate(s.cx, s.cy);
+    if (s.angle) ctx.rotate(s.angle);
+
+    ctx.fillStyle = color;
+    ctx.fillRect(-sz/2, -sz/2, sz, sz);
+
+    if (s.selected) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2 / zoom;
+      ctx.strokeRect(-sz/2 - 1, -sz/2 - 1, sz + 2, sz + 2);
+    } else if (moved) {
+      ctx.strokeStyle = '#ff0';
+      ctx.lineWidth = 1.5 / zoom;
+      ctx.strokeRect(-sz/2 - 1, -sz/2 - 1, sz + 2, sz + 2);
+    }
+    ctx.restore();
+  });
+  ctx.globalAlpha = 1;
+
+  // 호버 좌석 라벨
+  if (hoveredSeat) {
+    const s = hoveredSeat;
+    const angleDeg = s.angle ? (s.angle * 180 / Math.PI).toFixed(1) + '°' : '0°';
+    const label = `${s.id} (${s.csvX.toFixed(1)}, ${s.csvY.toFixed(1)}) ${angleDeg}`;
+    ctx.font = `${Math.max(10, 12/zoom)}px sans-serif`;
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 3/zoom;
+    ctx.strokeText(label, s.cx + sz, s.cy - sz);
+    ctx.fillText(label, s.cx + sz, s.cy - sz);
+  }
+
+  // 범위 선택 사각형
+  if (isSelecting) {
+    ctx.strokeStyle = '#00bfff';
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.setLineDash([6 / zoom, 3 / zoom]);
+    ctx.fillStyle = 'rgba(0, 191, 255, 0.1)';
+    const rx = Math.min(selectStartX, selectEndX);
+    const ry = Math.min(selectStartY, selectEndY);
+    const rw = Math.abs(selectEndX - selectStartX);
+    const rh = Math.abs(selectEndY - selectStartY);
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.setLineDash([]);
+  }
+
+  ctx.restore();
+
+  // 통계
+  const movedCount = allSeats.filter(s => {
+    const o = originalCoords.get(s.id);
+    return Math.abs(s.csvX - o.x) > 0.05 || Math.abs(s.csvY - o.y) > 0.05;
+  }).length;
+  document.getElementById('statsText').textContent =
+    `총 ${allSeats.length}석 | 수정됨: ${movedCount}석 | 줌: ${(zoom*100).toFixed(0)}%`;
+}
+
+// 마우스 좌표 → 캔버스 이미지 좌표
+function screenToImage(ex, ey) {
+  const rect = wrap.getBoundingClientRect();
+  return {
+    x: (ex - rect.left - viewX) / zoom,
+    y: (ey - rect.top - viewY) / zoom,
+  };
+}
+
+// 좌석 히트테스트
+function hitSeat(ix, iy) {
+  const sz = parseInt(document.getElementById('seatSize').value) || 7;
+  const activeZone = zoneFilter.value;
+  const hitRadius = Math.max(sz, 8) / 2 + 2;
+  let closest = null, closestDist = Infinity;
+  allSeats.forEach(s => {
+    if (activeZone !== 'ALL' && s.zone !== activeZone) return;
+    const dx = s.cx - ix, dy = s.cy - iy;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < hitRadius && dist < closestDist) {
+      closest = s;
+      closestDist = dist;
+    }
+  });
+  return closest;
+}
+
+let hoveredSeat = null;
+let isDragging = false;
+let isPanning = false;
+let isSelecting = false;
+let dragStartX, dragStartY;
+let panStartX, panStartY;
+let selectStartX, selectStartY, selectEndX, selectEndY;
+
+wrap.addEventListener('mousedown', e => {
+  const img = screenToImage(e.clientX, e.clientY);
+
+  // 우클릭 또는 중간버튼 → 패닝
+  if (e.button === 2 || e.button === 1) {
+    isPanning = true;
+    panStartX = e.clientX - viewX;
+    panStartY = e.clientY - viewY;
+    wrap.classList.add('panning');
+    e.preventDefault();
+    return;
+  }
+
+  // 구역 전체 이동 모드
+  const zoneMove = document.getElementById('zoneMoveMode').checked;
+  if (zoneMove) {
+    const activeZone = zoneFilter.value;
+    const targets = allSeats.filter(s => activeZone === 'ALL' || s.zone === activeZone);
+    if (targets.length > 0) {
+      targets.forEach(s => s.selected = true);
+      pushHistory(targets);
+      isDragging = true;
+      dragStartX = img.x;
+      dragStartY = img.y;
+      wrap.classList.add('dragging-seat');
+      paint();
+    }
+    return;
+  }
+
+  // 좌석 추가 모드
+  const addMode = document.getElementById('addSeatMode').checked;
+  if (addMode) {
+    const activeZone = zoneFilter.value;
+    if (activeZone === 'ALL') { alert('구역을 먼저 선택하세요. (드롭다운에서 ALL 이외 선택)'); return; }
+    const existingInZone = allSeats.filter(s => s.zone === activeZone);
+    const nextNum = existingInZone.length + 1;
+    const csv = canvasToCsv(img.x, img.y);
+    const newSeat = {
+      id: `${activeZone}-${nextNum}`,
+      zone: activeZone,
+      csvX: csv.x,
+      csvY: csv.y,
+      cx: img.x,
+      cy: img.y,
+      angle: ZONE_ANGLES[activeZone] || 0,
+      selected: true,
+    };
+    allSeats.forEach(s => s.selected = false);
+    allSeats.push(newSeat);
+    originalCoords.set(newSeat.id, { x: csv.x, y: csv.y });
+    modifiedZones.add(activeZone);
+    updateXYInputs();
+    paint();
+    return;
+  }
+
+  // 좌클릭
+  const seat = hitSeat(img.x, img.y);
+  if (seat) {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      seat.selected = !seat.selected;
+    } else if (!seat.selected) {
+      allSeats.forEach(s => s.selected = false);
+      seat.selected = true;
+    }
+
+    // 선택된 좌석들 드래그 시작
+    const selected = allSeats.filter(s => s.selected);
+    if (selected.length > 0) {
+      pushHistory(selected);
+      isDragging = true;
+      dragStartX = img.x;
+      dragStartY = img.y;
+      wrap.classList.add('dragging-seat');
+    }
+    updateXYInputs();
+    paint();
+  } else {
+    // 빈 곳 드래그 → 사각형 범위 선택 시작
+    isSelecting = true;
+    selectStartX = img.x;
+    selectStartY = img.y;
+    selectEndX = img.x;
+    selectEndY = img.y;
+    if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      allSeats.forEach(s => s.selected = false);
+    }
+    wrap.style.cursor = 'crosshair';
+  }
+});
+
+wrap.addEventListener('mousemove', e => {
+  const img = screenToImage(e.clientX, e.clientY);
+
+  if (isPanning) {
+    viewX = e.clientX - panStartX;
+    viewY = e.clientY - panStartY;
+    paint();
+    return;
+  }
+
+  if (isSelecting) {
+    selectEndX = img.x;
+    selectEndY = img.y;
+    paint();
+    return;
+  }
+
+  if (isDragging) {
+    const dx = img.x - dragStartX;
+    const dy = img.y - dragStartY;
+    dragStartX = img.x;
+    dragStartY = img.y;
+
+    allSeats.filter(s => s.selected).forEach(s => {
+      s.cx += dx;
+      s.cy += dy;
+      const csv = canvasToCsv(s.cx, s.cy);
+      s.csvX = csv.x;
+      s.csvY = csv.y;
+      modifiedZones.add(s.zone);
+    });
+    paint();
+    return;
+  }
+
+  // 호버
+  const seat = hitSeat(img.x, img.y);
+  if (seat !== hoveredSeat) {
+    hoveredSeat = seat;
+    paint();
+  }
+
+  // 좌표 표시
+  const csv = canvasToCsv(img.x, img.y);
+  document.getElementById('info').textContent =
+    `픽셀: (${img.x.toFixed(1)}, ${img.y.toFixed(1)}) | CSV: (${csv.x.toFixed(1)}, ${csv.y.toFixed(1)})` +
+    (hoveredSeat ? ` | ${hoveredSeat.id}` : '') +
+    ` | 마우스 휠: 줌 | 우클릭 드래그: 이동 | 좌클릭 좌석 드래그: 위치 조정`;
+});
+
+wrap.addEventListener('mouseup', e => {
+  if (isSelecting) {
+    isSelecting = false;
+    wrap.style.cursor = '';
+    const x1 = Math.min(selectStartX, selectEndX);
+    const x2 = Math.max(selectStartX, selectEndX);
+    const y1 = Math.min(selectStartY, selectEndY);
+    const y2 = Math.max(selectStartY, selectEndY);
+
+    if (Math.abs(x2 - x1) > 2 || Math.abs(y2 - y1) > 2) {
+      const activeZone = zoneFilter.value;
+      allSeats.forEach(s => {
+        if (activeZone !== 'ALL' && s.zone !== activeZone) return;
+        if (s.cx >= x1 && s.cx <= x2 && s.cy >= y1 && s.cy <= y2) {
+          s.selected = true;
+        }
+      });
+    }
+    updateXYInputs();
+    paint();
+    return;
+  }
+  isDragging = false;
+  isPanning = false;
+  wrap.classList.remove('dragging-seat', 'panning');
+});
+
+wrap.addEventListener('mouseleave', () => {
+  isDragging = false;
+  isPanning = false;
+  isSelecting = false;
+  wrap.style.cursor = '';
+  wrap.classList.remove('dragging-seat', 'panning');
+});
+
+// 줌
+wrap.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = wrap.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const oldZoom = zoom;
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  zoom = Math.max(0.3, Math.min(15, zoom * delta));
+
+  viewX = mx - (mx - viewX) * (zoom / oldZoom);
+  viewY = my - (my - viewY) * (zoom / oldZoom);
+  paint();
+}, { passive: false });
+
+// 우클릭 메뉴 차단
+wrap.addEventListener('contextmenu', e => e.preventDefault());
+
+// 키보드
+document.addEventListener('keydown', e => {
+  // Ctrl+Z 되돌리기
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    e.preventDefault();
+    doUndo();
+    return;
+  }
+
+  // Delete: 선택된 좌석 삭제 (입력 필드에서는 무시)
+  if ((e.key === 'Delete' || e.key === 'Backspace') && !['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) {
+    const selected = allSeats.filter(s => s.selected);
+    if (selected.length > 0 && confirm(`${selected.length}석을 삭제하시겠습니까?`)) {
+      selected.forEach(s => {
+        const idx = allSeats.indexOf(s);
+        if (idx >= 0) allSeats.splice(idx, 1);
+        modifiedZones.add(s.zone);
+      });
+      updateXYInputs();
+      paint();
+    }
+    return;
+  }
+
+  // Ctrl+A: 현재 보이는 구역 전체 선택
+  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+    e.preventDefault();
+    const activeZone = zoneFilter.value;
+    allSeats.forEach(s => {
+      s.selected = (activeZone === 'ALL' || s.zone === activeZone);
+    });
+    updateXYInputs();
+    paint();
+    return;
+  }
+
+  // R: 시계방향 회전, E: 반시계방향 회전
+  if (e.key === 'r' || e.key === 'R') {
+    const deg = parseFloat(document.getElementById('rotAngle').value) || 1;
+    rotateSelected(deg);
+    return;
+  }
+  if (e.key === 'e' || e.key === 'E') {
+    const deg = parseFloat(document.getElementById('rotAngle').value) || 1;
+    rotateSelected(-deg);
+    return;
+  }
+
+  // 화살표키로 미세 조정 (1 CSV unit ≈ 1.27px)
+  const selected = allSeats.filter(s => s.selected);
+  if (selected.length === 0) return;
+
+  let dx = 0, dy = 0;
+  const step = e.shiftKey ? 5 : 1;
+  if (e.key === 'ArrowLeft') dx = -step * X_SCALE;
+  else if (e.key === 'ArrowRight') dx = step * X_SCALE;
+  else if (e.key === 'ArrowUp') dy = -step * Y_SCALE;
+  else if (e.key === 'ArrowDown') dy = step * Y_SCALE;
+  else return;
+
+  e.preventDefault();
+  pushHistory(selected);
+  selected.forEach(s => {
+    s.cx += dx;
+    s.cy += dy;
+    const csv = canvasToCsv(s.cx, s.cy);
+    s.csvX = csv.x;
+    s.csvY = csv.y;
+    modifiedZones.add(s.zone);
+  });
+  paint();
+});
+
+// 되돌리기
+function doUndo() {
+  if (history.length === 0) return;
+  const prev = history.pop();
+  const map = new Map(prev.map(p => [p.id, p]));
+  allSeats.forEach(s => {
+    if (map.has(s.id)) {
+      const p = map.get(s.id);
+      s.cx = p.cx; s.cy = p.cy;
+      s.csvX = p.csvX; s.csvY = p.csvY;
+    }
+  });
+  paint();
+}
+
+// X/Y 좌표 직접 적용
+function applyXY() {
+  const selected = allSeats.filter(s => s.selected);
+  if (selected.length === 0) { alert('좌석을 먼저 선택하세요.'); return; }
+
+  const xVal = document.getElementById('inputX').value;
+  const yVal = document.getElementById('inputY').value;
+  if (xVal === '' && yVal === '') { alert('X 또는 Y 좌표를 입력하세요.'); return; }
+
+  pushHistory(selected);
+  selected.forEach(s => {
+    if (xVal !== '') s.csvX = parseFloat(xVal);
+    if (yVal !== '') s.csvY = parseFloat(yVal);
+    const cp = csvToCanvas(s.csvX, s.csvY);
+    s.cx = cp.x;
+    s.cy = cp.y;
+    modifiedZones.add(s.zone);
+  });
+  paint();
+}
+
+document.getElementById('btnApplyXY').onclick = applyXY;
+
+// 좌석 선택 시 좌표 입력란에 현재 값 표시
+function updateXYInputs() {
+  const selected = allSeats.filter(s => s.selected);
+  if (selected.length === 1) {
+    document.getElementById('inputX').value = selected[0].csvX.toFixed(1);
+    document.getElementById('inputY').value = selected[0].csvY.toFixed(1);
+  } else if (selected.length > 1) {
+    const allSameX = selected.every(s => Math.abs(s.csvX - selected[0].csvX) < 0.05);
+    const allSameY = selected.every(s => Math.abs(s.csvY - selected[0].csvY) < 0.05);
+    document.getElementById('inputX').value = allSameX ? selected[0].csvX.toFixed(1) : '';
+    document.getElementById('inputY').value = allSameY ? selected[0].csvY.toFixed(1) : '';
+  } else {
+    document.getElementById('inputX').value = '';
+    document.getElementById('inputY').value = '';
+  }
+}
+
+// 선택된 좌석 시각적 회전 각도 변경 (제자리에서 기울기)
+function rotateSelected(degrees) {
+  const selected = allSeats.filter(s => s.selected);
+  if (selected.length === 0) { alert('좌석을 먼저 선택하세요.'); return; }
+
+  const rad = degrees * Math.PI / 180;
+  selected.forEach(s => {
+    s.angle = (s.angle || 0) + rad;
+  });
+  paint();
+}
+
+// 선택된 좌석 위치를 그룹 중심점 기준으로 회전 이동
+function rotatePositions(degrees) {
+  const selected = allSeats.filter(s => s.selected);
+  if (selected.length === 0) { alert('좌석을 먼저 선택하세요.'); return; }
+
+  pushHistory(selected);
+  const rad = degrees * Math.PI / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+
+  let cx = 0, cy = 0;
+  selected.forEach(s => { cx += s.cx; cy += s.cy; });
+  cx /= selected.length;
+  cy /= selected.length;
+
+  selected.forEach(s => {
+    const dx = s.cx - cx, dy = s.cy - cy;
+    s.cx = cx + dx * cos - dy * sin;
+    s.cy = cy + dx * sin + dy * cos;
+    const csv = canvasToCsv(s.cx, s.cy);
+    s.csvX = csv.x;
+    s.csvY = csv.y;
+    modifiedZones.add(s.zone);
+  });
+  paint();
+}
+
+document.getElementById('btnRotCW').onclick = () => {
+  rotateSelected(parseFloat(document.getElementById('rotAngle').value) || 1);
+};
+document.getElementById('btnRotCCW').onclick = () => {
+  rotateSelected(-(parseFloat(document.getElementById('rotAngle').value) || 1));
+};
+
+// Enter 키: 회전 각도 입력란 → 시계방향 회전 적용
+document.getElementById('rotAngle').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    rotateSelected(parseFloat(document.getElementById('rotAngle').value) || 1);
+  }
+});
+
+// Enter 키: X/Y 입력란 → 좌표 적용
+document.getElementById('inputX').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); applyXY(); }
+});
+document.getElementById('inputY').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); applyXY(); }
+});
+
+// 내보내기
+window.doExport = function() {
+  const changed = new Map();
+  allSeats.forEach(s => {
+    const orig = originalCoords.get(s.id);
+    if (Math.abs(s.csvX - orig.x) > 0.05 || Math.abs(s.csvY - orig.y) > 0.05) {
+      if (!changed.has(s.zone)) changed.set(s.zone, []);
+      changed.get(s.zone).push(s);
+    }
+  });
+
+  if (changed.size === 0) {
+    alert('변경된 좌석이 없습니다.');
+    return;
+  }
+
+  let output = '';
+  changed.forEach((seats, zoneId) => {
+    output += `// === ${zoneId} 구역 (${seats.length}석 변경) ===\n`;
+    seats.forEach(s => {
+      const orig = originalCoords.get(s.id);
+      output += `${s.id}: (${orig.x.toFixed(1)}, ${orig.y.toFixed(1)}) → (${s.csvX.toFixed(1)}, ${s.csvY.toFixed(1)})\n`;
+    });
+    output += '\n';
+  });
+
+  // 전체 구역 데이터도 출력 (교체용)
+  output += '\n// ========== 전체 교체용 데이터 ==========\n\n';
+  modifiedZones.forEach(zoneId => {
+    const zoneSeats = allSeats.filter(s => s.zone === zoneId);
+    output += `// ${zoneId} 구역 전체 (${zoneSeats.length}석)\n`;
+    zoneSeats.forEach((s, i) => {
+      const comma = i < zoneSeats.length - 1 ? ',' : '';
+      output += `      { id: '${s.id}', x: ${s.csvX.toFixed(1)}, y: ${s.csvY.toFixed(1)} }${comma}\n`;
+    });
+    output += '\n';
+  });
+
+  document.getElementById('exportText').value = output;
+  document.getElementById('exportPanel').style.display = 'block';
+  document.getElementById('overlay').style.display = 'block';
+};
+
+window.copyExport = function() {
+  const ta = document.getElementById('exportText');
+  ta.select();
+  document.execCommand('copy');
+  alert('복사되었습니다!');
+};
+
+window.closeExport = function() {
+  document.getElementById('exportPanel').style.display = 'none';
+  document.getElementById('overlay').style.display = 'none';
+};
+
+// 버튼 연결
+document.getElementById('btnUndo').onclick = doUndo;
+document.getElementById('btnExport').onclick = window.doExport;
+document.getElementById('btnReset').onclick = () => {
+  if (!confirm('모든 변경사항을 초기화하시겠습니까?')) return;
+  allSeats.forEach(s => {
+    const orig = originalCoords.get(s.id);
+    s.csvX = orig.x; s.csvY = orig.y;
+    const cp = csvToCanvas(orig.x, orig.y);
+    s.cx = cp.x; s.cy = cp.y;
+    s.selected = false;
+  });
+  modifiedZones.clear();
+  history.length = 0;
+  paint();
+};
+
+zoneFilter.onchange = paint;
+document.getElementById('seatSize').onchange = paint;
+document.getElementById('opacity').oninput = paint;
+
+// 초기 뷰: 이미지 전체가 보이도록
+function fitView() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  zoom = Math.min(w / IMG_W, h / IMG_H) * 0.95;
+  viewX = (w - IMG_W * zoom) / 2;
+  viewY = (h - IMG_H * zoom) / 2;
+}
+
+bgImg.onload = () => { fitView(); paint(); };
+window.addEventListener('resize', () => { fitView(); paint(); });
+if (bgImg.complete) { fitView(); paint(); }
+</script>
+</body>
+</html>
