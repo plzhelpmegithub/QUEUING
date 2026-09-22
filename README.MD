@@ -470,7 +470,7 @@ Redis Hash 기반 좌석 상태 머신.
 - `confirmSeat()`: 멱등성 보장 — 좌석이 이미 SOLD이고 동일 사용자가 재시도하면 reservations 테이블에서 기존 예약을 조회하여 `{success: true, idempotent: true}` 반환. 핵심 흐름: Redis에서 좌석 가격(`seatInfo.price`) 추출 → MariaDB 예매 기록 저장(가격 포함) → seats 테이블·Redis SOLD 동기화 → 이후 비핵심 작업(카운터 조정, 타이머 취소, 이벤트 발행, 토큰 무효화, admitted 제거/backfill, 매진 체크)은 개별 try-catch로 보호되어 실패 시에도 결제 확정 성공 응답 반환. 취소표 allocation이 있으면 RESPONDED로 갱신한 뒤 `waiting_queue`의 해당 standby 항목도 `COMPLETED`로 업데이트하여 `/cancel-queue/mine`에서 제거
 - `cancelSeat()`: Redis 상태와 무관하게 MariaDB 최신 확정 예약을 기준으로 환불 권한을 검증하고, DB 트랜잭션이 완료된 뒤 Redis 좌석·카운터·매진 플래그를 동기화한다. Redis 동기화가 일시 실패해도 MariaDB의 취소 결과를 유지하며, 최초 처리에서만 B파트용 SQS 취소 이벤트를 발행한다.
 - `releaseSeat()`: 선점 만료/해제 좌석을 available로 복구하며 A파트에서 standby를 직접 승격하지 않음
-- `cleanupEventSeats()`: 이벤트 취소 시 좌석 Redis 키 + 인덱스 Set 일괄 삭제
+- `cleanupEventSeats()`: 이벤트 취소·삭제 시 공연별 좌석 인덱스 Set에서 대상 키를 조회하고, 좌석 키는 500개 단위 `UNLINK`로 순차 분리해 Redis 이벤트 루프의 대량 `DEL` 블로킹을 완화한 뒤 인덱스 Set과 회차별 카운터를 정리
 - `getAllSeats()`: 좌석 인덱스 Set(SMEMBERS) + pipeline HMGET으로 좌석 조회. 1.5초 TTL 인메모리 캐시를 적용하여 동시 다수 요청 시 Redis 왕복을 1회로 축소. 좌석 상태 변경(hold/confirm/cancel/release) 시 해당 eventId 캐시를 즉시 무효화. 회차 컨텍스트가 있으면 해당 회차만 필터링. eventId 없이 호출 시에만 SCAN 폴백
 - `recoverSeatsFromMariaDB()`: MariaDB에서 좌석 복구 후 인덱스 Set 재구성
 

@@ -19,6 +19,7 @@ const EVENT_KEY = 'event:info';
 const EVENT_LIST_KEY = 'events:list';
 
 const SEATS_CACHE_TTL = 1500;
+const SEAT_CLEANUP_CHUNK_SIZE = 500;
 const seatsCache = new Map();
 
 function invalidateSeatsCache(eventId) {
@@ -306,7 +307,13 @@ async function cleanupEventSeats(eventId) {
 
   let deleted = 0;
   if (keys.length > 0) {
-    await redis.del(...keys);
+    // 대규모 공연의 좌석 키를 한 번의 DEL로 제거하면 Redis 이벤트 루프가
+    // 메모리 해제 작업 동안 길게 점유될 수 있다. UNLINK로 먼저 키를 분리하고
+    // 명령 인자도 제한하도록 일정 크기의 청크로 나누어 순차 처리한다.
+    for (let offset = 0; offset < keys.length; offset += SEAT_CLEANUP_CHUNK_SIZE) {
+      const chunk = keys.slice(offset, offset + SEAT_CLEANUP_CHUNK_SIZE);
+      await redis.unlink(...chunk);
+    }
     deleted = keys.length;
   }
   await redis.del(indexKey);
