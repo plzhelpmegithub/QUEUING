@@ -1,3 +1,13 @@
+## [2026-09-22 18:03] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 통합 시뮬레이션 sellout 엔드포인트에서 `main_queue_open` 스테이지(drain 전)에 실행할 경우 실제 멤버십 사용자를 standby로 전환하지 않고 eligible에 유지하도록 조건 분기 추가. drain 후 입장 승인되어 잔여 좌석을 확인할 수 있게 함. `queue_drained` 스테이지에서는 기존대로 전환.
+
+## [2026-09-22 17:38] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 통합 시뮬레이션 drain 엔드포인트(`POST /admin/integrated-simulation/drain-queue`)가 `sold_out` 스테이지에서도 실행 가능하도록 허용 조건을 확장. 드레인 후 스테이지를 `sold_out`으로 유지하여 매진→드레인 순서의 유연한 실행을 지원.
+
 ## [2026-09-22 15:20] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

@@ -725,7 +725,7 @@ async function simulationRoutes(fastify, options = {}) {
       if (!simData?.stage) {
         return reply.status(400).send({ error: '먼저 통합 시뮬레이션을 초기화해주세요.' });
       }
-      if (simData.stage !== 'main_queue_open' && simData.stage !== 'queue_drained') {
+      if (simData.stage !== 'main_queue_open' && simData.stage !== 'queue_drained' && simData.stage !== 'sold_out') {
         return reply.status(409).send({
           success: false,
           code: 'simulation_stage_order',
@@ -818,8 +818,9 @@ async function simulationRoutes(fastify, options = {}) {
 
       const totalDrained = parseInt(simData.totalDrained || '0', 10) + drainCount;
       const totalSeatsReleased = parseInt(simData.totalSeatsReleased || '0', 10) + seatsReleased;
+      const drainStage = simData.stage === 'sold_out' ? 'sold_out' : 'queue_drained';
       await redis.hset(stateKey(eventId), {
-        stage: 'queue_drained',
+        stage: drainStage,
         totalDrained: totalDrained.toString(),
         totalSeatsReleased: totalSeatsReleased.toString(),
         dummiesRemainingInQueue: remainingDummies.toString(),
@@ -999,10 +1000,12 @@ async function simulationRoutes(fastify, options = {}) {
         }
       }
 
-      // 단계2에서 실제 서비스 경로로 본 티켓팅 waiting에 들어온 사용자 중
-      // 가입 당시와 현재 모두 멤버십이 유효한 사용자도 같은 점수 순서로
-      // 취소표 standby로 전환한다. 일반 실제 사용자는 본 대기열 이력만 유지한다.
-      const trackedActualUserIds = await redis.smembers(trackedUsersKey(eventId));
+      // drain 전에 sellout을 실행한 경우(main_queue_open → sold_out) 실제
+      // 멤버십 사용자를 standby로 전환하지 않는다. eligible에 남겨 두면 이후
+      // drain이 이들을 입장 승인하여 좌석 선택 화면에서 잔여석을 확인할 수
+      // 있다. drain 후 sellout(queue_drained → sold_out)에서는 기존대로 전환.
+      const skipRealUserTransition = simData.stage === 'main_queue_open';
+      const trackedActualUserIds = skipRealUserTransition ? [] : await redis.smembers(trackedUsersKey(eventId));
       if (trackedActualUserIds.length > 0) {
         const placeholders = trackedActualUserIds.map(() => '?').join(',');
         const actualMemberRows = await pool.query(
@@ -1173,8 +1176,11 @@ async function simulationRoutes(fastify, options = {}) {
       memberDummyCount,
       realUserPosition: null,
       totalStandby: mode === 'integrated' ? memberDummyCount + actualMembersTransitioned : dummyCount + memberDummyCount,
+      skipRealUserTransition: skipRealUserTransition || false,
       message: mode === 'integrated'
-        ? `매진 처리 후 멤버십 더미 ${memberDummyCount.toLocaleString()}명과 실제 멤버십 사용자 ${actualMembersTransitioned.toLocaleString()}명을 취소표 대기열로 전환했습니다.`
+        ? (skipRealUserTransition
+          ? `매진 처리 후 멤버십 더미 ${memberDummyCount.toLocaleString()}명을 취소표 대기열로 전환했습니다. 실제 멤버십 사용자는 대기열에 유지되어 드레인 후 입장합니다.`
+          : `매진 처리 후 멤버십 더미 ${memberDummyCount.toLocaleString()}명과 실제 멤버십 사용자 ${actualMembersTransitioned.toLocaleString()}명을 취소표 대기열로 전환했습니다.`)
         : `매진 연출 완료: ${seatsToSell.toLocaleString()}석 판매, 비회원 더미 ${dummyCount.toLocaleString()}명과 멤버십 더미 ${memberDummyCount.toLocaleString()}명이 대기열에 등록되었습니다. 실제 멤버십 사용자의 예상 대기시간은 앞 멤버십 대기자 1명당 5분으로 표시됩니다.`,
     });
   });

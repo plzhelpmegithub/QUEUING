@@ -343,13 +343,13 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 ### src/routes/simulationRoutes.js
 - **목적:** 기존 AWS·Final 취소표 시뮬레이션을 보존하면서 본 티켓팅 대기열부터 B파트 Secret Link 요청까지 독립적으로 검증한다.
 - **주요 기능:** 통합 전용 일반 더미 `sim-integrated-user-*`와 멤버십 더미 `sim-member-integrated-*`를 사용한다. 매진 시 일반 사용자는 본 티켓팅 waiting에 남기고 멤버십 사용자만 취소표 standby로 전환한다. 실제 링크 후보는 더미를 제외하고 시뮬레이션 중 서비스 경로로 직접 진입한 활성 멤버십 사용자만 집계한다.
-- **API 명세 / 라우팅 규칙:** `POST /admin/integrated-simulation/init` → `main-queue` → `sellout` → `drain-queue` → `close` → `cancel-seats` → `issue-links` 순서로 실행하며 순서가 어긋나면 `409 simulation_stage_order`를 반환한다. 모든 경로는 관리자 JWT가 필요하고, 링크 요청은 통합 멤버십 더미 자동 정리 후 기존 `CANCELLATION_EVENTS_QUEUE_URL`을 사용한다.
+- **API 명세 / 라우팅 규칙:** `POST /admin/integrated-simulation/init` → `main-queue` → `sellout` / `drain-queue` (순서 유연) → `close` → `cancel-seats` → `issue-links` 순서로 실행한다. `drain-queue`는 `main_queue_open`, `queue_drained`, `sold_out` 스테이지에서 실행 가능하며, `sellout`은 `main_queue_open`, `queue_drained` 스테이지에서 실행 가능하다. 순서가 어긋나면 `409 simulation_stage_order`를 반환한다. 모든 경로는 관리자 JWT가 필요하고, 링크 요청은 통합 멤버십 더미 자동 정리 후 기존 `CANCELLATION_EVENTS_QUEUE_URL`을 사용한다.
 
 **시뮬레이션 단계 흐름:**
 1. `initialized` → 더미 유저 준비 완료
 2. `main_queue_open` → 더미로 본 티켓팅 대기열 구성, 실제 사용자 진입 가능
-3. `sold_out` → 모든 좌석을 더미에게 SOLD 처리 + 멤버십 사용자를 취소표 standby로 전환
-4. `queue_drained` → 대기열에서 더미를 `batchSize`(기본 1000)명씩 점진적으로 제거. `releaseSeatCount` 지정 시 더미 SOLD 좌석을 해당 수만큼 AVAILABLE로 해제. 더미 소진 시 `admitBatch`로 실제 사용자 자동 입장 승인 (반복 호출 가능)
+3. `sold_out` / `queue_drained` → 매진(sellout)과 드레인(drain-queue)은 순서를 유연하게 실행 가능. 매진을 먼저 실행하면(`main_queue_open` → sellout) 더미가 좌석을 선점하되 실제 멤버십 사용자는 eligible에 유지되어, 이후 드레인으로 입장 승인하면 잔여 좌석을 확인할 수 있다. 드레인을 먼저 실행하면(`queue_drained` → sellout) 기존과 동일하게 실제 멤버십 사용자도 standby로 전환한다
+4. `queue_drained` → 대기열에서 더미를 `batchSize`(기본 1000)명씩 점진적으로 제거. `releaseSeatCount` 지정 시 더미 SOLD 좌석을 해당 수만큼 AVAILABLE로 해제. 더미 소진 시 `admitBatch`로 실제 사용자 자동 입장 승인 (반복 호출 가능). `sold_out` 스테이지에서 드레인 시 스테이지는 `sold_out`을 유지한다
 5. `closed` → 티켓팅 마감 + 직접 진입한 멤버십 standby 대기자 집계
 6. `seats_cancelled` → 더미 좌석 일부 취소 및 취소 이벤트 준비
 7. `link_requested` (B 모드) → 기존 standby 최상위 활성 멤버십 사용자를 확인하고 B파트 SQS로 이벤트 전송
