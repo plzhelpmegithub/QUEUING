@@ -97,7 +97,7 @@ EKS 기반 마이크로서비스 아키텍처로 구축한 실시간 좌석 예�
 **오토스케일링**:
 - HPA — 최소 2 / 최대 10 Pod, CPU 70% 기준
 
-**브랜치**: [`feature/chan`](../../tree/feature/chan)
+**브랜치**: [`feature/chan`](../../tree/feature/chan), [`chan/aws-migration`](../../tree/chan/aws-migration)
 
 ---
 
@@ -127,7 +127,7 @@ EKS 기반 마이크로서비스 아키텍처로 구축한 실시간 좌석 예�
 - AWS SES 이메일 발송 (send_user)
 - 멤버십 관리 API
 
-**브랜치**: [`feature/geonah`](../../tree/feature/geonah)
+**브랜치**: [`feature/geonah`](../../tree/feature/geonah), [`geonah/migration`](../../tree/geonah/migration), [`geonah/aws-migration`](../../tree/geonah/aws-migration)
 
 ---
 
@@ -206,7 +206,7 @@ EKS 기반 마이크로서비스 아키텍처로 구축한 실시간 좌석 예�
 - Grafana 대시보드 (backend-counter + team-integrated)
 - JMeter 부하 테스트 시나리오
 
-**브랜치**: [`feature/yeji`](../../tree/feature/yeji)
+**브랜치**: [`feature/yeji`](../../tree/feature/yeji), [`yeji/aws-migration`](../../tree/yeji/aws-migration)
 
 ---
 
