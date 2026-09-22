@@ -168,7 +168,6 @@ EKS 기반 마이크로서비스 아키텍처로 구축한 실시간 좌석 예�
 - IAM 최소 권한, 네임스페이스 분리
 - kube-prometheus-stack 88.6.0 모니터링
 - Cluster Autoscaler 9.53.0
-- 매일 destroy/apply 비용 절감 운영
 
 **오토스케일링**:
 - HPA — 최소 2 / 최대 10 Pod, CPU 80% 기준
