@@ -279,28 +279,32 @@ async function cancelQueueRoutes(fastify) {
         }
       }
 
-      const allocationByKey = new Map();
+      const latestAllocationByKey = new Map();
       const legacyAllocationsByEvent = new Map();
       if (userIds.length) {
         stage = 'cancel_allocations';
         try {
           const allocationRows = await pool.query(
-            `SELECT allocation_id, user_id, event_id, session_date, session_time, seat_id, expires_at
+            `SELECT allocation_id, user_id, event_id, session_date, session_time, seat_id,
+                    status, expires_at,
+                    CASE
+                      WHEN status = 'LINK_SENT'
+                       AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+                      THEN 1 ELSE 0
+                    END AS is_active
              FROM cancel_allocations
              WHERE user_id IN (${userPlaceholders})
-               AND status = 'LINK_SENT'
-               AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
              ORDER BY allocation_id DESC`,
             userIds,
           );
           allocationRows.forEach((allocation) => {
             const key = cancelQueueKey(allocation.event_id, allocation.session_date, allocation.session_time);
             const userKey = `${String(allocation.user_id)}::${key}`;
-            if (!allocationByKey.has(userKey)) allocationByKey.set(userKey, allocation);
+            if (!latestAllocationByKey.has(userKey)) latestAllocationByKey.set(userKey, allocation);
 
             // 초기 AWS B파트 발급본 중에는 회차 컬럼이 비어 있는 행이 있다.
-            // 회차가 하나뿐인 대기열에서는 해당 활성 링크를 계속 보여 주되,
-            // 여러 회차가 있으면 어느 회차 링크인지 추측하지 않는다.
+            // 회차가 하나뿐인 대기열에서만 최신 할당 상태를 연결하고,
+            // 여러 회차가 있으면 어느 회차의 할당인지 추측하지 않는다.
             if (!String(allocation.session_date || '').trim() && !String(allocation.session_time || '').trim()) {
               const eventKey = String(allocation.event_id || '');
               const entries = legacyAllocationsByEvent.get(eventKey) || [];
@@ -323,10 +327,10 @@ async function cancelQueueRoutes(fastify) {
         candidateSessionKeysByEvent.set(eventKey, sessionKeys);
       });
 
-      const findAllocationForRow = (row) => {
+      const findLatestAllocationForRow = (row) => {
         const key = cancelQueueKey(row.event_id, row.session_date, row.session_time);
         const matched = userIds
-          .map((candidateId) => allocationByKey.get(`${candidateId}::${key}`))
+          .map((candidateId) => latestAllocationByKey.get(`${candidateId}::${key}`))
           .find(Boolean);
         if (matched) return matched;
 
@@ -337,8 +341,14 @@ async function cancelQueueRoutes(fastify) {
       };
 
       const rows = candidateRows.filter((row) => {
-        const allocation = findAllocationForRow(row);
-        return String(row.status || '').toUpperCase() === 'WAITING' || Boolean(allocation);
+        const latestAllocation = findLatestAllocationForRow(row);
+        const hasActiveAllocation = Boolean(Number(latestAllocation?.is_active));
+
+        // B파트가 제한시간 만료를 처리하면 cancel_allocations는 EXPIRED가 되지만
+        // waiting_queue의 standby 행은 WAITING으로 남을 수 있다. 최신 할당이
+        // 종료 상태이거나 DB 만료시각을 지났다면 다시 대기 중으로 되살리지 않는다.
+        if (latestAllocation && !hasActiveAllocation) return false;
+        return String(row.status || '').toUpperCase() === 'WAITING' || hasActiveAllocation;
       });
 
       const queues = await Promise.all(rows.map(async (row) => {
@@ -349,7 +359,8 @@ async function cancelQueueRoutes(fastify) {
         };
         let position = Number(row.queue_index || 0);
         let total = 0;
-        const allocation = findAllocationForRow(row);
+        const latestAllocation = findLatestAllocationForRow(row);
+        const allocation = Number(latestAllocation?.is_active) ? latestAllocation : null;
         const event = eventById.get(String(row.event_id)) || {};
 
         let memberStats = null;

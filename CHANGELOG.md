@@ -1,3 +1,13 @@
+## [2026-09-22 11:08] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/cancelQueueRoutes.js]**: `GET /cancel-queue/mine`이 사용자·공연·회차별 최신 `cancel_allocations` 상태를 함께 조회하도록 변경. 최신 할당이 `EXPIRED`·`COMPLETED`·`RESPONDED` 등 종료 상태이거나 DB 만료시각을 지난 경우, 남아 있는 `waiting_queue.status='WAITING'` 행을 마이페이지 취소표 대기열에서 제외한다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** Secret Link의 5분 제한시간이 끝나 할당과 링크가 만료된 후에도 마이페이지 취소표 대기열에 해당 공연이 다시 `1번 대기 중`으로 표시됨.
+- **원인(Cause):** 목록 API가 활성 `LINK_SENT` 할당만 조회하여 만료 사실을 확인하지 못했고, DB에 남아 있는 standby `WAITING` 행을 새로운 대기 상태로 다시 해석함.
+- **해결(Solution):** 활성 할당뿐 아니라 최신 할당의 상태와 만료시각을 판정하고, 종료된 할당이 확인된 대기 행은 목록 응답에서 제거하도록 수정함.
+
 ## [2026-09-21 17:39] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

@@ -291,7 +291,7 @@ ADMISSION_TIMEOUT_CHECK_INTERVAL_MS=1000
 |---|---|
 | `POST /cancel-queue/join` | 로그인한 본인이 동일 공연·회차의 본 티켓팅 standby 대기열에 등록하거나 기존 순번을 복원한다. 멤버십 여부와 무관하게 본 티켓팅 순번을 기록하며, Secret Link 후보 선정은 별도 멤버십 조건으로 제한한다. |
 | `GET /cancel-queue/status/:eventId/:userId` | 동일 공연·회차의 본 티켓팅 참여 이력이 있는 사용자의 대기 종합 상태 조회. 전체 본 대기열 순번과 앞 순번 1명당 5분의 `estimatedWaitMinutes`, 멤버십 여부, Secret Link 상태를 함께 반환 |
-| `GET /cancel-queue/mine` | MariaDB `waiting_queue` 중 `queue_type = 'standby'`이면서 `status NOT IN ('COMPLETED', 'LEFT')`인 현재 로그인 사용자의 행과 동일 공연·회차의 본 티켓팅 참여 이력을 함께 확인해 대기 공연 목록을 조회한다. 결제 완료(`COMPLETED`)되거나 이탈(`LEFT`)한 항목은 제외된다. 멤버십 여부와 무관하게 본 티켓팅 대기자는 목록과 전체 Redis standby 순번을 확인할 수 있다. 멤버십 회원에게만 `membershipEligible: true`와 Secret Link 발급 대상 안내가 표시된다. 활성 AWS·Final 시뮬레이션 회차는 `simulationQueue: true`를 함께 반환한다. 각 행은 `estimatedWaitMinutes = (myNumber - 1) × 5`도 반환한다. |
+| `GET /cancel-queue/mine` | 로그인한 멤버십 사용자의 진행 중인 취소표 대기열을 조회한다. `waiting_queue`와 사용자·공연·회차별 최신 `cancel_allocations`를 함께 판정해 활성 `LINK_SENT` 할당은 Secret Link 발급 상태로 반환하고, 최신 할당이 `EXPIRED`·`COMPLETED`·`RESPONDED` 등 종료 상태이거나 DB 만료시각을 지난 경우에는 standby 행이 `WAITING`으로 남아 있어도 목록에서 제외한다. 활성 AWS·Final 시뮬레이션 회차는 `simulationQueue: true`, 각 대기 행은 `estimatedWaitMinutes = (myNumber - 1) × 5`를 반환한다. |
 | `POST /cancel-queue/allocate` | **410 비활성화** — 취소표 배정은 B파트 Step Functions가 담당 |
 | `POST /cancel-queue/allocate-next` | **410 비활성화** — A파트 직접 순차 배정 방지 |
 | `POST /cancel-queue/hold` | 취소표 좌석 선점. `allocation.seat_id`가 있으면 해당 좌석만 허용하고, `NULL`이면 요청 좌석이 같은 공연·회차의 `AVAILABLE`인지 확인한 뒤 `cancel_allocations.seat_id`에 원자적으로 기록하고 홀드한다. `verify-link`로 발급된 취소표 전용 세션은 allocation 범위를 검증한 뒤 일반 Admission Token 없이 처리 |
