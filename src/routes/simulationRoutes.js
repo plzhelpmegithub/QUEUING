@@ -848,6 +848,102 @@ async function simulationRoutes(fastify, options = {}) {
     });
   }
 
+  fastify.post(route('/preempt-seats'), adminAuth, async (request, reply) => {
+    const { eventId, sessionDate, sessionTime, seatCount = 3321 } = request.body || {};
+    if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });
+
+    const simData = await redis.hgetall(stateKey(eventId));
+    if (!simData?.stage) {
+      return reply.status(400).send({ error: '먼저 통합 시뮬레이션을 초기화해주세요.' });
+    }
+    if (mode !== 'integrated') {
+      return reply.status(400).send({ error: '좌석 선점은 통합 시뮬레이션에서만 사용할 수 있습니다.' });
+    }
+    if (simData.stage !== 'main_queue_open' && simData.stage !== 'queue_drained') {
+      return reply.status(409).send({
+        success: false,
+        code: 'simulation_stage_order',
+        message: '본 티켓팅 대기열을 구성한 뒤 좌석 선점을 실행해주세요.',
+      });
+    }
+
+    const context = getContext({
+      eventId,
+      sessionDate: sessionDate || simData.sessionDate,
+      sessionTime: sessionTime || simData.sessionTime,
+    });
+
+    const allSeats = await seatService.getAllSeats(eventId, context);
+    const availableSeats = allSeats.filter(s => s.status === 'AVAILABLE');
+    if (availableSeats.length === 0) {
+      return reply.send({ success: true, seatsPreempted: 0, seatsRemaining: 0, message: '선점 가능한 좌석이 없습니다.' });
+    }
+
+    const toPreempt = Math.min(availableSeats.length, Math.max(1, parseInt(seatCount, 10) || 3321));
+    const PIPELINE_BATCH = 1000;
+
+    for (let i = 0; i < toPreempt; i += PIPELINE_BATCH) {
+      const pipeline = redis.pipeline();
+      const batchEnd = Math.min(i + PIPELINE_BATCH, toPreempt);
+      const dbValues = [];
+      const dbParams = [];
+
+      for (let j = i; j < batchEnd; j++) {
+        const seat = availableSeats[j];
+        const userId = simUserId(j + 1, mode);
+        const seatKey = `${SEAT_PREFIX}${seat.seatId}`;
+
+        pipeline.hset(seatKey, {
+          status: 'SOLD',
+          heldBy: userId,
+          heldAt: Date.now().toString(),
+        });
+
+        dbValues.push('(?, ?, ?, ?, ?, ?, ?)');
+        dbParams.push(
+          seat.seatId, userId, eventId,
+          context.sessionDate, context.sessionTime,
+          'CONFIRMED', new Date().toISOString().slice(0, 19).replace('T', ' '),
+        );
+      }
+      await pipeline.exec();
+
+      if (dbValues.length > 0) {
+        try {
+          await pool.query(
+            `INSERT IGNORE INTO reservations (seat_id, user_id, event_id, session_date, session_time, status, reserved_at) VALUES ${dbValues.join(',')}`,
+            dbParams,
+          );
+        } catch (e) {
+          console.error('[Simulation] 선점 예약 DB 저장 실패:', e.message);
+        }
+        try {
+          const seatIds = [];
+          for (let j = i; j < batchEnd; j++) seatIds.push(availableSeats[j].seatId);
+          await pool.query(
+            `UPDATE seats SET status = 'SOLD', held_by = '' WHERE seat_id IN (${seatIds.map(() => '?').join(',')})`,
+            seatIds,
+          );
+        } catch (e) {
+          console.error('[Simulation] 선점 좌석 DB 상태 업데이트 실패:', e.message);
+        }
+      }
+    }
+
+    const seatsRemaining = availableSeats.length - toPreempt;
+    const totalPreempted = parseInt(simData.seatsPreempted || '0', 10) + toPreempt;
+    await redis.hset(stateKey(eventId), { seatsPreempted: totalPreempted.toString() });
+
+    console.log(`[Simulation] 좌석 선점: ${toPreempt}석 선점, 잔여 ${seatsRemaining}석`);
+    return reply.send({
+      success: true,
+      seatsPreempted: toPreempt,
+      totalPreempted,
+      seatsRemaining,
+      message: `${toPreempt.toLocaleString()}석 선점 완료 (잔여 ${seatsRemaining.toLocaleString()}석)`,
+    });
+  });
+
   fastify.post(route('/sellout'), adminAuth, async (request, reply) => {
     const { eventId, sessionDate, sessionTime } = request.body || {};
     if (!eventId) return reply.status(400).send({ error: 'eventId는 필수입니다.' });

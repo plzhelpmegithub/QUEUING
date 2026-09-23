@@ -1,3 +1,8 @@
+## [2026-09-23 10:01] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 통합 시뮬레이션 전용 `POST /admin/integrated-simulation/preempt-seats` 엔드포인트 추가. 시뮬레이션 스테이지나 이벤트 상태를 변경하지 않고 지정 수만큼의 AVAILABLE 좌석을 더미 유저에게 SOLD 처리. 반복 호출 가능하며 `main_queue_open`, `queue_drained` 스테이지에서 실행 가능.
+
 ## [2026-09-22 18:03] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
