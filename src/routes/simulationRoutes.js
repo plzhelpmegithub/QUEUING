@@ -12,6 +12,8 @@ const {
 } = require('../services/cancellationEventPublisher');
 const { normalizeSessionContext, getScopedKey } = require('../services/sessionContext');
 const { listEventCards } = require('../services/eventCatalogService');
+const { EVENT_TYPE, SEAT_EVENT_CHANNEL } = require('../services/eventService');
+const { broadcast } = require('../services/sseService');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 const EVENT_LIST_KEY = 'events:list';
@@ -907,6 +909,23 @@ async function simulationRoutes(fastify, options = {}) {
         );
       }
       await pipeline.exec();
+
+      const pubPipeline = redis.pipeline();
+      const seatEvtBatch = [];
+      for (let j = i; j < batchEnd; j++) {
+        const seat = availableSeats[j];
+        const userId = simUserId(j + 1, mode);
+        const evt = {
+          type: EVENT_TYPE.SOLD,
+          seatId: seat.seatId,
+          userId,
+          timestamp: new Date().toISOString(),
+        };
+        pubPipeline.publish(SEAT_EVENT_CHANNEL, JSON.stringify(evt));
+        seatEvtBatch.push(evt);
+      }
+      await pubPipeline.exec();
+      for (const evt of seatEvtBatch) broadcast(EVENT_TYPE.SOLD, evt);
 
       if (dbValues.length > 0) {
         try {

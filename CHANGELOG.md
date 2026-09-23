@@ -1,3 +1,13 @@
+## [2026-09-23 10:38] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 좌석 선점(`preempt-seats`) 엔드포인트에 실시간 좌석 이벤트 발행 추가. `eventService`의 `EVENT_TYPE.SOLD` 및 `SEAT_EVENT_CHANNEL`을 import하고, 선점 처리 후 Redis pipeline으로 `seat.sold` 이벤트를 일괄 publish + SSE broadcast 호출. 이를 통해 관리자가 좌석 선점 시 사용자의 좌석 지도가 실시간으로 반영됨.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자가 좌석 선점 버튼을 눌러도 좌석 수(카운트)는 줄지만 좌석 지도(seat map)에서는 실시간으로 좌석이 변경되지 않음
+- **원인(Cause):** `preempt-seats` 엔드포인트가 Redis hset 및 DB만 업데이트하고 `publishSeatEvent()`를 호출하지 않아 Redis pub/sub, SSE, 실시간 서버에 좌석 변경 이벤트가 전달되지 않았음
+- **해결(Solution):** 각 pipeline 배치(1000석 단위) 실행 후, 별도 Redis pipeline으로 `SEAT_EVENT_CHANNEL`에 `seat.sold` 이벤트를 일괄 publish하고 SSE `broadcast()`를 호출하도록 수정
+
 ## [2026-09-23 10:01] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항
