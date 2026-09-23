@@ -1,3 +1,15 @@
+## [2026-09-23 23:25] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/redisRecoveryService.js]**: 워커 일시정지 상태를 메모리 변수(`pausedIntervalMs`)에서 Redis 키(`worker:recovery:paused`)로 변경. EKS 4파드 환경에서 모든 파드가 동일한 정지/재개 상태를 공유하도록 개선. `pauseAutoRecovery()`, `resumeAutoRecovery()`, `isAutoRecoveryRunning()` 함수를 async로 변환. 워커 타이머 콜백에서 매 실행마다 Redis 플래그를 확인하여 정지 상태면 스킵.
+- **[src/services/syncRetryService.js]**: 동일하게 메모리 변수(`pausedRetryIntervalMs`)에서 Redis 키(`worker:syncretry:paused`)로 변경. 전체 파드 동기화 적용.
+- **[src/routes/eventRoutes.js]**: 워커 상태/정지/재개 API 3개 엔드포인트를 async 호출(`await`, `Promise.all`)로 수정하여 Redis 기반 상태 함수와 호환.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 페이지에서 워커 정지 후 새로고침하면 "정지됨"↔"실행 중" 상태가 계속 깜빡임
+- **원인(Cause):** API 서버가 EKS 4개 파드(replica=4)로 운영 중이며, 워커 정지 상태가 각 파드의 메모리 변수에만 저장됨. 정지 요청이 1개 파드에만 적용되고 나머지 3개 파드는 계속 실행 중. 새로고침 시 로드밸런서가 다른 파드로 라우팅하면서 상태가 달라짐
+- **해결(Solution):** 정지 상태를 Redis 키(`worker:recovery:paused`, `worker:syncretry:paused`)에 저장하여 모든 파드가 동일한 상태를 참조하도록 변경. 타이머 자체는 항상 실행되지만, 매 주기마다 Redis 플래그를 확인하여 정지 상태면 작업을 스킵
+
 ## [2026-09-23 22:30] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

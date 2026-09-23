@@ -445,10 +445,10 @@ MariaDB를 원본 데이터로 보고 Redis의 필수 상태를 자동으로 맞
 - **관리자 변경 보존 (periodic 안전 모드)**: periodic 복구는 API의 실시간 변경을 덮어쓰지 않도록 최소한의 작업만 수행 — `events:list`는 누락 카드 추가/stale 카드 제거만, `event:info`는 누락 시에만 재생성, `event:ticketing-status`는 존재 시 스킵. startup/manual/forced 복구에서는 기존대로 전체 재구축
 - **마감 상태 인식**: `restoreTicketingState()`가 `status === 'closed'`인 이벤트도 마감 상태를 유지 (cancelled뿐 아니라 관리자 마감도 존중)
 
-**일시 정지/재개 (관리자 워커 제어):**
-- `pauseAutoRecovery()`: 현재 interval을 저장하고 타이머 해제. 공연 삭제·시뮬레이션 데이터 삭제 중 복구가 삭제 데이터를 되살리는 것을 방지
-- `resumeAutoRecovery()`: 저장된 interval로 타이머 재생성
-- `isAutoRecoveryRunning()`: 현재 실행 여부 반환
+**일시 정지/재개 (관리자 워커 제어 — Redis 기반 전체 파드 동기화):**
+- `pauseAutoRecovery()` (async): Redis 키 `worker:recovery:paused`를 설정. 모든 파드의 워커가 매 주기마다 이 키를 확인하여 존재하면 작업을 스킵
+- `resumeAutoRecovery()` (async): Redis 키를 삭제하여 모든 파드의 워커가 다시 작업 실행
+- `isAutoRecoveryRunning()` (async): Redis 키 존재 여부로 실행 상태 반환. EKS 멀티 파드 환경에서 모든 파드가 동일한 상태를 응답
 
 자동 복구 관련 환경변수:
 
@@ -466,19 +466,19 @@ Redis→MariaDB 쓰기 실패 시 재시도 큐를 관리한다.
 - `syncToMariaDB()`: MariaDB 쓰기 실패 시 `sync:retry` Redis 리스트에 자동 적재
 - 30초 간격으로 큐를 폴링하여 최대 3회 재시도, 초과 시 최종 실패 로깅
 - 배치당 최대 50건 처리
-- **일시 정지/재개**: `pauseRetryWorker()`, `resumeRetryWorker()`, `isRetryWorkerRunning()` 함수 제공 (현재 어드민 API에서는 사용하지 않음)
+- **일시 정지/재개 (Redis 기반)**: `pauseRetryWorker()`, `resumeRetryWorker()`, `isRetryWorkerRunning()` — Redis 키 `worker:syncretry:paused`로 전체 파드 동기화. 어드민 워커 토글 API에서 Auto Recovery와 함께 제어
 
 ---
 
 ### Auto Recovery 관리 API (eventRoutes.js)
 
-어드민 페이지에서 Redis Auto Recovery를 일시 정지/재개한다. 공연 삭제·시뮬레이션 데이터 삭제 시 Auto Recovery가 삭제된 데이터를 MariaDB에서 Redis로 되살리는 것을 방지하기 위해 사용한다. SyncRetry Worker(Redis→MariaDB 방향)는 삭제와 무관하므로 제어하지 않는다.
+어드민 페이지에서 Auto Recovery와 SyncRetry Worker를 동시에 일시 정지/재개한다. 정지 상태는 Redis 키에 저장되어 EKS 전체 파드(replica=4)에 즉시 적용된다.
 
 | 메서드 | 경로 | 설명 |
 |---|---|---|
-| `GET` | `/admin/workers/status` | Auto Recovery 실행 상태 반환 (`recovery` boolean) |
-| `POST` | `/admin/workers/pause` | Auto Recovery 정지 |
-| `POST` | `/admin/workers/resume` | Auto Recovery 재개 |
+| `GET` | `/admin/workers/status` | 두 워커 실행 상태 반환 (`recovery`, `syncRetry` boolean). Redis 키 기반이므로 어떤 파드가 응답해도 동일 |
+| `POST` | `/admin/workers/pause` | 두 워커 정지 (Redis 키 `worker:recovery:paused`, `worker:syncretry:paused` 설정) |
+| `POST` | `/admin/workers/resume` | 두 워커 재개 (Redis 키 삭제) |
 
 ---
 

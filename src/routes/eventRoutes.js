@@ -993,30 +993,43 @@ async function eventRoutes(fastify) {
     return reply.send(result);
   });
   fastify.get('/admin/workers/status', adminAuth, async (request, reply) => {
-    return reply.send({
-      recovery: isAutoRecoveryRunning(),
-      syncRetry: isRetryWorkerRunning(),
-    });
+    const [recovery, syncRetry] = await Promise.all([
+      isAutoRecoveryRunning(),
+      isRetryWorkerRunning(),
+    ]);
+    return reply.send({ recovery, syncRetry });
   });
 
   fastify.post('/admin/workers/pause', adminAuth, async (request, reply) => {
-    const r1 = pauseAutoRecovery();
-    const r2 = pauseRetryWorker();
+    const [r1, r2] = await Promise.all([
+      pauseAutoRecovery(),
+      pauseRetryWorker(),
+    ]);
+    const [recoveryRunning, syncRetryRunning] = await Promise.all([
+      isAutoRecoveryRunning(),
+      isRetryWorkerRunning(),
+    ]);
     return reply.send({
       success: true,
-      recovery: { paused: r1, running: isAutoRecoveryRunning() },
-      syncRetry: { paused: r2, running: isRetryWorkerRunning() },
+      recovery: { paused: r1, running: recoveryRunning },
+      syncRetry: { paused: r2, running: syncRetryRunning },
       message: '워커가 일시 정지되었습니다. 작업 완료 후 반드시 재개해주세요.',
     });
   });
 
   fastify.post('/admin/workers/resume', adminAuth, async (request, reply) => {
-    const r1 = resumeAutoRecovery();
-    const r2 = resumeRetryWorker();
+    const [r1, r2] = await Promise.all([
+      resumeAutoRecovery(),
+      resumeRetryWorker(),
+    ]);
+    const [recoveryRunning, syncRetryRunning] = await Promise.all([
+      isAutoRecoveryRunning(),
+      isRetryWorkerRunning(),
+    ]);
     return reply.send({
       success: true,
-      recovery: { resumed: r1, running: isAutoRecoveryRunning() },
-      syncRetry: { resumed: r2, running: isRetryWorkerRunning() },
+      recovery: { resumed: r1, running: recoveryRunning },
+      syncRetry: { resumed: r2, running: syncRetryRunning },
       message: '워커가 재개되었습니다.',
     });
   });

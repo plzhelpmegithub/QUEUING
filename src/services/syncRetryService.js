@@ -67,6 +67,8 @@ function startRetryWorker(intervalMs = 30000) {
   if (retryTimer) return;
   retryTimer = setInterval(async () => {
     try {
+      const paused = await redis.exists(RETRY_PAUSED_KEY);
+      if (paused) return;
       const len = await redis.llen(RETRY_KEY);
       if (len > 0) {
         const result = await processRetryQueue();
@@ -85,27 +87,26 @@ function stopRetryWorker() {
   if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
 }
 
-let pausedRetryIntervalMs = null;
+const RETRY_PAUSED_KEY = 'worker:syncretry:paused';
 
-function pauseRetryWorker() {
-  if (!retryTimer) return false;
-  pausedRetryIntervalMs = 30000;
-  stopRetryWorker();
-  console.log('[SyncRetry] Worker 일시 정지');
+async function pauseRetryWorker() {
+  const already = await redis.exists(RETRY_PAUSED_KEY);
+  if (already) return false;
+  await redis.set(RETRY_PAUSED_KEY, '1');
+  console.log('[SyncRetry] Worker 일시 정지 (전체 파드 적용)');
   return true;
 }
 
-function resumeRetryWorker() {
-  if (retryTimer) return false;
-  if (!pausedRetryIntervalMs) return false;
-  startRetryWorker(pausedRetryIntervalMs);
-  pausedRetryIntervalMs = null;
-  console.log('[SyncRetry] Worker 재개');
+async function resumeRetryWorker() {
+  const deleted = await redis.del(RETRY_PAUSED_KEY);
+  if (!deleted) return false;
+  console.log('[SyncRetry] Worker 재개 (전체 파드 적용)');
   return true;
 }
 
-function isRetryWorkerRunning() {
-  return retryTimer !== null;
+async function isRetryWorkerRunning() {
+  const paused = await redis.exists(RETRY_PAUSED_KEY);
+  return paused === 0;
 }
 
 module.exports = { syncToMariaDB, processRetryQueue, startRetryWorker, stopRetryWorker, pauseRetryWorker, resumeRetryWorker, isRetryWorkerRunning };

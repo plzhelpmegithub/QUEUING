@@ -399,7 +399,11 @@ async function recoverWithRetry({ reason = 'startup', eventId = null, force = fa
 
 function startAutoRecovery(intervalMs = Number(process.env.REDIS_RECOVERY_INTERVAL_MS) || DEFAULT_INTERVAL_MS) {
   if (recoveryTimer) return;
-  recoveryTimer = setInterval(() => {
+  recoveryTimer = setInterval(async () => {
+    try {
+      const paused = await redis.exists(RECOVERY_PAUSED_KEY);
+      if (paused) return;
+    } catch (_) {}
     recoverWithRetry({ reason: 'periodic' }).catch((err) => {
       console.error('[Redis Auto Recovery] periodic 오류:', err.message);
     });
@@ -415,27 +419,26 @@ function stopAutoRecovery() {
   }
 }
 
-let pausedIntervalMs = null;
+const RECOVERY_PAUSED_KEY = 'worker:recovery:paused';
 
-function pauseAutoRecovery() {
-  if (!recoveryTimer) return false;
-  pausedIntervalMs = Number(process.env.REDIS_RECOVERY_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
-  stopAutoRecovery();
-  console.log('[Redis Auto Recovery] 일시 정지');
+async function pauseAutoRecovery() {
+  const already = await redis.exists(RECOVERY_PAUSED_KEY);
+  if (already) return false;
+  await redis.set(RECOVERY_PAUSED_KEY, '1');
+  console.log('[Redis Auto Recovery] 일시 정지 (전체 파드 적용)');
   return true;
 }
 
-function resumeAutoRecovery() {
-  if (recoveryTimer) return false;
-  if (!pausedIntervalMs) return false;
-  startAutoRecovery(pausedIntervalMs);
-  pausedIntervalMs = null;
-  console.log('[Redis Auto Recovery] 재개');
+async function resumeAutoRecovery() {
+  const deleted = await redis.del(RECOVERY_PAUSED_KEY);
+  if (!deleted) return false;
+  console.log('[Redis Auto Recovery] 재개 (전체 파드 적용)');
   return true;
 }
 
-function isAutoRecoveryRunning() {
-  return recoveryTimer !== null;
+async function isAutoRecoveryRunning() {
+  const paused = await redis.exists(RECOVERY_PAUSED_KEY);
+  return paused === 0;
 }
 
 module.exports = {
