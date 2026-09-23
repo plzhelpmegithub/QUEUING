@@ -137,9 +137,13 @@ const CONCERT_IMAGES = [
 
 export function getConcertImage(nameOrId) {
   if (!nameOrId) return CONCERT_IMAGES[0];
-  const str = String(nameOrId);
+  const str = String(nameOrId).trim();
+  const normalized = str.toLowerCase();
   for (const [artist, url] of Object.entries(ARTIST_POSTERS)) {
-    if (str.includes(artist) || str.toLowerCase().includes(artist.toLowerCase())) return url;
+    // 생성된 공연명과 고정 공연 ID는 아티스트명으로 시작한다. 이름 중간까지
+    // includes()로 검사하면 "ALL-IN LIVE"의 IVE처럼 짧은 아티스트명이 일반
+    // 단어 안에서 먼저 매칭될 수 있으므로 시작 부분만 비교한다.
+    if (normalized.startsWith(artist.toLowerCase())) return url;
   }
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;

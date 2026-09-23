@@ -64,7 +64,7 @@ function ticketPrices(event) {
 
 function backgroundStyle(event) {
   const imageUrl = getConcertImage(event.eventName || event.eventId);
-  return `url('${imageUrl}') center/cover no-repeat, linear-gradient(135deg,${event.color || '#667eea,#764ba2'})`;
+  return `url('${imageUrl}') top center/cover no-repeat, linear-gradient(135deg,${event.color || '#667eea,#764ba2'})`;
 }
 
 function hotCardHtml(event, index, interestCount) {
@@ -195,11 +195,11 @@ export const homePage = {
       const e = slides[idx];
       if (!e) return;
       const imgUrl = getConcertImage(e.eventName || e.eventId);
-      labelEl.style.background = `url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
+      labelEl.style.background = `url('${imgUrl}') top center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
       artistEl.textContent = e.eventName;
       const heroEl = container.querySelector('[data-slider]');
       if (heroEl) {
-        heroEl.style.background = `linear-gradient(90deg, rgba(5,4,4,0.92) 0%, rgba(5,4,4,0.7) 40%, rgba(5,4,4,0.3) 100%), url('${imgUrl}') center/cover no-repeat`;
+        heroEl.style.background = `linear-gradient(90deg, rgba(5,4,4,0.92) 0%, rgba(5,4,4,0.7) 40%, rgba(5,4,4,0.3) 100%), url('${imgUrl}') top center/cover no-repeat`;
       }
       infoEl.innerHTML = `
         <div class="lp-hero__badges">${statusBadge(effectiveStatus(e))}<span class="badge badge-gray" style="background:rgba(255,255,255,0.16);color:#fff;">${formatNumber(e.totalSeats || 0)}석</span></div>
@@ -208,9 +208,7 @@ export const homePage = {
           <div>공연일<b>${e.eventDate || '-'}</b></div>
           <div>공연장<b>${e.venue || '-'}</b></div>
         </div>
-        <button class="btn btn-primary btn-lg" data-book>예매하기</button>
       `;
-      infoEl.querySelector('[data-book]').addEventListener('click', () => navigate(`concert/${e.eventId}`));
       counterEl.innerHTML = `<span class="slider__counter-btn">${idx + 1} / ${slides.length}</span>`;
     }
 
@@ -247,6 +245,16 @@ export const homePage = {
       arrowsEl.style.display = slides.length > 1 ? '' : 'none';
       paintNow();
       if (slides.length > 1) rotateTimer = setInterval(() => goTo(idx + 1), 5000);
+    }
+
+    const heroEl = container.querySelector('[data-slider]');
+    if (heroEl) {
+      heroEl.style.cursor = 'pointer';
+      heroEl.addEventListener('click', (e) => {
+        if (e.target.closest('[data-prev], [data-next], [data-counter]')) return;
+        const cur = slides[idx];
+        if (cur) navigate(`concert/${cur.eventId}`);
+      });
     }
 
     container.querySelector('[data-next]')?.addEventListener('click', () => goTo(idx + 1));

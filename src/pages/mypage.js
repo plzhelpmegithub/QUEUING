@@ -8,6 +8,7 @@ import { openModal, closeModal } from '../components/modal.js';
 import { showToast } from '../components/toast.js';
 import { authHeaders } from '../utils/authToken.js';
 import { calcCancelFeeRate } from '../data/refundPolicy.js';
+import { fetchMyCancelQueueHistory } from '../utils/backendApi.js';
 import {
   getState,
   isLoggedIn,
@@ -303,6 +304,7 @@ export const myPage = {
     const section = params.section || '';
     const { user, bookings, interests, cancelQueues } = getState();
     let lastPassHistory = [];
+    let cancelQueuePassHistory = [];
 
     container.innerHTML = `
       <div class="container mypage-body">
@@ -400,7 +402,7 @@ export const myPage = {
                     grade: section,
                     gradeName: `${section}구역`,
                   },
-                  price: Number(seatInfo?.price) || 0,
+                  price: Number(r.price) || Number(seatInfo?.price) || 0,
                   status: isCancelled ? 'refunded' : 'confirmed',
                   cancelledAt: isCancelled ? new Date(r.cancelledAt).getTime() : undefined,
                   source: 'regular',
@@ -415,22 +417,35 @@ export const myPage = {
     }
     syncBookingsFromServer();
 
+    const BOOKING_SYNC_MS = 10000;
+    let bookingSyncTimer = null;
+    if (section === '' || section === 'bookings') {
+      bookingSyncTimer = setInterval(syncBookingsFromServer, BOOKING_SYNC_MS);
+    }
+
     // 취소표 전용 화면에서 사용자가 "다음 순번에게 넘기기"를 선택한 경우는
     // 결제가 없으므로 reservations가 아닌 Last 전용 이력에 남는다. 마이페이지의
     // 취소/환불내역에서는 이를 환불 건과 구분해 안내용 기록으로 함께 보여준다.
-    function syncLastPassHistory() {
-      fetch('/last-simulation/history/mine', { headers: { ...authHeaders() } })
+    function syncPassHistory() {
+      const lastSimulationHistory = fetch('/last-simulation/history/mine', { headers: { ...authHeaders() } })
         .then((response) => response.ok ? response.json() : { history: [] })
-        .then((data) => {
+        .catch(() => ({ history: [] }));
+      const bCallbackHistory = fetchMyCancelQueueHistory()
+        .catch(() => ({ history: [] }));
+
+      Promise.all([lastSimulationHistory, bCallbackHistory])
+        .then(([lastData, callbackData]) => {
           if (getState().user?.userId !== user?.userId) return;
-          lastPassHistory = Array.isArray(data.history) ? data.history : [];
+          lastPassHistory = Array.isArray(lastData.history) ? lastData.history : [];
+          cancelQueuePassHistory = Array.isArray(callbackData.history) ? callbackData.history : [];
           if (section === 'refunds') renderRefunds();
         })
         .catch(() => {
           lastPassHistory = [];
+          cancelQueuePassHistory = [];
         });
     }
-    syncLastPassHistory();
+    syncPassHistory();
 
     let cancelQueueLoadError = '';
 
@@ -450,6 +465,7 @@ export const myPage = {
     // 시뮬레이션 마감 또는 실제 취소표 대기 등록 직후에도 새로고침 없이
     // 서버의 waiting_queue를 읽어 마이페이지의 읽기 전용 목록에 반영한다.
     let cancelQueueSyncTimer = null;
+    let passHistorySyncTimer = null;
     let cancelQueueSyncRunning = false;
     const syncCancelQueueList = () => {
       if (cancelQueueSyncRunning) return;
@@ -472,6 +488,9 @@ export const myPage = {
     syncCancelQueueList();
     if (section === '' || section === 'cancel-queue') {
       cancelQueueSyncTimer = setInterval(syncCancelQueueList, CANCEL_QUEUE_SYNC_MS);
+    }
+    if (section === 'refunds') {
+      passHistorySyncTimer = setInterval(syncPassHistory, CANCEL_QUEUE_SYNC_MS);
     }
 
     // Refund status flips from "처리 중" to "완료" a few seconds after the user
@@ -815,7 +834,7 @@ export const myPage = {
             (b.status === 'cancelled' || b.status === 'refund_pending' || b.status === 'refunded') &&
             (!b.cancelledAt || Date.now() - b.cancelledAt <= REFUND_HISTORY_MS)
         );
-        const passedList = lastPassHistory.filter((item) => {
+        const passedList = [...lastPassHistory, ...cancelQueuePassHistory].filter((item) => {
           const createdAt = new Date(item.createdAt || 0).getTime();
           return !createdAt || Date.now() - createdAt <= REFUND_HISTORY_MS;
         });
@@ -1047,6 +1066,8 @@ export const myPage = {
 
     return () => {
       if (cancelQueueSyncTimer) clearInterval(cancelQueueSyncTimer);
+      if (passHistorySyncTimer) clearInterval(passHistorySyncTimer);
+      if (bookingSyncTimer) clearInterval(bookingSyncTimer);
       cleanup();
     };
   },

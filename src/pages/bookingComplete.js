@@ -4,6 +4,7 @@
 import { getBooking } from '../state/store.js';
 import { formatPrice } from '../utils/format.js';
 import { navigate } from '../router.js';
+import { getConcert, getConcertImage } from '../data/concerts.js';
 
 // b.seats(신규, 1~4매 배열)와 b.seat(구형/백엔드 재구성 데이터, 단일 좌석) 둘 다
 // 지원 — 좌석마다 "등급/구역 + 좌석번호"만 보여주고(내부 row/id는 노출 안 함),
@@ -96,10 +97,16 @@ export const bookingCompletePage = {
 
     container.innerHTML = '<div class="center-state"><div class="center-state__title">예매 정보 불러오는 중...</div></div>';
 
+    function resolveConcertInfo(concertId, realEvents) {
+      const mock = getConcert(concertId);
+      if (mock) return { eventName: `${mock.artist} · ${mock.title}`, eventDate: mock.dateStart, venue: mock.venue };
+      return (realEvents || []).find((e) => e.eventId === concertId) || null;
+    }
+
     fetch('/events')
       .then((r) => r.json())
       .then((eventsData) => {
-        c = (eventsData.events || []).find((e) => e.eventId === booking.concertId);
+        c = resolveConcertInfo(booking.concertId, eventsData.events);
         if (!c) {
           container.innerHTML = '<div class="center-state"><div class="center-state__title">공연 정보를 찾을 수 없습니다</div></div>';
           return;
@@ -107,6 +114,8 @@ export const bookingCompletePage = {
         draw();
       })
       .catch(() => {
+        const fallback = resolveConcertInfo(booking.concertId, []);
+        if (fallback) { c = fallback; draw(); return; }
         container.innerHTML = '<div class="center-state"><div class="center-state__title">예매 정보를 불러오지 못했습니다.</div></div>';
       });
   },

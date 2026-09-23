@@ -23,7 +23,7 @@ function escapeHtml(value) {
 
 function cardHtml(e, i) {
   const imgUrl = getConcertImage(e.eventName || e.eventId);
-  const bgStyle = `url('${imgUrl}') center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
+  const bgStyle = `url('${imgUrl}') top center/cover no-repeat, linear-gradient(135deg,${e.color || '#667eea,#764ba2'})`;
   const eventId = escapeHtml(e.eventId);
   const eventName = escapeHtml(e.eventName || e.eventId || '공연');
   const eventDate = escapeHtml(e.eventDate || '-');

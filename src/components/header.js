@@ -31,6 +31,7 @@ const NAV_ITEMS = [
 // 남는 단순 레이아웃으로 바뀌고, '예매 완료' 화면부터는 헤더 자체가 사라진다.
 const BOOKING_FLOW_RE = /^(queue|zones|payment)\//;
 const BOOKING_COMPLETE_RE = /^complete\//;
+const SECRET_LINK_RE = /^(last-cancel-ticketing|b-cancel-ticketing\/)/;
 
 let rootEl = null;
 let currentPath = '';
@@ -90,7 +91,7 @@ function render() {
 
   // '예매 완료' 화면부터는 헤더 자체를 완전히 숨김 — 대기열/좌석선택/결제까지는
   // (아래 isBookingFlow 분기로) 계속 유지되던 상단 바가 여기서부터 사라진다.
-  if (BOOKING_COMPLETE_RE.test(currentPath)) {
+  if (BOOKING_COMPLETE_RE.test(currentPath) || SECRET_LINK_RE.test(currentPath)) {
     rootEl.style.display = 'none';
     rootEl.innerHTML = '';
     return;

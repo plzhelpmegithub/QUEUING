@@ -1,3 +1,123 @@
+## [2026-09-23 17:45] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/home.js]**: LP 히어로 배너에서 "예매하기" 버튼을 제거하고, 배너 영역(`[data-slider]`) 전체를 클릭하면 해당 공연 상세 페이지(`concert/{eventId}`)로 이동하도록 변경. 화살표·카운터 클릭은 슬라이드 전환으로 유지.
+- **[src/styles/home.js]**: 동일한 변경 적용 — "예매하기" 버튼 제거, 히어로 배너 클릭 시 공연 상세 이동. 화살표·dot 클릭은 슬라이드 전환으로 유지.
+
+---
+
+## [2026-09-23 13:02] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/zoneSelect.js]**: 올림픽홀 좌석 선택 화면의 하단 등급별 레전드(VIP석·R석·S석·A석) 색상이 좌석 맵과 일치하도록 수정. 올림픽홀 레이아웃 매핑 시 `color: GRADE_COLOR[resolvedGrade]`를 명시적으로 설정하여 API에서 전달된 잘못된 FALLBACK_PALETTE 색상을 올바른 등급 색상으로 덮어씀.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 올림픽홀 좌석 선택 화면에서 Canvas 좌석 맵의 등급 색상(VIP=빨강, R=앰버, S=초록, A=파랑)과 하단 HTML 레전드의 색상(VIP=짙은 남색, R=보라, S=빨강, A=초록)이 불일치함.
+- **원인(Cause):** API(`eventRoutes.js`)의 `assignZoneGeometry`가 section name(Floor, F1 등)으로 `GRADE_COLOR`를 조회하는데, 올림픽홀 구역명이 등급 키(VIP, R, S, A)와 일치하지 않아 `FALLBACK_PALETTE[i%8]` 색상이 저장됨. 프론트엔드에서 `...z` spread로 이 잘못된 색상이 `z.color`로 전달되어 `zoneColor()` 함수에서 올바른 `GRADE_COLOR[z.grade]`보다 우선 적용됨. Canvas 맵은 자체 `OLYMPIC_GRADE_COLOR`를 사용하므로 영향 없었지만, HTML 레전드와 `gradeColorMap`은 잘못된 색상을 표시함.
+- **해결(Solution):** 올림픽홀 레이아웃 매핑에서 `resolvedGrade`를 먼저 계산하고, `color: GRADE_COLOR[resolvedGrade]`를 명시적으로 설정하여 API로부터 온 잘못된 FALLBACK_PALETTE 색상을 올바른 등급 색상으로 덮어씀. 이로써 HTML 레전드와 Canvas 좌석 맵이 동일한 등급 색상을 표시함.
+
+## [2026-09-23 12:33] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/seatMap.js]**: 올림픽홀 Canvas 인터랙티브 좌석의 크기·형태·투명도와 상태 색상 우선순위는 유지하면서, 선택 가능한 좌석과 hover 강조 색상을 VIP·R·S·A 등급별 색상으로 표시하도록 변경.
+- **[src/pages/seatSelect.js]**: 좌석 선택 안내의 `보라색 좌석` 표현을 `등급 색상 좌석`으로 변경해 실제 Canvas 표시와 일치시킴.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 좌석 선택 화면의 올림픽홀 인터랙티브 좌석이 등급과 관계없이 모두 보라색으로 표시되어 좌석 지도만으로 등급을 구분하기 어려움.
+- **원인(Cause):** 올림픽홀 전용 Canvas 렌더링 분기가 선택 가능 좌석과 hover 상태에 공통 상수 `SEAT_FILL`·`SEAT_BORDER`를 고정 사용함.
+- **해결(Solution):** 좌석의 `grade`를 VIP·R·S·A 색상표에 연결하고, 기존 상태가 `available`일 때와 hover 강조에만 등급 색상을 적용. 내 좌석·선택 중·매진·선택 불가 색상은 기존 규칙을 유지함.
+
+## [2026-09-23 10:01] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 통합 티켓팅 시뮬레이션 패널에 단계2와 단계3 사이에 `좌석 선점` 버튼과 선점 수 입력 필드 추가. 이벤트 상태를 변경하지 않고 더미 유저로 좌석을 SOLD 처리하여 실제 사용자가 잔여석만 확인할 수 있게 함. 비활성화되지 않고 반복 사용 가능.
+
+## [2026-09-22 17:38] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 통합 티켓팅 시뮬레이션에서 단계3(드레인) 버튼이 `sold_out` 스테이지에서도 활성화되도록 `canDrain` 조건에 `sold_out` 추가. 매진(단계4) 후 드레인(단계3) 실행 순서를 지원.
+
+## [2026-09-22 15:53] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/data/concerts.js]**: 포스터 선택 시 공연명 전체에서 아티스트명을 `includes()`로 찾던 방식을, 공백을 정리한 공연명·고정 ID의 시작 부분을 `startsWith()`로 비교하는 방식으로 변경.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 관리자 `포스터 공연 생성`에서 영탁 공연을 선택했지만 사용자 화면에는 IVE 포스터가 표시됨.
+- **원인(Cause):** 영탁 공연명 `영탁 2027 CONCERT [찐이야 : ALL-IN LIVE]`의 `LIVE` 안에 문자열 `IVE`가 포함되어 있고, 포스터 목록에서 IVE가 영탁보다 먼저 검사되어 즉시 반환됨.
+- **해결(Solution):** 생성 공연명이 아티스트명으로 시작하는 규칙을 사용해 시작 부분만 대소문자 구분 없이 비교. 영탁 공연은 `poster-youngtak.png`, IVE 공연은 `poster-ive.png`로 각각 매칭되도록 분리함.
+
+## [2026-09-22 13:02] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/seatMap.js]**: 화면별로 `선택중` 범례를 숨길 수 있는 `hideHoldingLegend` 옵션을 추가. 기본값은 `false`로 유지해 기존 좌석 화면에는 영향을 주지 않음.
+- **[src/pages/bCancelTicketing.js]**: 취소표 Secret Link 좌석 배치도에서 `hideHoldingLegend: true`를 사용해 `선택중` 범례만 제거.
+
+## [2026-09-22 12:18] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/bCancelTicketing.js]**: 수동 양도 완료 화면에서 내부 처리 문구와 `취소표 대기열로` 버튼을 제거하고 `이 창을 닫으셔도 됩니다.` 안내만 표시하도록 변경.
+- **[src/pages/bCancelTicketing.js]**: 취소표 좌석 선택·결제 화면 상단의 `B-PART · CANCEL TICKETING`, 좌석 선택 화면의 `B WORKFLOW` 및 링크 확인 중 화면의 `B파트` 표현을 제거해 사용자 중심 문구로 정리.
+
+## [2026-09-22 00:00] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/main.js]**: 예매 완료 라우트 패턴을 `[\w-]+`에서 `[^/]+`로 변경하여 서버 동기화된 bookingId(`:` 포함 `R-seatId` 형식)도 매칭되도록 수정.
+- **[src/pages/bookingComplete.js]**: `/events` API에서 공연 정보를 찾지 못할 때 mock CONCERTS 데이터를 fallback으로 조회하는 `resolveConcertInfo()` 추가. API 호출 실패 시에도 mock 콘서트이면 화면을 정상 표시.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 결제 완료 후 마이페이지 → 예매내역에서 "티켓 확인" 버튼을 클릭해도 예매 완료 화면이 나타나지 않음.
+- **원인(Cause):** (1) 라우트 패턴 `[\w-]+`가 서버 동기화된 bookingId의 `:` 문자를 허용하지 않아 라우트 매칭 실패. (2) `bookingComplete.js`가 `/events` API만 조회하여 mock 콘서트 예매건의 공연 정보 조회 실패.
+- **해결(Solution):** 라우트 패턴을 `[^/]+`로 완화하여 모든 형태의 bookingId를 허용. `bookingComplete.js`에 mock CONCERTS fallback 로직 추가.
+
+## [2026-09-21 17:18] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/utils/backendApi.js]**: 로그인 사용자의 취소표 수동 양도 이력을 조회하는 `fetchMyCancelQueueHistory()` 추가.
+- **[src/pages/mypage.js]**: 기존 Final Last 양도 이력과 B파트 양도 이력을 함께 조회해 취소/환불내역에 표시. 취소/환불내역 탭에서는 5초마다 이력을 갱신해 다른 탭의 양도 완료도 새로고침 없이 반영.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** AWS B파트 Secret Link에서 양도한 사용자의 항목이 취소표 대기열에 남고, 취소/환불내역에는 Final 시뮬레이션 양도 기록만 표시됨.
+- **원인(Cause):** 마이페이지가 `/last-simulation/history/mine`만 조회해 B파트 콜백 경로의 이력을 읽지 않았음.
+- **해결(Solution):** `/cancel-queue/history/mine` 조회를 추가하고 두 이력 원본을 병합해 동일한 “취소표 순번 양도” 행으로 표시.
+
+## [2026-09-21 16:54] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/components/header.js]**: `SECRET_LINK_RE` 패턴 추가 (`/^(last-cancel-ticketing|b-cancel-ticketing\/)/`). 시크릿 링크 경로에서 헤더의 `render()` 자체가 `rootEl.style.display = 'none'`을 설정하여 상태 변경 시에도 헤더가 다시 나타나지 않도록 수정
+- **[src/pages/lastCancelTicketing.js]**: 중복된 `site-header` display 숨기기/복원 코드 제거 (header.js에서 중앙 관리)
+- **[src/pages/bCancelTicketing.js]**: 중복된 `site-header` display 숨기기/복원 코드 제거 (header.js에서 중앙 관리)
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 시크릿 링크(취소표 예매) 페이지에서 `#site-header`를 `display:none`으로 설정해도 빨간 고정 헤더가 계속 표시됨
+- **원인(Cause):** `header.js`의 `render()` 함수가 `subscribe(render)`를 통해 상태 변경마다 재실행되며, 98번 줄의 `rootEl.style.display = ''`가 개별 페이지에서 설정한 `display:none`을 매번 덮어씀
+- **해결(Solution):** `header.js`에 `SECRET_LINK_RE` 패턴을 추가하고, `BOOKING_COMPLETE_RE`와 동일하게 `render()` 함수 내부에서 시크릿 링크 경로일 때 헤더를 숨기도록 처리. 개별 페이지의 중복 숨기기 코드는 제거
+
+## [2026-09-21 15:54] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/mypage.js]**: `syncBookingsFromServer()`에서 예매 가격 조회 시 `r.price`(서버 reservation 가격)를 우선 사용하고, 없을 경우 `/seats` API 가격으로 폴백하도록 수정. 마이페이지 진입 시(overview/bookings 섹션) 10초 간격 주기적 예매 동기화 타이머(`bookingSyncTimer`) 추가 — 다른 탭에서 취소표 예매 완료 후 별도 새로고침/재로그인 없이 자동 반영
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 취소표 결제 후 마이페이지에서 (1) 가격이 ₩0 표시 (2) 예매가 탭 닫고 재로그인 전까지 안 보임
+- **원인(Cause):** (1) `reservations` 테이블에 `price` 컬럼이 없어 `/seats` API 간접 조회 의존 — Redis 데이터 부재 시 0으로 폴백. (2) `syncBookingsFromServer()`가 마운트 시 1회만 실행되어, 다른 탭에서 완료된 예매를 감지하지 못함
+- **해결(Solution):** (1) 백엔드에서 `reservations.price` 컬럼 추가 → 프론트에서 `r.price` 우선 참조. (2) bookings/overview 섹션에서 10초 주기 `syncBookingsFromServer()` 폴링 추가. 기존 `addBookingSilently` → `emit()` → `subscribe` 콜백 경로로 UI 자동 갱신
+
+## [2026-09-21 14:17] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 시뮬레이션 패널의 "멤버십 더미 삭제" 버튼에 인원수 입력 필드(`data-sim-remove-dummy-count`) 추가. 관리자가 삭제할 인원수를 자유롭게 지정(기본 10명) 가능. 입력값이 confirm 다이얼로그와 로그 메시지에 반영되며, 백엔드에 `count` 파라미터로 전달. 통합 시뮬레이션 패널에 "단계5-1: 멤버십 더미 삭제" 버튼 신규 추가(단계5 마감과 단계6 취소표 생성 사이). 통합 모드에서 `closed` 스테이지 이후 활성화
+
+## [2026-09-21 13:00] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/pages/admin.js]**: 공연 개별 삭제 및 5개씩 일괄 삭제 버튼을 요청 즉시 비활성화하고 `삭제 중...` 상태로 표시하도록 수정했습니다. 서버 오류·504·네트워크 오류처럼 삭제 결과가 불명확한 경우 `삭제 확인 필요` 상태를 유지해 사용자가 중복 삭제 요청을 보내지 않도록 했습니다. JSON이 아닌 게이트웨이 오류 응답도 안전하게 처리하고, 4xx 오류에 대해서만 버튼을 다시 활성화합니다.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 공연 삭제 요청이 `504 Gateway Timeout`으로 표시된 뒤 버튼이 다시 활성화되어 사용자가 같은 삭제 버튼을 여러 번 클릭할 수 있었습니다.
+- **원인(Cause):** 삭제 API는 Redis 좌석·대기열과 MariaDB 관련 데이터를 한 요청에서 순차적으로 정리합니다. 게이트웨이가 먼저 timeout을 반환해도 백엔드 삭제가 계속 진행될 수 있는데, 기존 프론트엔드는 오류 발생 즉시 버튼을 재활성화했습니다. 또한 504 HTML 응답을 JSON으로 바로 파싱하려고 했습니다.
+- **해결(Solution):** 응답 JSON 파싱에 안전한 fallback을 추가하고 HTTP 상태 코드를 오류 객체에 보존했습니다. 5xx·네트워크 오류는 결과 확인 전까지 버튼을 비활성화한 채 `삭제 확인 필요`를 표시하며, 4xx 오류만 재시도할 수 있도록 버튼을 복구합니다.
+
 ## [2026-09-21 09:39] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

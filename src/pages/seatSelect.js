@@ -141,7 +141,7 @@ export const seatSelectPage = {
             <div class="order-rail__zones" data-zone-nav></div>
             <div class="order-rail__order" data-order-box>
               <div class="order-rail__title">선택 좌석 정보</div>
-              <div class="order-rail__empty">보라색 좌석 중 원하는 자리를 선택해주세요</div>
+              <div class="order-rail__empty">등급 색상 좌석 중 원하는 자리를 선택해주세요</div>
             </div>
           </div>
         </div>
@@ -413,7 +413,7 @@ export const seatSelectPage = {
     function renderRailEmpty() {
       orderBox.innerHTML = `
         <div class="order-rail__title">선택 좌석 정보</div>
-        <div class="order-rail__empty">보라색 좌석 중 원하는 자리를 선택해주세요</div>
+        <div class="order-rail__empty">등급 색상 좌석 중 원하는 자리를 선택해주세요</div>
       `;
     }
 

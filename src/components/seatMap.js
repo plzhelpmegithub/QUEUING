@@ -27,12 +27,23 @@ const SEAT_BORDER = '#5E35D8';
 const MINE_FILL = '#E31B23';
 const MINE_BORDER = '#B5121B';
 const BAND_COLOR = '#9E9E9E';
+const OLYMPIC_GRADE_COLOR = Object.freeze({
+  VIP: '#B5121B',
+  R: '#C98500',
+  S: '#199E70',
+  A: '#3987E5',
+});
 
 function hexToRgba(hex, alpha) {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function getOlympicSeatColor(seat, gradeColorMap) {
+  const grade = String(seat?.grade || '').replace(/석$/, '').trim().toUpperCase();
+  return OLYMPIC_GRADE_COLOR[grade] || gradeColorMap[seat?.grade] || SEAT_FILL;
 }
 
 // ── Layout (rectangular grid) ──────────────────────────────────────
@@ -522,6 +533,7 @@ export function mountSeatMap(el, {
   cancelMode = false,
   readOnly = false,
   selectionOnly = false,
+  hideHoldingLegend = false,
   venue,
 }) {
   const isOlympicHall = venue === '올림픽홀';
@@ -552,7 +564,7 @@ export function mountSeatMap(el, {
          <span class="vm-legend__item"><span class="vm-legend__dot" style="background:${MINE_FILL};border-color:${MINE_BORDER}"></span>선점 완료</span>`
     : `<span class="vm-legend__item">선택 가능 (구역별 색상은 우측 목록 참고)</span>
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:${MINE_FILL};border-color:${MINE_BORDER}"></span>내 좌석</span>
-       <span class="vm-legend__item"><span class="vm-legend__dot" style="background:#F0A030;border-color:#C88010"></span>선택중</span>
+       ${hideHoldingLegend ? '' : '<span class="vm-legend__item"><span class="vm-legend__dot" style="background:#F0A030;border-color:#C88010"></span>선택중</span>'}
        <span class="vm-legend__item"><span class="vm-legend__dot" style="background:#BCBCBC;border-color:#999"></span>매진</span>`;
 
   el.innerHTML = `
@@ -693,7 +705,7 @@ export function mountSeatMap(el, {
       if (status === 'holding') { holdArr.push(ls); continue; }
       if (status === 'mine') { mineArr.push(ls); continue; }
       // 취소표 Last 화면은 공용 풀에 포함된 AVAILABLE 좌석을
-      // 현재 순번이 아니더라도 보라색으로 보여준다. 선택 가능 여부는
+      // 현재 순번이 아니더라도 등급 색상으로 보여준다. 선택 가능 여부는
       // selectable로 별도 차단하므로, 실제 매진/비공개 좌석과 혼동하지 않는다.
       if (seat && seat.selectable === false && !seat.keepAvailableVisual) { disabledArr.push(ls); continue; }
       if (isOH) {
@@ -708,7 +720,7 @@ export function mountSeatMap(el, {
     if (showSeats) {
 
     if (isOH) {
-      // ── Olympic Hall: uniform purple circles (per-seat size) ──
+      // ── Olympic Hall: grade-colored circles (per-seat size) ──
       const drawOHCircle = (seat, fill, stroke, lineWidth, size = 1) => {
         const sw = (seat._sw || OH_SEAT_W) * size;
         const sh = (seat._sh || OH_SEAT_H) * size;
@@ -728,8 +740,10 @@ export function mountSeatMap(el, {
 
       // Available
       for (let i = 0; i < availArr.length; i++) {
-        // 보라색 계열은 유지하되, 배경은 연하게 표시한다.
-        drawOHCircle(availArr[i], hexToRgba(SEAT_FILL, 0.2), hexToRgba(SEAT_BORDER, 0.9), 1);
+        const seat = availArr[i];
+        const color = getOlympicSeatColor(seat, gradeColorMap);
+        // 좌석 크기·테두리·투명도는 유지하고 등급에 해당하는 색상만 적용한다.
+        drawOHCircle(seat, hexToRgba(color, 0.2), hexToRgba(color, 0.9), 1);
       }
 
       // Sold
@@ -908,14 +922,15 @@ export function mountSeatMap(el, {
         ctx.save();
         if (isOH) {
           const hw = (hoveredSeat._sw || 10) + 2, hh = (hoveredSeat._sh || 10) + 2;
+          const color = getOlympicSeatColor(hoveredSeat, gradeColorMap);
           ctx.translate(hoveredSeat._x, hoveredSeat._y);
           ctx.rotate(hoveredSeat._angle || 0);
           ctx.shadowColor = 'rgba(0,0,0,0.2)';
           ctx.shadowBlur = 6;
-          ctx.fillStyle = hexToRgba(SEAT_FILL, 0.5);
+          ctx.fillStyle = hexToRgba(color, 0.5);
           ctx.fillRect(-hw / 2, -hh / 2, hw, hh);
           ctx.shadowBlur = 0;
-          ctx.strokeStyle = hexToRgba(SEAT_FILL, 0.9);
+          ctx.strokeStyle = hexToRgba(color, 0.9);
           ctx.lineWidth = 1.5;
           ctx.strokeRect(-hw / 2 - 1, -hh / 2 - 1, hw + 2, hh + 2);
         } else {

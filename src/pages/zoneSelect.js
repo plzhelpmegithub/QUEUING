@@ -178,12 +178,14 @@ function renderZoneSeatPage(container, eventId, focusZoneId) {
         ? storedLayout.map((z) => {
           const zoneId = z.name || z.id;
           const mapped = olympicGradeByZone.get(zoneId);
+          const resolvedGrade = mapped?.grade || z.grade || zoneId;
           return {
             ...z,
             id: zoneId,
             name: zoneId,
-            grade: mapped?.grade || z.grade || zoneId,
+            grade: resolvedGrade,
             label: mapped?.label || z.label || `${zoneId}구역`,
+            color: GRADE_COLOR[resolvedGrade],
           };
         })
         : storedLayout;

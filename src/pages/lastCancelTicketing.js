@@ -79,8 +79,6 @@ export const lastCancelTicketingPage = {
       if (countdown) clearInterval(countdown);
       if (pollTimer) clearInterval(pollTimer);
       seatMapApi?.destroy();
-      // 화면을 닫아도 Secret Link 자체는 만료시키지 않는다. 실제로 서버에
-      // 선점한 좌석만 풀어, 같은 링크로 다시 접속해 다른 좌석을 고를 수 있게 한다.
       if ((authToken || rawToken) && serverHeldSeatId && !completed) {
         fetch('/last-simulation/release', {
           method: 'POST', headers: lastHeaders(authToken), keepalive: true,
@@ -364,11 +362,8 @@ export const lastCancelTicketingPage = {
         <main class="last-ticketing last-ticketing--state">
           <div class="last-ticketing__ticket">✅</div>
           <h1>취소표 예매가 완료되었습니다</h1>
-          <p>${escapeHtml(eventName)} 예매가 확정되었습니다.<br/>${emailSent ? '예매 완료 안내 메일도 발송했습니다.' : '예매내역은 마이페이지에서 바로 확인할 수 있습니다.'}</p>
-          <div class="last-ticketing__state-actions"><button type="button" class="last-ticketing__primary" data-last-bookings>예매내역 확인</button><button type="button" class="last-ticketing__secondary" data-last-home>메인으로</button></div>
+          <p>${escapeHtml(eventName)} 예매가 확정되었습니다.<br/>${emailSent ? '예매 완료 안내 메일도 발송했습니다.' : ''}<br/>이 창을 닫으셔도 됩니다.</p>
         </main>`;
-      container.querySelector('[data-last-bookings]')?.addEventListener('click', () => navigate('mypage/bookings'));
-      container.querySelector('[data-last-home]')?.addEventListener('click', () => navigate(''));
     }
 
     async function passToNextCandidate(data) {

@@ -133,9 +133,7 @@ export const homePage = {
           <div>공연일<b>${formatDateRange(c.dateStart, c.dateEnd)}</b></div>
           <div>공연장<b>${c.venue}</b></div>
         </div>
-        <button class="btn btn-primary btn-lg" data-book>예매하기</button>
       `;
-      infoEl.querySelector('[data-book]').addEventListener('click', () => navigate(`concert/${c.id}`));
       dots.forEach((d, i) => d.classList.toggle('active', i === idx));
     }
 
@@ -158,6 +156,17 @@ export const homePage = {
 
     paintNow();
     const timer = setInterval(() => goTo(idx + 1), 5000);
+
+    const heroEl = container.querySelector('[data-slider]');
+    if (heroEl) {
+      heroEl.style.cursor = 'pointer';
+      heroEl.addEventListener('click', (e) => {
+        if (e.target.closest('[data-prev], [data-next], [data-dot]')) return;
+        const c = SLIDES[idx];
+        if (c) navigate(`concert/${c.id}`);
+      });
+    }
+
     container.querySelector('[data-next]').addEventListener('click', () => goTo(idx + 1));
     container.querySelector('[data-prev]').addEventListener('click', () => goTo(idx - 1));
     dots.forEach((d) => d.addEventListener('click', () => goTo(Number(d.dataset.dot))));

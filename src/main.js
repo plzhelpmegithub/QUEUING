@@ -38,7 +38,7 @@ registerRoute(/^queue\/(?<id>[\w-]+)$/, queuePage);
 registerRoute(/^zones\/(?<id>[\w-]+)$/, zoneSelectPage);
 registerRoute(/^seats\/(?<id>[\w-]+)\/(?<zoneId>[\w-]+)$/, seatSelectPage);
 registerRoute(/^payment\/(?<type>regular|cancel)$/, paymentPage);
-registerRoute(/^complete\/(?<id>[\w-]+)$/, bookingCompletePage);
+registerRoute(/^complete\/(?<id>[^/]+)$/, bookingCompletePage);
 // 이전 취소표 상세 URL도 마이페이지의 읽기 전용 대기열 목록으로만 이동한다.
 registerRoute(/^cancel-queue\/(?<id>[\w-]+)$/, {
   render(_, params) {

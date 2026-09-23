@@ -66,6 +66,12 @@ export async function fetchMyCancelQueues() {
   return getJson('/cancel-queue/mine');
 }
 
+// 수동으로 취소표 순번을 넘긴 내역. 실제 결제/환불과 구분되는 안내 기록이지만
+// 마이페이지의 취소·환불내역 탭에서 함께 보여 준다.
+export async function fetchMyCancelQueueHistory() {
+  return getJson('/cancel-queue/history/mine');
+}
+
 export async function fetchCancelPool(eventId, context = {}) {
   const params = new URLSearchParams(context);
   const suffix = params.toString() ? `?${params.toString()}` : '';

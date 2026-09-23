@@ -66,6 +66,7 @@ export const bCancelTicketingPage = {
     const querySessionDate = query?.sessionDate || '';
     const querySessionTime = query?.sessionTime || '';
     let destroyed = false;
+
     let countdown = null;
     let seatMapApi = null;
     let allocation = null;
@@ -90,9 +91,11 @@ export const bCancelTicketingPage = {
           <div class="last-ticketing__ticket" aria-hidden="true">${icon}</div>
           <h1>${escapeHtml(title)}</h1>
           <p>${escapeHtml(body)}</p>
-          <button type="button" class="last-ticketing__primary" data-b-state-action>${escapeHtml(actionLabel)}</button>
+          ${actionLabel ? `<button type="button" class="last-ticketing__primary" data-b-state-action>${escapeHtml(actionLabel)}</button>` : ''}
         </main>`;
-      container.querySelector('[data-b-state-action]')?.addEventListener('click', () => navigate(actionPath));
+      if (actionLabel) {
+        container.querySelector('[data-b-state-action]')?.addEventListener('click', () => navigate(actionPath));
+      }
     }
 
     async function ensureBSession() {
@@ -133,6 +136,7 @@ export const bCancelTicketingPage = {
           allocationId: allocation.allocationId || allocation.id,
           sessionDate: allocation.sessionDate || querySessionDate,
           sessionTime: allocation.sessionTime || querySessionTime,
+          reason,
         },
       );
       if (!result.ok || !result.data?.success) {
@@ -148,7 +152,8 @@ export const bCancelTicketingPage = {
         reason === 'timeout' ? '입장 시간이 만료되었습니다' : '다음 순번에게 기회를 넘겼습니다',
         reason === 'timeout'
           ? 'Secret Link 사용 시간이 종료되어 다음 대기자에게 기회가 넘어갑니다.'
-          : '현재 할당을 종료했고 B파트가 다음 대기자를 처리합니다.',
+          : '이 창을 닫으셔도 됩니다.',
+        reason === 'timeout' ? '취소표 대기열로' : '',
       );
       return true;
     }
@@ -196,11 +201,8 @@ export const bCancelTicketingPage = {
         <main class="last-ticketing last-ticketing--state">
           <div class="last-ticketing__ticket">✅</div>
           <h1>취소표 예매가 완료되었습니다</h1>
-          <p>${escapeHtml(eventName)} 예매가 확정되었습니다.<br/>${emailSent ? '예매 완료 안내 메일도 발송했습니다.' : '예매내역은 마이페이지에서 바로 확인할 수 있습니다.'}</p>
-          <div class="last-ticketing__state-actions"><button type="button" class="last-ticketing__primary" data-b-bookings>예매내역 확인</button><button type="button" class="last-ticketing__secondary" data-b-home>메인으로</button></div>
+          <p>${escapeHtml(eventName)} 예매가 확정되었습니다.<br/>${emailSent ? '예매 완료 안내 메일도 발송했습니다.' : ''}<br/>이 창을 닫으셔도 됩니다.</p>
         </main>`;
-      container.querySelector('[data-b-bookings]')?.addEventListener('click', () => navigate('mypage/bookings'));
-      container.querySelector('[data-b-home]')?.addEventListener('click', () => navigate(''));
     }
 
     function renderPaymentStep(event, userId) {
@@ -217,7 +219,7 @@ export const bCancelTicketingPage = {
       container.innerHTML = `
         <style>${lastTicketingStyles()}</style>
         <main class="last-ticketing">
-          <header class="last-ticketing__top"><span class="last-ticketing__brand">QUEUING</span><span>B-PART · CANCEL TICKETING</span></header>
+          <header class="last-ticketing__top"><span class="last-ticketing__brand">QUEUING</span></header>
           <div class="last-ticketing__shell">
             <div class="last-ticketing__stage">
               <section class="last-ticketing__hero last-ticketing__hero--compact">
@@ -334,9 +336,6 @@ export const bCancelTicketingPage = {
           paymentMethod,
           paidAt: Date.now(),
         });
-        // confirmSeat() 백엔드가 이미 markRespondedById()로 allocation을
-        // RESPONDED 처리하므로, 프론트에서 expire를 호출하지 않는다.
-        // expireCancelAllocation을 호출하면 RESPONDED → EXPIRED로 덮어씌워진다.
         await loadCancelQueuesFromServer().catch(() => {});
         renderCompleted(eventName, data.emailSent);
       });
@@ -404,12 +403,12 @@ export const bCancelTicketingPage = {
         container.innerHTML = `
           <style>${lastTicketingStyles()}</style>
           <main class="last-ticketing">
-            <header class="last-ticketing__top"><span class="last-ticketing__brand">QUEUING</span><span>B-PART · CANCEL TICKETING</span></header>
+            <header class="last-ticketing__top"><span class="last-ticketing__brand">QUEUING</span></header>
             <div class="last-ticketing__shell">
               <div class="last-ticketing__stage">
                 <section class="last-ticketing__hero">
                   <div class="last-ticketing__ticket" aria-hidden="true">🎟️</div>
-                  <div><p class="last-ticketing__eyebrow">SECRET LINK · B WORKFLOW</p><h1>취소표 예매</h1><p>${escapeHtml(event.eventName || eventId)}<br/>${escapeHtml(sessionDate)} · ${escapeHtml(sessionTime)}</p></div>
+                  <div><p class="last-ticketing__eyebrow">SECRET LINK</p><h1>취소표 예매</h1><p>${escapeHtml(event.eventName || eventId)}<br/>${escapeHtml(sessionDate)} · ${escapeHtml(sessionTime)}</p></div>
                 </section>
                 <section class="last-ticketing__notice" data-b-notice aria-live="polite"><b>Secret Link가 확인되었습니다.</b> 취소표 좌석 1개를 선택해주세요.</section>
                 <section class="last-ticketing__content">
@@ -464,6 +463,7 @@ export const bCancelTicketingPage = {
           },
           cancelMode: true,
           selectionOnly: Boolean(assignedSeatId),
+          hideHoldingLegend: true,
           venue: event.venue,
         });
         refreshSelection();
@@ -516,7 +516,7 @@ export const bCancelTicketingPage = {
       }
     }
 
-    container.innerHTML = `<style>${lastTicketingStyles()}</style><main class="last-ticketing last-ticketing--state" aria-live="polite"><div class="last-ticketing__ticket" aria-hidden="true">🔐</div><h1>링크 확인 중</h1><p>B파트 취소표 예매 권한과 회차 정보를 확인하고 있습니다.</p></main>`;
+    container.innerHTML = `<style>${lastTicketingStyles()}</style><main class="last-ticketing last-ticketing--state" aria-live="polite"><div class="last-ticketing__ticket" aria-hidden="true">🔐</div><h1>링크 확인 중</h1><p>취소표 예매 권한과 회차 정보를 확인하고 있습니다.</p></main>`;
     load();
 
     return () => {
