@@ -1873,31 +1873,22 @@ async function simulationRoutes(fastify, options = {}) {
            AND session_time = ?`,
         [`${simMemberPrefix(mode)}%`, eventId, context.sessionDate, context.sessionTime],
       );
-      if (trackedUsers.length > 0) {
-        const placeholders = trackedUsers.map(() => '?').join(',');
-        await pool.query(
-          `DELETE FROM waiting_queue
-           WHERE user_id IN (${placeholders})
-             AND event_id = ?
-             AND session_date = ?
-             AND session_time = ?
-             AND queue_type = 'standby'`,
-          [...trackedUsers, context.eventId, context.sessionDate, context.sessionTime],
-        );
-      }
-      if (mode === 'local' && simData?.targetUserId) {
-        await pool.query(
-          `UPDATE cancel_allocations
-           SET status = 'EXPIRED'
-           WHERE user_id = ?
-             AND event_id = ?
-             AND session_date = ?
-             AND session_time = ?
-             AND status = 'LINK_SENT'`,
-          [simData.targetUserId, context.eventId, context.sessionDate, context.sessionTime],
-        );
-      }
-      await pool.query('DELETE FROM cancel_allocations WHERE user_id LIKE ? AND event_id = ?', [`${simUserPrefix(mode)}%`, eventId]);
+      await pool.query(
+        `DELETE FROM waiting_queue
+         WHERE event_id = ?
+           AND session_date = ?
+           AND session_time = ?
+           AND user_id NOT LIKE ?
+           AND user_id NOT LIKE ?`,
+        [context.eventId, context.sessionDate, context.sessionTime, `${simUserPrefix(mode)}%`, `${simMemberPrefix(mode)}%`],
+      );
+      await pool.query(
+        `DELETE FROM cancel_allocations
+         WHERE event_id = ?
+           AND session_date = ?
+           AND session_time = ?`,
+        [context.eventId, context.sessionDate, context.sessionTime],
+      );
       if (context.sessionDate && context.sessionTime) {
         const lockKey = `${eventId}|${context.sessionDate}|${context.sessionTime}`;
         await pool.query('DELETE FROM cancel_active_lock WHERE lock_key = ?', [lockKey]);

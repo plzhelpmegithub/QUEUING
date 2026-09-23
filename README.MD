@@ -445,12 +445,40 @@ MariaDB를 원본 데이터로 보고 Redis의 필수 상태를 자동으로 맞
 - **관리자 변경 보존 (periodic 안전 모드)**: periodic 복구는 API의 실시간 변경을 덮어쓰지 않도록 최소한의 작업만 수행 — `events:list`는 누락 카드 추가/stale 카드 제거만, `event:info`는 누락 시에만 재생성, `event:ticketing-status`는 존재 시 스킵. startup/manual/forced 복구에서는 기존대로 전체 재구축
 - **마감 상태 인식**: `restoreTicketingState()`가 `status === 'closed'`인 이벤트도 마감 상태를 유지 (cancelled뿐 아니라 관리자 마감도 존중)
 
+**일시 정지/재개 (관리자 워커 제어):**
+- `pauseAutoRecovery()`: 현재 interval을 저장하고 타이머 해제. 공연 삭제·시뮬레이션 데이터 삭제 중 복구가 삭제 데이터를 되살리는 것을 방지
+- `resumeAutoRecovery()`: 저장된 interval로 타이머 재생성
+- `isAutoRecoveryRunning()`: 현재 실행 여부 반환
+
 자동 복구 관련 환경변수:
 
 | 변수 | 기본값 | 설명 |
 |---|---:|---|
 | `REDIS_RECOVERY_ATTEMPTS` | `3` | 시작/복구 실패 시 재시도 횟수 |
 | `REDIS_RECOVERY_INTERVAL_MS` | `300000` | Redis 정합성 점검 주기(밀리초, 최소 5000) |
+
+---
+
+### src/services/syncRetryService.js — 동기화 재시도 워커
+
+Redis→MariaDB 쓰기 실패 시 재시도 큐를 관리한다.
+
+- `syncToMariaDB()`: MariaDB 쓰기 실패 시 `sync:retry` Redis 리스트에 자동 적재
+- 30초 간격으로 큐를 폴링하여 최대 3회 재시도, 초과 시 최종 실패 로깅
+- 배치당 최대 50건 처리
+- **일시 정지/재개**: `pauseRetryWorker()`, `resumeRetryWorker()`, `isRetryWorkerRunning()` 함수 제공 (현재 어드민 API에서는 사용하지 않음)
+
+---
+
+### Auto Recovery 관리 API (eventRoutes.js)
+
+어드민 페이지에서 Redis Auto Recovery를 일시 정지/재개한다. 공연 삭제·시뮬레이션 데이터 삭제 시 Auto Recovery가 삭제된 데이터를 MariaDB에서 Redis로 되살리는 것을 방지하기 위해 사용한다. SyncRetry Worker(Redis→MariaDB 방향)는 삭제와 무관하므로 제어하지 않는다.
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `GET` | `/admin/workers/status` | Auto Recovery 실행 상태 반환 (`recovery` boolean) |
+| `POST` | `/admin/workers/pause` | Auto Recovery 정지 |
+| `POST` | `/admin/workers/resume` | Auto Recovery 재개 |
 
 ---
 

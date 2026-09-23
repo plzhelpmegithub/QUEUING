@@ -1,3 +1,31 @@
+## [2026-09-23 22:30] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/eventRoutes.js]**: `deleteEventData()` 함수를 per-step try/catch 방식으로 개선. Redis 이벤트 목록·좌석·큐 삭제와 MariaDB 테이블별 삭제(wishlists, cancel_allocations, waiting_queue, seats, reservations, events)를 각각 독립적으로 실행하여 한 단계가 실패해도 나머지가 계속 진행됨. 응답에 `warnings` 배열과 `details` 객체를 추가하여 어떤 단계가 성공/실패했는지 반환.
+- **[src/routes/eventRoutes.js]**: 워커 관리 API에서 SyncRetry Worker 제어 제거. Auto Recovery만 정지/재개하도록 단순화. SyncRetry Worker(Redis→MariaDB 방향)는 공연 삭제 시 데이터 부활과 무관하므로 정지할 필요 없음. `syncRetryService` import 제거.
+
+---
+
+## [2026-09-23 22:10] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/services/redisRecoveryService.js]**: `pauseAutoRecovery()`, `resumeAutoRecovery()`, `isAutoRecoveryRunning()` 함수 추가. 5분 주기 Redis Auto Recovery를 일시 정지/재개할 수 있도록 구현. 정지 시 interval을 저장해두고, 재개 시 동일 interval로 복원.
+- **[src/services/syncRetryService.js]**: `pauseRetryWorker()`, `resumeRetryWorker()`, `isRetryWorkerRunning()` 함수 추가. 30초 주기 SyncRetry Worker를 일시 정지/재개할 수 있도록 구현.
+- **[src/routes/eventRoutes.js]**: 워커 관리 API 3개 추가 — `GET /admin/workers/status` (현재 워커 실행 상태 조회), `POST /admin/workers/pause` (두 워커 동시 정지), `POST /admin/workers/resume` (두 워커 동시 재개). 모두 `adminAuth` 미들웨어 적용.
+
+---
+
+## [2026-09-23 19:54] 업데이트 로그
+
+### 🔄 변경 및 수정 사항
+- **[src/routes/simulationRoutes.js]**: 시뮬레이션 cleanup(`/cleanup`) 시 `waiting_queue`와 `cancel_allocations` 테이블에서 해당 이벤트+세션의 실제 유저 기록도 함께 삭제하도록 변경. 기존에는 `sim-user-%`, `sim-member-%` 더미 유저만 삭제하고 실제 유저 기록은 남겨두어, 같은 공연으로 시뮬레이션을 반복 실행하면 이전 standby 기록이 잔존하여 B파트 링크 후보에 의도치 않게 잡히는 문제가 있었음.
+- **[src/routes/eventRoutes.js]**: 공연 삭제(`deleteEventData`) 시 `waiting_queue` 테이블도 함께 삭제하도록 추가. 기존에는 wishlists, cancel_allocations, seats, reservations, events만 삭제하고 waiting_queue는 누락되어 있었음.
+
+### 🛠 트러블슈팅 (Troubleshooting)
+- **증상(Issue):** 같은 공연으로 시뮬레이션을 반복 실행 시, 이전 시뮬레이션에서 취소표 대기열에 진입했던 실제 유저(`ggreang514@gmail.com`)가 cleanup 후에도 B파트 링크 후보로 잡힘
+- **원인(Cause):** cleanup이 `waiting_queue`에서 더미 유저(`sim-user-%`, `sim-member-%`)와 `trackedUsers`의 standby 행만 삭제하고, 실제 유저의 `eligible`/`standby` 행은 삭제하지 않았음. B파트 Lambda의 `GetNextUser`가 `waiting_queue`를 직접 조회하므로 잔존 기록이 후보로 선택됨
+- **해결(Solution):** cleanup 시 해당 `event_id + session_date + session_time` 조건으로 `waiting_queue`와 `cancel_allocations`의 모든 행을 삭제하도록 변경 (더미 유저는 앞선 쿼리에서 이미 삭제됨)
+
 ## [2026-09-23 10:38] 업데이트 로그
 
 ### 🔄 변경 및 수정 사항

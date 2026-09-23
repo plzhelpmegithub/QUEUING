@@ -415,11 +415,37 @@ function stopAutoRecovery() {
   }
 }
 
+let pausedIntervalMs = null;
+
+function pauseAutoRecovery() {
+  if (!recoveryTimer) return false;
+  pausedIntervalMs = Number(process.env.REDIS_RECOVERY_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
+  stopAutoRecovery();
+  console.log('[Redis Auto Recovery] 일시 정지');
+  return true;
+}
+
+function resumeAutoRecovery() {
+  if (recoveryTimer) return false;
+  if (!pausedIntervalMs) return false;
+  startAutoRecovery(pausedIntervalMs);
+  pausedIntervalMs = null;
+  console.log('[Redis Auto Recovery] 재개');
+  return true;
+}
+
+function isAutoRecoveryRunning() {
+  return recoveryTimer !== null;
+}
+
 module.exports = {
   recoverAll,
   recoverWithRetry,
   startAutoRecovery,
   stopAutoRecovery,
+  pauseAutoRecovery,
+  resumeAutoRecovery,
+  isAutoRecoveryRunning,
   inspectRedisState,
   eventCardFromRow,
 };

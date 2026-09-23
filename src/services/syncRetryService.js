@@ -85,4 +85,27 @@ function stopRetryWorker() {
   if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
 }
 
-module.exports = { syncToMariaDB, processRetryQueue, startRetryWorker, stopRetryWorker };
+let pausedRetryIntervalMs = null;
+
+function pauseRetryWorker() {
+  if (!retryTimer) return false;
+  pausedRetryIntervalMs = 30000;
+  stopRetryWorker();
+  console.log('[SyncRetry] Worker 일시 정지');
+  return true;
+}
+
+function resumeRetryWorker() {
+  if (retryTimer) return false;
+  if (!pausedRetryIntervalMs) return false;
+  startRetryWorker(pausedRetryIntervalMs);
+  pausedRetryIntervalMs = null;
+  console.log('[SyncRetry] Worker 재개');
+  return true;
+}
+
+function isRetryWorkerRunning() {
+  return retryTimer !== null;
+}
+
+module.exports = { syncToMariaDB, processRetryQueue, startRetryWorker, stopRetryWorker, pauseRetryWorker, resumeRetryWorker, isRetryWorkerRunning };

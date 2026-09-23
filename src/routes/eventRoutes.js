@@ -2,7 +2,8 @@ const redis = require('../config/redis');
 const pool = require('../config/mariadb');
 const queueService = require('../services/queueService');
 const seatService = require('../services/seatService');
-const { recoverAll } = require('../services/redisRecoveryService');
+const { recoverAll, pauseAutoRecovery, resumeAutoRecovery, isAutoRecoveryRunning } = require('../services/redisRecoveryService');
+const { pauseRetryWorker, resumeRetryWorker, isRetryWorkerRunning } = require('../services/syncRetryService');
 const { sendEmail, notifyEventCancellation, notifyEventUpdate } = require('../services/notificationService');
 const { publishSeatEvent, EVENT_TYPE } = require('../services/eventService');
 const { buildSeatId } = require('../services/sessionContext');
@@ -99,34 +100,82 @@ function assignZoneGeometry(sections) {
 // 이벤트 1건의 Redis 좌석/목록과 MariaDB 연동 데이터를 정리한다.
 // 배치 삭제에서도 이 함수를 순차 호출해 Redis·DB에 순간 부하가 몰리지 않게 한다.
 async function deleteEventData(eventId) {
-  const removed = await redis.hdel(EVENT_LIST_KEY, eventId);
+  const warnings = [];
+  const details = {};
 
-  const deletedSeats = await seatService.cleanupEventSeats(eventId);
-  await queueService.clearQueuesForEvent(eventId);
-  let dbSynced = true;
+  let removed = 0;
+  try {
+    removed = await redis.hdel(EVENT_LIST_KEY, eventId);
+    details.redisEventList = true;
+  } catch (err) {
+    details.redisEventList = false;
+    warnings.push(`Redis 이벤트 목록 삭제 실패: ${err.message}`);
+  }
+
+  try {
+    const deletedSeats = await seatService.cleanupEventSeats(eventId);
+    details.redisSeats = true;
+    details.deletedSeats = deletedSeats.deleted;
+  } catch (err) {
+    details.redisSeats = false;
+    warnings.push(`Redis 좌석 키 삭제 실패: ${err.message}`);
+  }
+
+  try {
+    await queueService.clearQueuesForEvent(eventId);
+    details.redisQueues = true;
+  } catch (err) {
+    details.redisQueues = false;
+    warnings.push(`Redis 큐 삭제 실패: ${err.message}`);
+  }
+
+  const dbSteps = [
+    { key: 'dbWishlists', query: `DELETE FROM wishlists WHERE event_id = ?`, label: 'wishlists' },
+    { key: 'dbCancelAllocations', query: `DELETE FROM cancel_allocations WHERE event_id = ?`, label: 'cancel_allocations' },
+    { key: 'dbWaitingQueue', query: `DELETE FROM waiting_queue WHERE event_id = ?`, label: 'waiting_queue' },
+    { key: 'dbSeats', query: `DELETE FROM seats WHERE event_id = ?`, label: 'seats' },
+    { key: 'dbReservations', query: `DELETE FROM reservations WHERE event_id = ?`, label: 'reservations' },
+  ];
+
+  for (const step of dbSteps) {
+    try {
+      await pool.query(step.query, [eventId]);
+      details[step.key] = true;
+    } catch (err) {
+      details[step.key] = false;
+      warnings.push(`${step.label} 삭제 실패: ${err.message}`);
+    }
+  }
+
   let dbDeleted = false;
   try {
-    await pool.query(`DELETE FROM wishlists WHERE event_id = ?`, [eventId]);
-    await pool.query(`DELETE FROM cancel_allocations WHERE event_id = ?`, [eventId]);
-    await pool.query(`DELETE FROM seats WHERE event_id = ?`, [eventId]);
-    await pool.query(`DELETE FROM reservations WHERE event_id = ?`, [eventId]);
     const evtResult = await pool.query(`DELETE FROM events WHERE event_id = ?`, [eventId]);
     dbDeleted = (Number(evtResult.affectedRows) || 0) > 0;
-  } catch (dbErr) {
-    dbSynced = false;
-    console.error('[Event] MariaDB 삭제 동기화 실패:', dbErr.message);
+    details.dbEvents = true;
+  } catch (err) {
+    details.dbEvents = false;
+    warnings.push(`events 삭제 실패: ${err.message}`);
   }
 
   if (removed === 0 && !dbDeleted) {
     return { success: false, eventId, statusCode: 404, message: '해당 이벤트가 없습니다.' };
   }
 
+  const dbSynced = warnings.length === 0;
+  if (warnings.length > 0) {
+    console.error(`[Event] ${eventId} 삭제 부분 실패:`, warnings.join(' | '));
+  }
+
   return {
     success: true,
     eventId,
-    deletedSeats: deletedSeats.deleted,
+    deletedSeats: details.deletedSeats || 0,
     dbSynced,
-    message: dbSynced ? '이벤트가 삭제되었습니다.' : 'Redis에서는 삭제했지만 MariaDB 동기화에 실패했습니다.',
+    warnings,
+    details,
+    message: dbSynced
+      ? '이벤트가 삭제되었습니다.'
+      : `이벤트가 삭제되었지만 일부 정리에 실패했습니다 (${warnings.length}건).`,
   };
 }
 
@@ -942,6 +991,34 @@ async function eventRoutes(fastify) {
       `,
     );
     return reply.send(result);
+  });
+  fastify.get('/admin/workers/status', adminAuth, async (request, reply) => {
+    return reply.send({
+      recovery: isAutoRecoveryRunning(),
+      syncRetry: isRetryWorkerRunning(),
+    });
+  });
+
+  fastify.post('/admin/workers/pause', adminAuth, async (request, reply) => {
+    const r1 = pauseAutoRecovery();
+    const r2 = pauseRetryWorker();
+    return reply.send({
+      success: true,
+      recovery: { paused: r1, running: isAutoRecoveryRunning() },
+      syncRetry: { paused: r2, running: isRetryWorkerRunning() },
+      message: '워커가 일시 정지되었습니다. 작업 완료 후 반드시 재개해주세요.',
+    });
+  });
+
+  fastify.post('/admin/workers/resume', adminAuth, async (request, reply) => {
+    const r1 = resumeAutoRecovery();
+    const r2 = resumeRetryWorker();
+    return reply.send({
+      success: true,
+      recovery: { resumed: r1, running: isAutoRecoveryRunning() },
+      syncRetry: { resumed: r2, running: isRetryWorkerRunning() },
+      message: '워커가 재개되었습니다.',
+    });
   });
 }
 
