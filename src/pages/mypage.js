@@ -648,7 +648,7 @@ export const myPage = {
               </div>
               <div class="membership-status-visual__copy">
                 <strong>${m ? '멤버십 활성화' : '멤버십 발사 대기'}</strong>
-                <span>${m ? '취소표 우선 예매 준비 완료' : '멤버십 가입 후 이용할 수 있습니다'}</span>
+                <span>${m ? '취소표 예매 준비 완료' : '멤버십 가입 후 이용할 수 있습니다'}</span>
               </div>
             </div>
             <div class="membership-status-actions">
@@ -663,9 +663,8 @@ export const myPage = {
           <div style="border-top:1px solid var(--color-border);margin-top:24px;padding-top:20px;">
             <h4 style="font-size:14px;font-weight:700;margin-bottom:12px;">멤버십 혜택</h4>
             <ul style="font-size:13px;color:var(--color-text-secondary);line-height:2;">
-              <li>취소표 대기열 우선 배정</li>
+              <li>마이페이지 취소표 대기열 순번 정보 제공</li>
               <li>Secret Link 전용 예매 기회</li>
-              <li>비회원 대비 빠른 순번 배정</li>
             </ul>
             <button class="btn btn-outline btn-block mt-24" style="color:var(--color-text-secondary);border-color:var(--color-border);" data-cancel-membership>멤버십 해지하기</button>
           </div>
@@ -679,7 +678,7 @@ export const myPage = {
           bodyHtml: `
             <p style="margin-bottom:14px;">멤버십을 해지하시면 다음 혜택을 더 이상 이용할 수 없습니다.</p>
             <ul style="font-size:13.5px;color:var(--color-text-secondary);line-height:2;margin-bottom:14px;">
-              <li>취소표 대기열 우선 배정</li>
+              <li>마이페이지 취소표 대기열 순번 정보 제공</li>
               <li>Secret Link 전용 예매 기회</li>
             </ul>
             <div class="notice-box"><p>해지 후 재가입은 언제든 가능합니다.</p></div>

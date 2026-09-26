@@ -252,6 +252,15 @@ input, select, textarea { font-family: inherit; }
   0%, 100% { text-shadow: 0 0 0 rgba(227,27,35,0); }
   50% { text-shadow: 0 0 18px rgba(227,27,35,0.45); }
 }
+.btn-attention {
+  animation: btnAttention 1.6s ease-in-out infinite;
+  border-color: #e74c3c !important;
+  color: #e74c3c !important;
+}
+@keyframes btnAttention {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(231,76,60,0.5); }
+  50% { box-shadow: 0 0 0 8px rgba(231,76,60,0); }
+}
 
 .shake {
   animation: shake .4s ease;

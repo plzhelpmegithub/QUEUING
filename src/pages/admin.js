@@ -327,6 +327,7 @@ function bindEventRowListeners(tbody, container) {
             return;
           }
           showToast({ title: `"${name}" 예매가 즉시 마감되었습니다`, type: 'success' });
+          addNotification({ title: '[즉시 마감] ' + name });
           refreshEventsList(container);
         })
         .catch(() => { showToast({ title: '즉시 마감 중 오류가 발생했습니다' }); btn.disabled = false; });
@@ -355,11 +356,13 @@ function bindEventRowListeners(tbody, container) {
           return result;
         })
         .then((result) => {
+          const hasWarnings = result.warnings?.length > 0;
           showToast({
-            title: result.dbSynced === false ? '공연은 삭제됐지만 DB 동기화 실패' : '공연이 삭제되었습니다',
-            body: name,
-            type: result.dbSynced === false ? 'default' : 'success',
+            title: hasWarnings ? `삭제 완료 (경고 ${result.warnings.length}건)` : '공연이 삭제되었습니다',
+            body: hasWarnings ? result.warnings.join(' / ') : name,
+            type: hasWarnings ? 'default' : 'success',
           });
+          addNotification({ title: '[공연 삭제] ' + name, body: hasWarnings ? `경고 ${result.warnings.length}건` : '삭제 완료' });
           refreshEventsList(container);
         })
         .catch((err) => {
@@ -539,6 +542,7 @@ function applyOpenTime(eventId, ticketOpenAt, successTitle, onSaved, clearClose 
         return;
       }
       showToast({ title: successTitle, body: result.message, type: 'success' });
+      addNotification({ title: '[오픈 시간] ' + successTitle, body: result.message });
       closeModal();
       onSaved?.();
     })
@@ -623,6 +627,7 @@ function applyCloseTime(eventId, ticketCloseAt, successTitle, onSaved) {
         return;
       }
       showToast({ title: successTitle, body: result.message, type: 'success' });
+      addNotification({ title: '[마감 시간] ' + successTitle, body: result.message });
       closeModal();
       onSaved?.();
     })
@@ -772,6 +777,7 @@ function openCreateEventModal(onCreated) {
           return;
         }
         showToast({ title: '공연이 생성되었습니다', body: result.message || `${eventName} 생성 완료`, type: 'success' });
+        addNotification({ title: '[공연 생성] ' + eventName, body: result.message || '생성 완료' });
         closeModal();
         onCreated?.();
       })
@@ -980,6 +986,29 @@ function initSimulationPanel(container, options = {}) {
     if (hidden) loadSimEvents();
   });
 
+  const guideToggle = panel.querySelector('[data-guide-toggle]');
+  const guideBody = panel.querySelector('[data-guide-body]');
+  if (guideToggle && guideBody) {
+    guideToggle.addEventListener('click', () => {
+      const hidden = guideBody.style.display === 'none';
+      guideBody.style.display = hidden ? 'block' : 'none';
+      guideToggle.textContent = hidden ? '테스트 가이드 닫기' : '테스트 가이드 보기';
+    });
+    guideBody.querySelectorAll('[data-guide-tab]').forEach((tabBtn) => {
+      tabBtn.addEventListener('click', () => {
+        guideBody.querySelectorAll('[data-guide-tab]').forEach((b) => {
+          const active = b === tabBtn;
+          b.style.background = active ? '#3498db' : '';
+          b.style.color = active ? '#fff' : '';
+          b.className = active ? 'btn btn-sm' : 'btn btn-outline btn-sm';
+        });
+        guideBody.querySelectorAll('[data-guide-content]').forEach((c) => {
+          c.style.display = c.dataset.guideContent === tabBtn.dataset.guideTab ? 'block' : 'none';
+        });
+      });
+    });
+  }
+
   function logMsg(msg) {
     logArea.style.display = 'block';
     const time = new Date().toLocaleTimeString('ko-KR');
@@ -1021,6 +1050,11 @@ function initSimulationPanel(container, options = {}) {
     if (btnLinks) btnLinks.disabled = manualActionDisabled || !canIssueLinks;
     btnInit.disabled = actionInProgress;
     btnCleanup.disabled = actionInProgress;
+    if (currentStage === 'link_requested' && !actionInProgress) {
+      btnCleanup.classList.add('btn-attention');
+    } else {
+      btnCleanup.classList.remove('btn-attention');
+    }
   }
 
   function renderStatus(data) {
@@ -1205,14 +1239,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '초기화 실패', body: r.error }); return; }
         simSuccess('시뮬레이션 초기화 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '초기화 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnInit.textContent = isFinal ? 'Final 시뮬레이션 초기화' : (isIntegrated ? '통합 시뮬레이션 초기화' : '시뮬레이션 초기화');
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1228,14 +1262,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '본 티켓팅 대기열 구성 실패', body: r.error }); return; }
         simSuccess('본 티켓팅 대기열 구성 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '본 티켓팅 대기열 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnMainQueue.textContent = '단계2: 본 티켓팅 대기열 구성';
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1252,14 +1286,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '좌석 선점 실패', body: r.error }); return; }
         simSuccess('좌석 선점 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '좌석 선점 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnPreempt.textContent = '좌석 선점';
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1277,14 +1311,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '대기열 드레인 실패', body: r.error }); return; }
         simSuccess('대기열 드레인 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '대기열 드레인 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnDrain.textContent = '단계3: 대기열 드레인';
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1301,14 +1335,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '매진 연출 실패', body: r.error }); return; }
         simSuccess('매진 연출 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '매진 연출 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnSellout.textContent = isIntegrated ? '단계4: 매진 및 취소표 전환' : '단계1: 매진 연출';
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1325,14 +1359,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '마감 실패', body: r.error }); return; }
         simSuccess('티켓팅 마감 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '마감 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnClose.textContent = isIntegrated ? '단계5: 티켓팅 마감' : '단계2: 조기 마감';
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1351,14 +1385,14 @@ function initSimulationPanel(container, options = {}) {
         if (isFinal) finalPoolSize = Number(r.cancelledCount || count) || count;
         simSuccess('좌석 취소 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '좌석 취소 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnCancel.textContent = isIntegrated ? '단계6: 취소표 생성' : '단계3: 취소표 생성';
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1375,14 +1409,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '일반 더미 이탈 실패', body: r.error }); return; }
         simSuccess('일반 더미 이탈 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '일반 더미 이탈 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnRemoveStandardDummies.textContent = '단계2-1: 일반 더미 전체 삭제';
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1401,14 +1435,14 @@ function initSimulationPanel(container, options = {}) {
         if (r.error) { showToast({ title: '더미 멤버십 삭제 실패', body: r.error }); return; }
         simSuccess('더미 멤버십 대기자 삭제 완료', r.message);
         logMsg(r.message);
-        return simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: '더미 멤버십 삭제 오류', body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnRemoveDummyMembers.textContent = `${stepLabel}: 멤버십 더미 삭제`;
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1462,14 +1496,15 @@ function initSimulationPanel(container, options = {}) {
           })
           : simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`);
       })
-      .then((s) => { if (s) renderStatus(s); })
       .catch((e) => showToast({ title: `${deliveryLabel} 링크 발급 오류`, body: e.message }))
       .finally(() => {
         actionInProgress = false;
         btnLinks.textContent = isFinal
           ? '단계4: Gmail SMTP Last 링크 발급'
           : (isLocal ? '단계4: Gmail SMTP 링크 발급' : `${isIntegrated ? '단계7' : '단계4'}: B파트 링크 발급`);
-        updateButtons();
+        simulationFetch(`/status?eventId=${encodeURIComponent(params.eventId)}`)
+          .then((s) => { if (s) renderStatus(s); })
+          .catch(() => updateButtons());
       });
   });
 
@@ -1928,7 +1963,6 @@ export const adminPage = {
               </button>
             </nav>
             <div class="admin-sidebar__footer">
-              <span class="admin-sidebar__shortcut">?</span>
             </div>
           </aside>
 
@@ -1957,6 +1991,13 @@ export const adminPage = {
                 <strong class="admin-metric__value">수동</strong>
                 <span class="admin-metric__meta">단계별 직접 실행</span>
               </div>
+            </div>
+
+            <div class="admin-worker-toggle" style="margin-bottom:16px;padding:10px 14px;background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:8px;display:flex;align-items:center;gap:12px;font-size:13px;">
+              <span style="font-weight:600;">백그라운드 워커</span>
+              <span data-worker-status style="color:#27ae60;">확인 중...</span>
+              <button type="button" class="btn btn-outline btn-sm" data-worker-toggle style="font-size:12px;border-color:#e67e22;color:#e67e22;">일시 정지</button>
+              <span style="color:#95a5a6;font-size:11px;">공연 삭제 / 시뮬 데이터 삭제 전 정지 권장</span>
             </div>
 
             <div class="admin-grid">
@@ -2151,6 +2192,38 @@ export const adminPage = {
                   <p class="text-secondary admin-panel__description">
                     일반·멤버십 더미를 본 티켓팅 대기열에 먼저 등록하고, 매진 시 멤버십 더미만 취소표 대기열로 전환합니다. 실제 멤버십 사용자는 매진 화면의 기존 서비스 경로로 취소표 대기열에 진입합니다. 단계5-1에서 더미 멤버십 대기자를 지정 인원만큼 삭제하면 실제 사용자의 대기 순번이 즉시 갱신됩니다. 단계7에서는 테스트 더미를 B파트 후보 원장에서 자동 제외한 뒤 실제 회원에게 Secret Link를 발급합니다.
                   </p>
+                  <div style="margin-bottom:12px;">
+                    <button type="button" class="btn btn-outline btn-sm" data-guide-toggle style="border-color:#3498db;color:#3498db;font-size:12px;">테스트 가이드 보기</button>
+                    <div data-guide-body style="display:none;margin-top:8px;padding:12px 14px;background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:8px;font-size:13px;line-height:1.7;color:var(--color-text);">
+                      <div style="display:flex;gap:8px;margin-bottom:10px;">
+                        <button type="button" class="btn btn-sm" data-guide-tab="main" style="background:#3498db;color:#fff;font-size:12px;">본 티켓팅 시뮬</button>
+                        <button type="button" class="btn btn-outline btn-sm" data-guide-tab="cancel" style="font-size:12px;">취소표 링크 테스트</button>
+                      </div>
+                      <div data-guide-content="main">
+                        <b>본 티켓팅 시뮬레이션 순서</b><br/>
+                        1. 공연과 회차를 선택한다<br/>
+                        2. 일반/멤버십 더미 수를 설정한다<br/>
+                        3. <b>통합 시뮬레이션 초기화</b> — 더미 유저 생성 + 좌석 등록<br/>
+                        4. <b>단계2: 본 티켓팅 대기열 구성</b> — 더미를 대기열에 등록<br/>
+                        5. <b>좌석 선점</b> — 원하는 수만큼 좌석 선점<br/>
+                        6. <b>단계3: 대기열 드레인</b> — 대기열의 더미를 입장 처리<br/>
+                        7. <b>단계4: 매진 및 전환</b> — 전석 매진 + 멤버십 더미를 취소표 대기열로 전환<br/>
+                        8. <b>단계5: 티켓팅 마감</b> — 본 티켓팅 종료<br/>
+                        <span style="color:#7f8c8d;">여기까지가 본 티켓팅 시뮬레이션입니다. 취소표 테스트를 이어서 하려면 아래 탭을 확인하세요.</span>
+                      </div>
+                      <div data-guide-content="cancel" style="display:none;">
+                        <b>취소표 링크 테스트 순서</b> (본 티켓팅 마감 이후)<br/>
+                        1. <b>실제 멤버십 계정</b>으로 사이트에 로그인한다<br/>
+                        2. 매진된 공연의 <b>취소표 알림 신청</b>을 눌러 취소표 대기열에 진입한다<br/>
+                        3. 관리자 패널로 돌아와서 <b>단계5-1: 멤버십 더미 삭제</b>로 더미를 제거한다 (실제 유저 순번 상승)<br/>
+                        4. <b>단계6: 취소표 생성</b> — 확정된 좌석 일부를 취소 처리한다<br/>
+                        5. <b>단계7: B파트 링크 발급</b> — SQS로 취소 이벤트를 전송하면 B파트가 실제 유저에게 Secret Link 이메일을 발송한다<br/>
+                        6. 이메일의 Secret Link로 접속하여 취소표 좌석을 선택·결제한다<br/>
+                        7. 테스트 완료 후 반드시 <b style="color:#e74c3c;">데이터 삭제</b>를 눌러 정리한다<br/>
+                        <span style="color:#e74c3c;">※ 데이터 삭제를 하지 않으면 같은 공연으로 재테스트 시 이전 기록이 남아 의도하지 않은 결과가 발생합니다.</span>
+                      </div>
+                    </div>
+                  </div>
                   <div class="admin-form-grid admin-form-grid--two">
                     <div class="field">
                       <label>공연 선택</label>
@@ -2306,6 +2379,37 @@ export const adminPage = {
     const cleanupAdminInteractions = initAdminInteractions(container);
     const cleanupCommandPalette = initAdminCommandPalette(container);
 
+    const workerStatusEl = container.querySelector('[data-worker-status]');
+    const workerToggleBtn = container.querySelector('[data-worker-toggle]');
+    if (workerStatusEl && workerToggleBtn) {
+      let workersRunning = true;
+      const updateWorkerUI = (running) => {
+        workersRunning = running;
+        workerStatusEl.textContent = running ? '실행 중' : '정지됨';
+        workerStatusEl.style.color = running ? '#27ae60' : '#e74c3c';
+        workerToggleBtn.textContent = running ? '일시 정지' : '재개';
+        workerToggleBtn.style.borderColor = running ? '#e67e22' : '#27ae60';
+        workerToggleBtn.style.color = running ? '#e67e22' : '#27ae60';
+      };
+      authFetch('/admin/workers/status')
+        .then((r) => r.json())
+        .then((data) => updateWorkerUI(data.recovery || data.syncRetry))
+        .catch(() => { workerStatusEl.textContent = '확인 실패'; workerStatusEl.style.color = '#999'; });
+      workerToggleBtn.addEventListener('click', () => {
+        workerToggleBtn.disabled = true;
+        const endpoint = workersRunning ? '/admin/workers/pause' : '/admin/workers/resume';
+        authFetch(endpoint, { method: 'POST' })
+          .then((r) => r.json())
+          .then((data) => {
+            const running = data.recovery?.running || data.syncRetry?.running || false;
+            updateWorkerUI(running);
+            showToast({ title: data.message || (running ? '워커 재개됨' : '워커 정지됨'), type: 'success' });
+          })
+          .catch(() => showToast({ title: '워커 상태 변경 실패' }))
+          .finally(() => { workerToggleBtn.disabled = false; });
+      });
+    }
+
     container.querySelector('[data-bulk-delete]').addEventListener('click', () => {
       const targets = eventsCache.slice(0, 5);
       if (!targets.length) return;
@@ -2318,14 +2422,16 @@ export const adminPage = {
       button.textContent = '삭제 중...';
       deleteEventsInBatch(targets)
         .then((result) => {
-          const failed = (result.results || []).filter((item) => !item.success || item.dbSynced === false);
+          const failed = (result.results || []).filter((item) => !item.success || item.warnings?.length > 0);
           if (failed.length) {
             showToast({
               title: `${result.deletedCount || 0}개 삭제 완료 · ${failed.length}개 확인 필요`,
               body: failed.map((item) => `${item.eventId}: ${item.message}`).join(' / '),
             });
+            addNotification({ title: `[일괄 삭제] ${result.deletedCount || 0}개 완료 · ${failed.length}개 확인 필요` });
           } else {
             showToast({ title: `${result.deletedCount || targets.length}개 공연이 삭제되었습니다`, type: 'success' });
+            addNotification({ title: `[일괄 삭제] ${result.deletedCount || targets.length}개 삭제 완료` });
           }
           refreshEventsList(container);
         })
@@ -2402,6 +2508,7 @@ export const adminPage = {
                 return;
               }
               showToast({ title: '공연이 생성되었습니다', body: `${payload.eventName}`, type: 'success' });
+              addNotification({ title: '[포스터 공연 생성] ' + payload.eventName });
               refreshEventsList(container);
             })
             .catch(() => showToast({ title: '포스터 공연 생성 중 오류가 발생했습니다' }));
@@ -2441,6 +2548,7 @@ export const adminPage = {
             .then((result) => {
               if (result.success) {
                 showToast({ title: `Redis 초기화 완료 (${mode})`, body: result.cleared.join(', '), type: 'success' });
+                addNotification({ title: `[Redis 초기화] ${mode}`, body: result.cleared.join(', ') });
                 refreshEventsList(container);
               } else {
                 showToast({ title: 'Redis 초기화 실패', body: result.message || '알 수 없는 오류' });
@@ -2478,6 +2586,7 @@ export const adminPage = {
                 r.queue?.recovered ? `대기열 (eligible=${r.queue.eligible}, standby=${r.queue.standby})` : (r.queue?.message || null),
               ].filter(Boolean).join(' · ');
               showToast({ title: `Redis 복구 완료`, body: summary || '복구할 데이터 없음', type: 'success' });
+              addNotification({ title: '[DB→Redis 복구] 완료', body: summary || '복구할 데이터 없음' });
               refreshEventsList(container);
             } else {
               showToast({ title: 'Redis 복구 실패', body: result.message || '알 수 없는 오류' });
