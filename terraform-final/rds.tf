@@ -130,9 +130,12 @@ resource "aws_db_instance" "mariadb" {
   #    자동 백업이 한꺼번에 사라지는 상태였다.
   #
   #    정말로 지워야 할 때는 이 두 줄을 먼저 되돌리고 apply 한 다음 destroy 한다.
+  #
+  #    2026-10-03: 발표가 끝나 전체 destroy 를 위해 삭제 보호만 끈다.
+  #    최종 스냅샷(queuing-mariadb-final)은 남겨서 데이터를 되살릴 수 있게 한다.
   skip_final_snapshot       = false
   final_snapshot_identifier = "${var.project}-mariadb-final"
-  deletion_protection       = true
+  deletion_protection       = false
 
   tags = { Name = "${var.project}-mariadb" }
 }
