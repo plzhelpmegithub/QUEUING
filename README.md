@@ -81,6 +81,7 @@ EKS 기반 마이크로서비스 아키텍처로 구축한 실시간 좌석 예�
 - **prom-client 15.1** — Prometheus 커스텀 메트릭
 - **Docker** — 컨테이너 이미지 빌드
 - **Helm Chart** — K8s 배포 관리 (redis-api-chart)
+- **Google Recapcha** - Google Recapcha를 이용한 봇 방지
 
 **주요 기능**:
 - 대기열 진입/순번 관리 (queueRoutes)
@@ -219,6 +220,7 @@ EKS 기반 마이크로서비스 아키텍처로 구축한 실시간 좌석 예�
 - **HTML/CSS** — UI
 - **Nginx** — 정적 파일 서빙 (Docker 배포)
 - **Docker** — 컨테이너 이미지 빌드
+- **Google Recapcha** - Google Recapcha를 이용한 봇 방지
 
 **주요 화면**:
 - 좌석 선택 페이지 (seat_editor.html)
